@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "multimodal-temporal-animation",
+  "version": "1",
+  "objective": "Verify that the visible animation progresses over its bounded timeline.",
+  "criteria": [
+    {
+      "id": "animation-progress",
+      "requirement": "required",
+      "evidenceKind": "temporal",
+      "description": "The orange animation marker progresses smoothly from left toward right across the ordered frames.",
+      "passAnchors": [
+        "the orange marker occupies distinct, progressively rightward positions",
+        "the sequence has a visible beginning, middle, and end"
+      ],
+      "failAnchors": [
+        "the marker remains static across the frames",
+        "the marker jumps backward or disappears"
+      ]
+    }
+  ]
+}

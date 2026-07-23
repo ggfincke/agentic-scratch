@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "multimodal-controllability",
+  "version": "1",
+  "objective": "Verify that the visible player responds coherently to the declared right-arrow input.",
+  "criteria": [
+    {
+      "id": "right-arrow-response",
+      "requirement": "required",
+      "evidenceKind": "temporal",
+      "description": "After the right-arrow input, the blue player is visibly farther right than in the initial frame while remaining fully visible.",
+      "passAnchors": [
+        "the same blue player moves clearly to the right between the ordered frames",
+        "the player remains visible within the stage"
+      ],
+      "failAnchors": [
+        "the player stays in the same horizontal position",
+        "the player moves left or leaves the visible stage"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@scratch-agent/sb3",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./canonical-json": {
+      "types": "./dist/canonical-json-bytes.d.ts",
+      "default": "./dist/canonical-json-bytes.js"
+    },
+    "./crypto-node": {
+      "types": "./dist/crypto-node.d.ts",
+      "default": "./dist/crypto-node.js"
+    }
+  },
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "scratch-parser": "^6.0.0"
+  }
+}

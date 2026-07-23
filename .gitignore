@@ -1,0 +1,59 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Dependencies & build output
+node_modules
+dist
+dist-ssr
+*.local
+
+# TypeScript build cache — produced by `tsc -b`; orphans outside the configured
+# tsBuildInfoFile path should never be tracked
+*.tsbuildinfo
+
+# Editor directories & files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+Thumbs.db
+desktop.ini
+*.sw?
+
+# Env
+.env*
+!.env.example
+
+# Third-party agent tooling drop-ins (per-user, never committed)
+.agents
+.claude
+skills-lock.json
+
+# Per-clone / private docs (never committed)
+CLAUDE.md
+AGENTS.md
+/dev-docs/
+
+# ESLint cache (when run w/ --cache)
+.eslintcache
+
+# Playwright output
+/test-results
+/playwright-report
+/.playwright
+/playwright/.cache
+
+# Generated run artifacts — every spike/test run writes runs/<run-id>/
+/runs
+
+# Local-only generated review annex (kept out of git)
+/review
+
+# Local real-world example projects — heavy .sb3 (tens of MB), kept out of git
+/examples/*
+!/examples/README.md
+
+# Local scratch / throwaway artifacts
+.tmp/

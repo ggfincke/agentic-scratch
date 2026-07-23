@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "multimodal-selected-project-startup",
+  "version": "1",
+  "objective": "Assess only the retained bounded startup presentation of an explicitly selected project.",
+  "criteria": [
+    {
+      "id": "startup-presentation",
+      "requirement": "required",
+      "evidenceKind": "temporal",
+      "description": "The retained startup frames show a nonblank, visually coherent project presentation without a dominant rendering failure.",
+      "passAnchors": [
+        "the stage is nonblank and its primary visible content is coherent",
+        "no full-stage corruption or missing-renderer failure dominates the frames"
+      ],
+      "failAnchors": [
+        "the stage is blank or uniformly empty",
+        "the presentation is dominated by severe clipping, corruption, or missing content"
+      ]
+    }
+  ]
+}

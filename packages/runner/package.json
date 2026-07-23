@@ -1,0 +1,29 @@
+{
+  "name": "@scratch-agent/runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@scratch-agent/sb3": "*",
+    "@scratch/scratch-render": "14.1.0",
+    "@scratch/scratch-svg-renderer": "14.1.0",
+    "@scratch/scratch-vm": "14.1.0",
+    "@turbowarp/scaffolding": "0.4.0",
+    "jsdom": "^28.1.0",
+    "playwright": "^1.61.0",
+    "pngjs": "^7.0.0",
+    "scratch-audio": "2.0.268",
+    "scratch-storage": "6.2.1"
+  },
+  "devDependencies": {
+    "@types/pngjs": "^6.0.5"
+  }
+}

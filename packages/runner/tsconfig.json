@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "lib": ["ES2022", "DOM"],
+    "tsBuildInfoFile": "dist/.tsbuildinfo"
+  },
+  "include": ["src"],
+  "exclude": [
+    "src/browser/page-entry.ts",
+    "src/browser/official-page-entry.ts",
+    "src/browser/hash-parity-page-entry.ts",
+    "src/browser/runtime-page.ts",
+    "src/browser/semantic-hash.ts",
+    "src/browser/visual.ts",
+    "src/browser/official-runtime.d.ts",
+    "src/browser/scaffolding.d.ts"
+  ],
+  "references": [{ "path": "../sb3" }]
+}

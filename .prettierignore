@@ -1,0 +1,25 @@
+# build output
+dist
+
+# third-party tooling drop-ins
+.agents
+.claude
+skills-lock.json
+
+# generated run artifacts
+runs
+
+# generated declarations
+packages/ir/src/edit/contracts.generated.ts
+
+# generated binary fixtures
+fixtures/*.sb3
+
+# private / per-clone docs (not committed)
+dev-docs
+CLAUDE.md
+AGENTS.md
+
+# lockfiles & deps
+node_modules
+package-lock.json

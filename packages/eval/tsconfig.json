@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "tsBuildInfoFile": "dist/.tsbuildinfo"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../sb3" },
+    { "path": "../ir" },
+    { "path": "../static" },
+    { "path": "../runner" },
+    { "path": "../model" },
+    { "path": "../mutate" },
+    { "path": "../validate" }
+  ]
+}

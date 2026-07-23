@@ -1,0 +1,105 @@
+{
+  "name": "agentic-scratch",
+  "private": true,
+  "version": "0.0.0",
+  "description": "IR-first, .sb3-backed agentic Scratch development workbench",
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b && npm run typecheck:browser && npm run typecheck:scripts && npm run build:browser",
+    "build:authoritative": "tsc -b --force && npm run typecheck:browser && npm run typecheck:scripts && npm run build:browser",
+    "build:browser": "node scripts/build/build-browser.mjs",
+    "typecheck": "tsc -b && npm run typecheck:browser && npm run typecheck:scripts",
+    "typecheck:browser": "tsc -p packages/runner/tsconfig.browser.json",
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json",
+    "prespike": "npm run build",
+    "spike": "tsx scripts/suites/spike.ts",
+    "preinspect": "npm run build",
+    "inspect": "tsx scripts/project/inspect.ts",
+    "preroundtrip": "npm run build",
+    "roundtrip": "tsx scripts/project/roundtrip.ts",
+    "prevalidate": "npm run build",
+    "validate": "tsx scripts/project/validate.ts",
+    "preproject-check": "npm run build",
+    "project-check": "tsx scripts/project/project-check.ts",
+    "preproject-walkthrough:codex": "npm run build",
+    "project-walkthrough:codex": "tsx scripts/project/walkthrough-codex.ts",
+    "prevmtest": "npm run build",
+    "vmtest": "tsx scripts/suites/vmtest.ts",
+    "previstest": "npm run build",
+    "vistest": "tsx scripts/suites/vistest.ts",
+    "premodeltest": "npm run build",
+    "modeltest": "tsx scripts/suites/modeltest.ts",
+    "premutate": "npm run build",
+    "mutate": "tsx scripts/suites/mutate.ts",
+    "prerepair": "npm run build",
+    "repair": "tsx scripts/repair/repair.ts",
+    "prerepair-bench": "npm run build",
+    "repair-bench": "tsx scripts/repair/repair-bench.ts",
+    "prerepair-bench:codex": "npm run build",
+    "repair-bench:codex": "tsx scripts/repair/codex-repair-bench.ts",
+    "boundaries": "tsx scripts/gates/check-package-boundaries.ts",
+    "repair:mcp": "node packages/mcp/dist/transport/server.js",
+    "premultimodal-bench": "npm run build",
+    "multimodal-bench": "tsx scripts/multimodal/bench.ts",
+    "premultimodal-agent:record": "npm run build:authoritative",
+    "multimodal-agent:record": "tsx scripts/multimodal/agent-record.ts",
+    "premultimodal-agent:replay": "npm run build:authoritative",
+    "multimodal-agent:replay": "tsx scripts/multimodal/agent-replay.ts",
+    "premultimodal-project-check": "npm run build:authoritative",
+    "multimodal-project-check": "tsx scripts/multimodal/project-check.ts",
+    "presemantic-edit-replay": "npm run build:authoritative",
+    "semantic-edit-replay": "tsx scripts/semantic-edit/replay.ts",
+    "presemantic-edit-bench": "npm run build:authoritative",
+    "semantic-edit-bench": "tsx scripts/semantic-edit/bench.ts",
+    "presemantic-edit-live-workflow": "npm run build:authoritative",
+    "semantic-edit-live-workflow": "tsx scripts/semantic-edit/live-workflow.ts",
+    "lint": "eslint .",
+    "lint:fix": "eslint --fix .",
+    "format": "prettier --write . && eslint --fix .",
+    "format:check": "prettier --check . && eslint .",
+    "pretest": "npm run build",
+    "test": "node --import tsx --test \"tests/**/*.test.ts\" \"eslint-rules/**/*.test.js\"",
+    "clean": "rm -rf runs .tmp packages/*/dist packages/*/*.tsbuildinfo *.tsbuildinfo"
+  },
+  "prettier": {
+    "plugins": [
+      "prettier-plugin-brace-style"
+    ],
+    "braceStyle": "allman",
+    "semi": false,
+    "singleQuote": true,
+    "trailingComma": "es5",
+    "tabWidth": 2,
+    "printWidth": 80,
+    "arrowParens": "always"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
+  },
+  "overrides": {
+    "@scratch/scratch-render": {
+      "hull.js": "https://codeload.github.com/andriiheonia/hull/tar.gz/343f6041d53dcd9611f0ab77c8a2b6e14b57e38a"
+    },
+    "@scratch/scratch-vm": {
+      "uuid": "11.1.1"
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@types/node": "^24.10.0",
+    "esbuild": "^0.28.1",
+    "eslint": "^9.39.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.7.0",
+    "prettier": "^3.9.0",
+    "prettier-plugin-brace-style": "^0.10.2",
+    "scratch-blocks": "2.1.19",
+    "tsx": "^4.22.0",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "typescript-eslint": "^8.62.0"
+  }
+}

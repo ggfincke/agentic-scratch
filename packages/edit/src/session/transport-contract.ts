@@ -1,0 +1,42 @@
+// packages/edit/src/session/transport-contract.ts
+// mechanical lifecycle transport facade over the exact IR-owned authority
+
+export {
+  EDIT_TOOL_DESCRIPTORS,
+  EDIT_TOOL_NAMES,
+  HARD_MAXIMUM_PHASE_8_RESOURCE_POLICY,
+  MEDIA_POLICY_TABLES,
+  NAME_RESOLUTION_DOMAINS,
+  OPERATION_KINDS,
+  OPERATION_PLANNING_ROWS,
+  OPERATION_REVIEW_ROWS,
+  PROJECT_TOOL_NAMES,
+  PHASE_8_EDIT_LIMIT_AUTHORITY_V1,
+  PHASE_8_RESOURCE_POLICY_CATALOG,
+  PHASE_8_RESOURCE_POLICY_LIMITS,
+  PNG_FEATURE_POLICIES,
+  REFUSAL_CODES,
+  SEMANTIC_HASH_DOMAINS,
+  STATEFUL_EDIT_TOOL_NAMES,
+  VANILLA_CORE_DESCRIPTORS,
+  DEFAULT_PHASE_8_RESOURCE_POLICY,
+  assertApprovedA0SemanticAuthorityV1,
+  contractDefinitionNames,
+  contractDefinitionSchemaModel,
+  emitJsonSchema202012,
+  parseContractDefinitionV1,
+  parseEditScenarioPolicyV1,
+  parseEditToolInputV1,
+  parseSemanticChangeContractV1,
+  parseSemanticEditBatchV1,
+  resolvePhase8ResourcePolicy,
+  semanticAuthorityManifestV1,
+  semanticHashV1,
+  semanticHashPreimageForDomainV1,
+  toolInputSchemaModel,
+  toolOutputSchemaModel,
+  toolReceiptFreeResultSchemaModel,
+  validateSchemaValue,
+} from '@scratch-agent/ir/edit'
+
+export type * from '@scratch-agent/ir/edit'

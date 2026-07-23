@@ -1,0 +1,22 @@
+{
+  "name": "@scratch-agent/mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@scratch-agent/edit": "*",
+    "@scratch-agent/eval": "*",
+    "@scratch-agent/runner": "*",
+    "@scratch-agent/sb3": "*",
+    "@scratch-agent/repair": "*"
+  }
+}

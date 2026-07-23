@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "multimodal-qualitative-layout",
+  "version": "1",
+  "objective": "Verify that the two primary visual elements form a clear, balanced layout.",
+  "criteria": [
+    {
+      "id": "balanced-layout",
+      "requirement": "required",
+      "evidenceKind": "temporal",
+      "description": "A green square and a magenta circle are both fully visible, clearly separated, and balanced on opposite sides of the stage.",
+      "passAnchors": [
+        "both differently colored shapes are fully visible",
+        "the shapes do not overlap and occupy opposite sides of the stage"
+      ],
+      "failAnchors": [
+        "a shape is clipped or outside the stage",
+        "the shapes overlap or collapse into the same area"
+      ]
+    }
+  ]
+}

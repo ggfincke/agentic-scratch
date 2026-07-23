@@ -1,0 +1,17 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/sb3" },
+    { "path": "./packages/ir" },
+    { "path": "./packages/validate" },
+    { "path": "./packages/static" },
+    { "path": "./packages/runner" },
+    { "path": "./packages/model" },
+    { "path": "./packages/mutate" },
+    { "path": "./packages/eval" },
+    { "path": "./packages/localize" },
+    { "path": "./packages/edit" },
+    { "path": "./packages/repair" },
+    { "path": "./packages/mcp" }
+  ]
+}
