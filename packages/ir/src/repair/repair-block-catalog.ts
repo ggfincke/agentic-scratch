@@ -1,7 +1,7 @@
 // packages/ir/src/repair/repair-block-catalog.ts
 // preserve the complete legacy R1-R5 repair block registry as neutral data
 
-import { deepFreeze } from '../edit/immutable.js'
+import { deepFreeze } from '../edit/support/immutable.js'
 
 export type RepairBlockCategory = 'hat' | 'statement' | 'reporter' | 'boolean'
 export type RepairInputShape =

@@ -38,7 +38,8 @@ export type BlockField =
   [string | number | null] | [string | number | null, string | null]
 
 // custom-block / control_stop mutation — opaque pass-through; never coerce or re-encode.
-// argument* are JSON-ENCODED STRINGS; warp/hasnext are bool OR the strings "true"/"false"/"null"
+// argument* are encoded strings
+// warp/hasnext preserve boolean, optional-bool string, or literal null
 export interface Mutation
 {
   tagName: string
@@ -47,8 +48,8 @@ export interface Mutation
   argumentids?: string
   argumentnames?: string
   argumentdefaults?: string
-  warp?: boolean | string
-  hasnext?: boolean | string
+  warp?: boolean | string | null
+  hasnext?: boolean | string | null
 }
 
 // a normal (object-form) block in the blocks map

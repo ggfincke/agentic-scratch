@@ -25,13 +25,13 @@ import {
   emptyFutureBindingLedgerV1,
   exactTargetRef,
   greenfieldTemplateAssetsV1,
-  groupFProductionOperationDispatchersV1,
+  mediaTargetProductionOperationDispatchersV1,
   mergeProductionLineageHistoryV1,
   productionCanonicalValueSha256V1,
   productionComputeCorrespondedDeltaV1,
   productionContractScopeSha256V1,
-  productionGroupFAddCostumePlanningCompletionV1,
-  productionGroupFSpritePlanningCompletionV1,
+  productionMediaTargetAddCostumePlanningCompletionV1,
+  productionMediaTargetSpritePlanningCompletionV1,
   productionOperationChangeFingerprintV1,
   productionProjectCorrespondenceV1,
   productionTargetPlanningFactSetSha256V1,
@@ -45,7 +45,7 @@ import {
   applyTargetOperationV1,
   boundedDisplayStringV1,
   buildSemanticReferenceIndex,
-  groupFCreationContentFingerprintForResultV1,
+  mediaTargetCreationContentFingerprintForResultV1,
   parseSemanticChangeContractV1,
   scenarioPolicyValueSemanticSha256V1,
   semanticHashV1,
@@ -58,7 +58,7 @@ import {
   type EditEvaluationPlanV1,
   type EditScenarioPolicyV1,
   type EditSemanticChangeContractV1,
-  type GroupFCreationBindingDescriptorV1,
+  type MediaTargetCreationBindingDescriptorV1,
   type LaneRequirementV1,
   type SemanticEditOperationMediaAddCostumeV1,
   type SemanticEditOperationGoalMediaAddCostumeV1,
@@ -366,12 +366,12 @@ async function deriveMediaChangeFingerprints(input: {
   const attributions: Array<
     ReturnType<
       ReturnType<
-        typeof groupFProductionOperationDispatchersV1
+        typeof mediaTargetProductionOperationDispatchersV1
       >[number]['execute']
     >['attribution']
   > = []
   const dispatchers = new Map(
-    groupFProductionOperationDispatchersV1().flatMap((dispatcher) =>
+    mediaTargetProductionOperationDispatchersV1().flatMap((dispatcher) =>
       dispatcher.operationKinds.map((kind) => [kind, dispatcher] as const)
     )
   )
@@ -425,7 +425,7 @@ async function deriveMediaChangeFingerprints(input: {
     resultsById.set(operation.opId, dispatched.result)
     attributions.push(dispatched.attribution)
   }
-  const addSprite = productionGroupFSpritePlanningCompletionV1(
+  const addSprite = productionMediaTargetSpritePlanningCompletionV1(
     context(),
     input.addSpriteGoal
   ).operation
@@ -458,7 +458,7 @@ async function deriveMediaChangeFingerprints(input: {
     ).changeContractSha256 = changeContractSha256
     futureBindingLedger = emptyFutureBindingLedgerV1(changeContractSha256)
   })
-  const addCostume = productionGroupFAddCostumePlanningCompletionV1(
+  const addCostume = productionMediaTargetAddCostumePlanningCompletionV1(
     context(),
     input.addCostumeGoal
   ).operation
@@ -903,7 +903,7 @@ async function mediaContract(mediaBytes: Uint8Array): Promise<{
       scopeKind: 'projectEntityCollection' as const,
       collection: 'targets' as const,
     }),
-  }) satisfies GroupFCreationBindingDescriptorV1
+  }) satisfies MediaTargetCreationBindingDescriptorV1
   const costumeDescriptor = Object.freeze({
     bindingKind: 'future' as const,
     entityKind: 'media' as const,
@@ -919,8 +919,8 @@ async function mediaContract(mediaBytes: Uint8Array): Promise<{
       scopeKind: 'targetAndOwnedDescendants' as const,
       target: spriteRef,
     }),
-  }) satisfies GroupFCreationBindingDescriptorV1
-  const targetContentSha256 = groupFCreationContentFingerprintForResultV1({
+  }) satisfies MediaTargetCreationBindingDescriptorV1
+  const targetContentSha256 = mediaTargetCreationContentFingerprintForResultV1({
     project,
     targetIndex: 1,
     operation: {
@@ -958,7 +958,7 @@ async function mediaContract(mediaBytes: Uint8Array): Promise<{
     expectedCostumeOrderSha256: 'c'.repeat(64),
     expectedFinalCurrentCostumeState: { state: 'missing' as const },
   }
-  const costumeContentSha256 = groupFCreationContentFingerprintForResultV1({
+  const costumeContentSha256 = mediaTargetCreationContentFingerprintForResultV1({
     project,
     targetIndex: 1,
     operation: {

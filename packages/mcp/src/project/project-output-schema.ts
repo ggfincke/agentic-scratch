@@ -310,8 +310,12 @@ const PROJECT_BLOCK_ITEM = closed({
           argumentids: PROJECT_STRING,
           argumentnames: PROJECT_STRING,
           argumentdefaults: PROJECT_STRING,
-          warp: { anyOf: [{ type: 'boolean' }, PROJECT_STRING] },
-          hasnext: { anyOf: [{ type: 'boolean' }, PROJECT_STRING] },
+          warp: {
+            anyOf: [{ type: 'boolean' }, { type: 'null' }, PROJECT_STRING],
+          },
+          hasnext: {
+            anyOf: [{ type: 'boolean' }, { type: 'null' }, PROJECT_STRING],
+          },
         },
         ['tagName', 'children']
       ),
@@ -814,7 +818,8 @@ function freezeSchema(value: unknown): void
 }
 
 const PROJECT_OUTPUT_SCHEMAS = new Map(
-  PROJECT_TOOL_NAMES.map((name) => {
+  PROJECT_TOOL_NAMES.map((name) =>
+  {
     const schema = projectOutputSchema(name)
     freezeSchema(schema)
     return [name, schema] as const

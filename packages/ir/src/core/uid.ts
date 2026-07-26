@@ -3,8 +3,8 @@
 
 import { isBlockEntry, type ProjectJson } from '@scratch-agent/sb3'
 
-import { parseMutationArray } from '../edit/procedure-mutation.js'
-import { ownRecordKeys, ownRecordValue } from '../edit/own-record.js'
+import { parseMutationArray } from '../edit/semantic-index/procedure-mutation.js'
+import { ownRecordKeys, ownRecordValue } from '../edit/support/own-record.js'
 import { compareText } from '../internal/compare-text.js'
 
 const UID_ALLOCATOR_VERSION = 'scratch-uids-v2' as const
