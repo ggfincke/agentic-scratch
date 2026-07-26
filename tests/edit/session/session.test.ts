@@ -24,7 +24,7 @@ import {
   commentSemanticFingerprintV1,
   commentTextSha256V1,
   currentCostumeStateV1,
-  groupFCreationContentFingerprintForResultV1,
+  mediaTargetCreationContentFingerprintForResultV1,
   mediaNameActivationEvidenceV1,
   mediaOrderEvidenceV1,
   mediaReachabilityEvidenceV1,
@@ -32,7 +32,7 @@ import {
   mediaDomainOrderPolicyV1,
   mediaReferenceEvidenceV1,
   type ContractScopeV1,
-  type GroupFCreationBindingDescriptorV1,
+  type MediaTargetCreationBindingDescriptorV1,
   type MediaRecordEntityEvidenceV1,
   declarationItemsFingerprintV1,
   declarationNameActivationEvidenceV1,
@@ -40,10 +40,10 @@ import {
   declarationReferenceEvidenceV1,
   declarationValueFingerprintV1,
   expectedDeclarationNameIdentityV1,
-  groupCCommentCreationContentFingerprintV1,
-  groupCDeclarationCreationContentFingerprintV1,
-  groupDCreationContentFingerprintForResultV1,
-  groupECreationContentFingerprintForResultV1,
+  commentCreationContentFingerprintV1,
+  declarationCreationContentFingerprintV1,
+  scriptBlockCreationContentFingerprintForResultV1,
+  procedureCreationContentFingerprintForResultV1,
   optionalCollectionContainerStateV1,
   parameterEntityEvidenceSetV1,
   parseSemanticChangeContractV1,
@@ -70,8 +70,8 @@ import {
   type EditRollbackRequestV1,
   type EditScenarioPolicyV1,
   type EditUndoRequestV1,
-  type GroupDCreationBindingDescriptorV1,
-  type GroupECreationBindingDescriptorV1,
+  type ScriptBlockCreationBindingDescriptorV1,
+  type ProcedureCreationBindingDescriptorV1,
   type SemanticEditOperationV1,
   type SemanticLineageSnapshot,
   type TargetOperationV1,
@@ -97,10 +97,10 @@ import { EditChangeContractRegistryV1, type BoundChangeContractV1 } from '../../
 import { combineAssetMaterializationUsageDeltasV1, EMPTY_ASSET_MATERIALIZATION_USAGE_DELTA_V1, SessionAssetStoreV1, type AdmittedEditAssetResolverV1, type AssetMaterializationUsageDeltaV1 } from '../../../packages/edit/src/assets/asset-admission.js'
 import { editCanonicalBytesV1, editCanonicalSha256V1 } from '../../../packages/edit/src/support/canonical.js'
 import { composeCumulativeProjectDeltaAttributionV1, editOperationOccurrenceIdV1 } from '../../../packages/edit/src/lineage/cumulative-attribution.js'
-import { CommentProductionOperationDispatcherV1, DeclarationProductionOperationDispatcherV1, ScriptWorkspaceProductionOperationDispatcherV1, exactBlockRef, productionCommentPlanningFactSetSha256V1, productionDeclarationPlanningFactSetSha256V1, productionScriptWorkspacePlanningFactSetSha256V1 } from '../../../packages/edit/src/dispatch/group-c-dispatchers.js'
-import { groupDProductionOperationDispatchersV1, productionGroupDPlanningFactSetSha256V1 } from '../../../packages/edit/src/dispatch/group-d-dispatchers.js'
-import { groupEProductionOperationDispatchersV1, productionGroupEPlanningFactSetSha256V1 } from '../../../packages/edit/src/dispatch/group-e-dispatchers.js'
-import { exactMediaRefV1, groupFProductionOperationDispatchersV1, productionGroupFPlanningFactSetSha256V1, productionGroupFSpritePlanningFactSetSha256V1 } from '../../../packages/edit/src/dispatch/group-f-dispatchers.js'
+import { CommentProductionOperationDispatcherV1, DeclarationProductionOperationDispatcherV1, ScriptWorkspaceProductionOperationDispatcherV1, exactBlockRef, productionCommentPlanningFactSetSha256V1, productionDeclarationPlanningFactSetSha256V1, productionScriptWorkspacePlanningFactSetSha256V1 } from '../../../packages/edit/src/dispatch/target-dispatchers.js'
+import { scriptBlockProductionOperationDispatchersV1, productionScriptBlockPlanningFactSetSha256V1 } from '../../../packages/edit/src/dispatch/script-block-dispatchers.js'
+import { procedureProductionOperationDispatchersV1, productionProcedurePlanningFactSetSha256V1 } from '../../../packages/edit/src/dispatch/procedure-dispatchers.js'
+import { exactMediaRefV1, mediaTargetProductionOperationDispatchersV1, productionMediaTargetPlanningFactSetSha256V1, productionMediaTargetSpritePlanningFactSetSha256V1 } from '../../../packages/edit/src/dispatch/media-target-dispatchers.js'
 import { emptyFutureBindingLedgerV1, existingBindingOwnerLineageResolverV1, futureBindingKeySha256V1 } from '../../../packages/edit/src/lineage/future-binding-ledger.js'
 import { PINNED_GREENFIELD_TEMPLATE_ARTIFACT_SHA256_V1, assertPinnedGreenfieldTemplateIdentityV1, assertTemplateBackingFileIsNotAnOutputV1, buildGreenfieldTemplateArtifactV1, greenfieldTemplateSourceIntakeV1 } from '../../../packages/edit/src/assets/greenfield-template.js'
 import { verifyEditHandleV1 } from '../../../packages/edit/src/session/handles.js'
@@ -124,7 +124,7 @@ import {
   planningHead,
   unchangedTargetCorrespondence,
 } from '../../helpers/edit-host.js'
-import { pngChunk as groupFPngChunk } from '../../helpers/png.js'
+import { pngChunk as pngChunk } from '../../helpers/png.js'
 
 const HASH_A = 'a'.repeat(64)
 const HASH_B = 'b'.repeat(64)
@@ -389,7 +389,7 @@ async function requiredTargetChangeEvidence(input: {
 }): Promise<{
   readonly semanticScopeSha256: string
   readonly semanticChangeFingerprint: string
-  readonly groupCTargetCoverage?: {
+  readonly targetCoverage?: {
     readonly renamedSprite: string
     readonly newVisualLayerOrdinal: number
     readonly beforeReferenceSetSha256: string
@@ -507,7 +507,7 @@ async function requiredTargetChangeEvidence(input: {
       },
     }
   )
-  let groupCTargetCoverage:
+  let targetCoverage:
     | {
         readonly renamedSprite: string
         readonly newVisualLayerOrdinal: number
@@ -602,7 +602,7 @@ async function requiredTargetChangeEvidence(input: {
         coverageCandidate,
         referencedDeclarationAfterTargetRename.rawRef
       ).expectedReferenceSetSha256
-    groupCTargetCoverage = {
+    targetCoverage = {
       renamedSprite: GROUP_C_RENAMED_SPRITE,
       newVisualLayerOrdinal,
       beforeReferenceSetSha256: inbound.referenceSetSha256,
@@ -627,7 +627,7 @@ async function requiredTargetChangeEvidence(input: {
       delta,
       operation.opId
     ),
-    ...(groupCTargetCoverage ? { groupCTargetCoverage } : {}),
+    ...(targetCoverage ? { targetCoverage } : {}),
   }
 }
 
@@ -637,7 +637,7 @@ function registeredContract(
   requiredTargetChange?: {
     readonly semanticScopeSha256: string
     readonly semanticChangeFingerprint: string
-    readonly groupCTargetCoverage?: {
+    readonly targetCoverage?: {
       readonly renamedSprite: string
       readonly newVisualLayerOrdinal: number
       readonly beforeReferenceSetSha256: string
@@ -647,7 +647,7 @@ function registeredContract(
       readonly afterVisualPositionSha256: string
     }
   },
-  groupCOptions?: {
+  targetOptions?: {
     readonly spriteTargetIndex?: number
     readonly removableSpriteTargetIndex?: number
   }
@@ -681,7 +681,7 @@ function registeredContract(
   }
   if (requiredTargetChange)
   {
-    const spriteTargetIndex = groupCOptions?.spriteTargetIndex ?? 1
+    const spriteTargetIndex = targetOptions?.spriteTargetIndex ?? 1
     const targets = targetEntityEvidenceSetV1(sourceProject.json)
     const declaration = declarationEntityEvidenceSetV1(sourceProject).find(
       (entry) => entry.rawRef.name === 'obsolete'
@@ -716,11 +716,11 @@ function registeredContract(
       (entry) => entry.targetIndex === spriteTargetIndex
     )!
     const removableSprite =
-      groupCOptions?.removableSpriteTargetIndex === undefined
+      targetOptions?.removableSpriteTargetIndex === undefined
         ? undefined
         : targets.find(
             (entry) =>
-              entry.targetIndex === groupCOptions.removableSpriteTargetIndex
+              entry.targetIndex === targetOptions.removableSpriteTargetIndex
           )
     const spriteContractRef = spriteBindingRef()
     const referencedDeclarationContractRef = {
@@ -735,7 +735,7 @@ function registeredContract(
       entitySubtype: 'stage',
       bindingKey: 'stage-binding',
     } as const
-    const targetCoverage = requiredTargetChange.groupCTargetCoverage
+    const targetCoverage = requiredTargetChange.targetCoverage
     const futureVariableDescriptor = {
       bindingKind: 'future',
       entityKind: 'declaration',
@@ -753,7 +753,7 @@ function registeredContract(
       },
     } as const
     const futureVariableContentSha256 =
-      groupCDeclarationCreationContentFingerprintV1(
+      declarationCreationContentFingerprintV1(
         {
           kind: 'declaration.addVariable',
           name: 'BatchVariable',
@@ -779,7 +779,7 @@ function registeredContract(
       },
     } as const
     const futureListContentSha256 =
-      groupCDeclarationCreationContentFingerprintV1(
+      declarationCreationContentFingerprintV1(
         {
           kind: 'declaration.addList',
           name: 'BatchList',
@@ -806,7 +806,7 @@ function registeredContract(
       expectedCreationScope: futureBroadcastScope,
     } as const
     const futureBroadcastContentSha256 =
-      groupCDeclarationCreationContentFingerprintV1(
+      declarationCreationContentFingerprintV1(
         { kind: 'declaration.addBroadcast', name: 'LaunchSignal' },
         futureBroadcastDescriptor
       )
@@ -829,7 +829,7 @@ function registeredContract(
       expectedCreationScope: futureCommentScope,
     } as const
     const futureCommentContentSha256 =
-      groupCCommentCreationContentFingerprintV1(
+      commentCreationContentFingerprintV1(
         {
           kind: 'comment.add',
           text: 'keep score mutation visible',
@@ -1491,7 +1491,7 @@ const GROUP_D_FUTURE_BINDING_KEYS = Object.freeze([
   'group-d-inserted-root',
 ])
 
-function registeredGroupDContracts(
+function registeredScriptBlockContracts(
   sourceArtifactSha256: string,
   sourceProject: ProjectIR
 ): {
@@ -1639,7 +1639,7 @@ function registeredGroupDContracts(
       scopeKind: 'targetAndOwnedDescendants',
       target: spriteContractRef,
     },
-  } as const satisfies GroupDCreationBindingDescriptorV1
+  } as const satisfies ScriptBlockCreationBindingDescriptorV1
   const rootDescriptor = {
     bindingKind: 'future',
     entityKind: 'block',
@@ -1655,7 +1655,7 @@ function registeredGroupDContracts(
       scopeKind: 'scriptClosure',
       script: createdScriptContractRef,
     },
-  } as const satisfies GroupDCreationBindingDescriptorV1
+  } as const satisfies ScriptBlockCreationBindingDescriptorV1
   const sayDescriptor = {
     bindingKind: 'future',
     entityKind: 'block',
@@ -1671,7 +1671,7 @@ function registeredGroupDContracts(
       scopeKind: 'scriptClosure',
       script: createdScriptContractRef,
     },
-  } as const satisfies GroupDCreationBindingDescriptorV1
+  } as const satisfies ScriptBlockCreationBindingDescriptorV1
   const insertedDescriptor = {
     bindingKind: 'future',
     entityKind: 'block',
@@ -1687,7 +1687,7 @@ function registeredGroupDContracts(
       scopeKind: 'scriptClosure',
       script: createdScriptContractRef,
     },
-  } as const satisfies GroupDCreationBindingDescriptorV1
+  } as const satisfies ScriptBlockCreationBindingDescriptorV1
   const insertAfter = {
     kind: 'block.insertAfter',
     opId: 'group-d-insert-after-created-alias',
@@ -1706,14 +1706,14 @@ function registeredGroupDContracts(
   const resolveContractEntityRef = () => spriteContractRef
   const creationFingerprint = (
     operation: typeof scriptAdd | typeof insertAfter,
-    descriptor: GroupDCreationBindingDescriptorV1,
+    descriptor: ScriptBlockCreationBindingDescriptorV1,
     resultRole: {
       readonly roleKind: 'fixed' | 'dynamic'
       readonly name: 'script' | 'rootBlock' | 'blockAlias'
       readonly alias?: string
     }
   ): string =>
-    groupDCreationContentFingerprintForResultV1({
+    scriptBlockCreationContentFingerprintForResultV1({
       project: sourceProject,
       targetIndex: sprite.targetIndex,
       operation: {
@@ -2140,7 +2140,7 @@ function assertHashOnlyFutureBindingRows(
   }
 }
 
-class GroupCProductionBatchPlannerV1
+class ProductionBatchPlannerV1
 {
   readonly #dispatchers: ReadonlyMap<string, ProductionOperationDispatcherV1>
   readonly #input: EditTransactionInputV1
@@ -2199,9 +2199,9 @@ class GroupCProductionBatchPlannerV1
       new DeclarationProductionOperationDispatcherV1(),
       new CommentProductionOperationDispatcherV1(),
       new ScriptWorkspaceProductionOperationDispatcherV1(),
-      ...groupDProductionOperationDispatchersV1(),
-      ...groupEProductionOperationDispatchersV1(),
-      ...groupFProductionOperationDispatchersV1(),
+      ...scriptBlockProductionOperationDispatchersV1(),
+      ...procedureProductionOperationDispatchersV1(),
+      ...mediaTargetProductionOperationDispatchersV1(),
     ]
     this.#dispatchers = new Map(
       dispatchers.flatMap((dispatcher) =>
@@ -2218,14 +2218,14 @@ class GroupCProductionBatchPlannerV1
     contract: BoundChangeContractV1
     inspection: EditInspectDomainResultV1
     resolveAdmittedAsset?: AdmittedEditAssetResolverV1
-  }): Promise<GroupCProductionBatchPlannerV1>
+  }): Promise<ProductionBatchPlannerV1>
   {
     const currentRevision = input.session.revisions.at(-1)!
     const currentBytes = await input.store.readImmutable(
       currentRevision.candidateKey
     )
     const current = await ProjectIR.fromSb3(currentBytes)
-    return new GroupCProductionBatchPlannerV1({
+    return new ProductionBatchPlannerV1({
       source: input.source,
       current,
       contract: input.contract,
@@ -2352,7 +2352,7 @@ class GroupCProductionBatchPlannerV1
     // the Group F creation projection rather than the target-selector one
     const expectedPlanningFactSetSha256 =
       provisional.kind === 'target.addSprite'
-        ? productionGroupFSpritePlanningFactSetSha256V1(context, provisional)
+        ? productionMediaTargetSpritePlanningFactSetSha256V1(context, provisional)
         : provisional.kind.startsWith('target.')
           ? productionTargetPlanningFactSetSha256V1(
               this.#preBatch,
@@ -2383,7 +2383,7 @@ class GroupCProductionBatchPlannerV1
                   )
                 : provisional.kind.startsWith('script.') ||
                     provisional.kind.startsWith('block.')
-                  ? productionGroupDPlanningFactSetSha256V1(
+                  ? productionScriptBlockPlanningFactSetSha256V1(
                       context,
                       provisional as Exclude<
                         Extract<
@@ -2394,7 +2394,7 @@ class GroupCProductionBatchPlannerV1
                       >
                     )
                   : provisional.kind.startsWith('procedure.')
-                    ? productionGroupEPlanningFactSetSha256V1(
+                    ? productionProcedurePlanningFactSetSha256V1(
                         context,
                         provisional as Extract<
                           SemanticEditOperationV1,
@@ -2402,7 +2402,7 @@ class GroupCProductionBatchPlannerV1
                         >
                       )
                     : provisional.kind.startsWith('media.')
-                      ? productionGroupFPlanningFactSetSha256V1(
+                      ? productionMediaTargetPlanningFactSetSha256V1(
                           context,
                           provisional as Extract<
                             SemanticEditOperationV1,
@@ -3400,7 +3400,7 @@ test('Group C production session refuses an admitted hidden block name channel',
     (item) => item.entityKind === 'target' && item.serializedTargetOrdinal === 1
   )
   assert.ok(targetItem && targetItem.entityKind === 'target')
-  const planner = await GroupCProductionBatchPlannerV1.create({
+  const planner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -3418,7 +3418,7 @@ test('Group C production session refuses an admitted hidden block name channel',
   const activation = targetProspectiveNameActivationV1(
     planner.candidate,
     index,
-    requiredTargetChange.groupCTargetCoverage!.renamedSprite
+    requiredTargetChange.targetCoverage!.renamedSprite
   )
   const before = JSON.stringify(planner.candidate.json)
   const planned = planner.plan({
@@ -3426,7 +3426,7 @@ test('Group C production session refuses an admitted hidden block name channel',
     opId: 'reject-hidden-block-channel',
     target: handleRef(targetItem, 'target'),
     expectedName: targetExpectedStringIdentityV1(sprite.name),
-    newName: requiredTargetChange.groupCTargetCoverage!.renamedSprite,
+    newName: requiredTargetChange.targetCoverage!.renamedSprite,
     expectedInboundReferenceSetSha256: inbound.referenceSetSha256,
     newNameActivation: {
       expectedActivationSetSha256: activation.activationSetSha256,
@@ -3577,7 +3577,7 @@ test('Group C production apply and replay preserve an empty Stage-owned monitor'
     (item) => item.entityKind === 'target' && item.serializedTargetOrdinal === 1
   )
   assert.ok(targetItem && targetItem.entityKind === 'target')
-  const planner = await GroupCProductionBatchPlannerV1.create({
+  const planner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -3625,14 +3625,14 @@ test('Group C production apply and replay preserve an empty Stage-owned monitor'
   const activation = targetProspectiveNameActivationV1(
     planner.candidate,
     renameIndex,
-    requiredTargetChange.groupCTargetCoverage!.renamedSprite
+    requiredTargetChange.targetCoverage!.renamedSprite
   )
   planner.add({
     kind: 'target.renameSprite',
     opId: 'rename-empty-name-sprite',
     target: handleRef(targetItem, 'target'),
     expectedName: targetExpectedStringIdentityV1(''),
-    newName: requiredTargetChange.groupCTargetCoverage!.renamedSprite,
+    newName: requiredTargetChange.targetCoverage!.renamedSprite,
     expectedInboundReferenceSetSha256: renameInbound.referenceSetSha256,
     newNameActivation: {
       expectedActivationSetSha256: activation.activationSetSha256,
@@ -3918,7 +3918,7 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
       initialStage?.isStage &&
       typeof initialStage.tempo === 'number'
   )
-  const initialStagePlanner = await GroupCProductionBatchPlannerV1.create({
+  const initialStagePlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -3998,9 +3998,9 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
     !referencedScoreItem
   )
     assert.fail('target coverage inspection is incomplete')
-  const targetCoverage = requiredTargetChange.groupCTargetCoverage
+  const targetCoverage = requiredTargetChange.targetCoverage
   assert.ok(targetCoverage)
-  const planner = await GroupCProductionBatchPlannerV1.create({
+  const planner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -4409,7 +4409,7 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
   )
 
   const declarationInspection = await session.inspect({ issueHandles: true })
-  const declarationPlanner = await GroupCProductionBatchPlannerV1.create({
+  const declarationPlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -4417,7 +4417,7 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
     contract: bound,
     inspection: declarationInspection,
   })
-  const standaloneVariablePlanner = await GroupCProductionBatchPlannerV1.create(
+  const standaloneVariablePlanner = await ProductionBatchPlannerV1.create(
     {
       source: sourceProject,
       sourceBytes,
@@ -5114,7 +5114,7 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
       item.location.name.value === 'PowerSignal'
   )
   assert.ok(powerSignalItem)
-  const rerenamePlanner = await GroupCProductionBatchPlannerV1.create({
+  const rerenamePlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -5216,7 +5216,7 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
       item.location.name.value === GROUP_C_RENAMED_VARIABLE
   )
   assert.ok(batchVariableItem)
-  const valuePlanner = await GroupCProductionBatchPlannerV1.create({
+  const valuePlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -5300,7 +5300,7 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
       item.location.name.value === GROUP_C_RENAMED_LIST
   )
   assert.ok(batchListItem)
-  const laterListPlanner = await GroupCProductionBatchPlannerV1.create({
+  const laterListPlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -5399,7 +5399,7 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
       item.location.textSha256 === sourceCommentItem.location.textSha256
   )
   assert.ok(commentSprite && commentBlock && editableSourceComment)
-  const commentPlanner = await GroupCProductionBatchPlannerV1.create({
+  const commentPlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -5701,7 +5701,7 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
         attachedBlock?.semanticLocationSha256
   )
   assert.ok(attachedComment && attachedBlock)
-  const detachPlanner = await GroupCProductionBatchPlannerV1.create({
+  const detachPlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -5748,7 +5748,7 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
   )
   assert.ok(detachedByLineage)
   assert.ok(removableSourceComment)
-  const removeCommentPlanner = await GroupCProductionBatchPlannerV1.create({
+  const removeCommentPlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -5845,7 +5845,7 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
     (item) => item.entityKind === 'script'
   )
   assert.ok(scriptItem)
-  const scriptPlanner = await GroupCProductionBatchPlannerV1.create({
+  const scriptPlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -5903,7 +5903,7 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
     (item) => item.entityKind === 'target' && item.serializedTargetOrdinal === 1
   )
   assert.ok(currentSprite)
-  const staleHandlePlanner = await GroupCProductionBatchPlannerV1.create({
+  const staleHandlePlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -6061,7 +6061,7 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
   )
   assertAuthoritativeStateUnchanged()
 
-  const conflictPlanner = await GroupCProductionBatchPlannerV1.create({
+  const conflictPlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -6110,7 +6110,7 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
   )
   assertAuthoritativeStateUnchanged()
 
-  const unauthorizedPlanner = await GroupCProductionBatchPlannerV1.create({
+  const unauthorizedPlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -6163,7 +6163,7 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
       item.entityKind === 'comment' && item.attachmentStatus === 'detached'
   )
   assert.ok(topologyPeerBlock && detachedTopologyComment)
-  const topologyPlanner = await GroupCProductionBatchPlannerV1.create({
+  const topologyPlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -6384,7 +6384,7 @@ test('Group C production lifecycle applies, restores, and exactly replays every 
     (item) => item.entityKind === 'target' && item.entitySubtype === 'stage'
   )
   assert.ok(postRollbackStage)
-  const postRollbackPlanner = await GroupCProductionBatchPlannerV1.create({
+  const postRollbackPlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -6614,7 +6614,7 @@ test('Group C cumulative attribution rebases a survivor across earlier sprite re
     (item) => item.entityKind === 'target' && item.serializedTargetOrdinal === 2
   )
   assert.ok(workingTarget)
-  const editPlanner = await GroupCProductionBatchPlannerV1.create({
+  const editPlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -6674,7 +6674,7 @@ test('Group C cumulative attribution rebases a survivor across earlier sprite re
     (item) => item.entityKind === 'target' && item.serializedTargetOrdinal === 1
   )
   assert.ok(disposableTarget)
-  const removePlanner = await GroupCProductionBatchPlannerV1.create({
+  const removePlanner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -7149,7 +7149,7 @@ test('Group C candidate admission elevates an injected broken reference', async 
     (item) => item.entityKind === 'target' && item.entitySubtype === 'sprite'
   )
   assert.ok(spriteItem)
-  const planner = await GroupCProductionBatchPlannerV1.create({
+  const planner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -7202,10 +7202,10 @@ test('Group D production lifecycle authors a script, realizes fixed and dynamic 
   const sourceProject = await ProjectIR.fromSb3(fixture.sb3)
   const sourceBytes = await sourceProject.toSb3()
   const sourceArtifactSha256 = sha256Hex(sourceBytes)
-  const groupD = registeredGroupDContracts(sourceArtifactSha256, sourceProject)
+  const groupD = registeredScriptBlockContracts(sourceArtifactSha256, sourceProject)
   const store = createEditArtifactStoreHostAdapter(root)
   const dispatchers: readonly ProductionOperationDispatcherV1[] = [
-    ...groupDProductionOperationDispatchersV1(),
+    ...scriptBlockProductionOperationDispatchersV1(),
   ]
   const sessions = createEditSessionRegistryForExecutorV1(
     {
@@ -7265,7 +7265,7 @@ test('Group D production lifecycle authors a script, realizes fixed and dynamic 
   )
   const session = sessions.session(begun.sessionId)
   const inspection = await session.inspect({ issueHandles: true })
-  const planner = await GroupCProductionBatchPlannerV1.create({
+  const planner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -7388,7 +7388,7 @@ test('Group D production lifecycle authors a script, realizes fixed and dynamic 
 
 // the gate's procedure keeps one parameter type across all slots, so a reorder
 // leaves the placeholder run fixed & moves only ordinals
-function groupEProcedureSignature(
+function procedureFixtureSignature(
   order: readonly string[],
   warp: boolean
 ): Extract<
@@ -7413,7 +7413,7 @@ function groupEProcedureSignature(
 
 // the frozen signature-state & call-set digests the dispatcher enforces; the
 // test recomputes them so a formula change fails the gate rather than passing
-function groupESignatureStateSha256(
+function procedureFixtureSignatureStateSha256(
   project: ProjectIR,
   targetIndex: number,
   proccode: string
@@ -7432,7 +7432,7 @@ function groupESignatureStateSha256(
   })
 }
 
-function groupECallSetSha256(
+function procedureFixtureCallSetSha256(
   project: ProjectIR,
   targetIndex: number,
   proccode: string
@@ -7450,7 +7450,7 @@ function groupECallSetSha256(
   })
 }
 
-function groupEProcedureRef(
+function procedureFixtureRef(
   project: ProjectIR,
   targetIndex: number,
   proccode: string
@@ -7483,7 +7483,7 @@ function groupEProcedureRef(
   }
 }
 
-function groupEParameterRef(
+function procedureFixtureParameterRef(
   project: ProjectIR,
   targetIndex: number,
   proccode: string,
@@ -7525,7 +7525,7 @@ function groupEParameterRef(
 
 // the Group E gate needs a source that already owns a well-formed procedure w/
 // one call site & one body reporter; the shared fixture has none
-async function buildGroupEFixtureSb3(
+async function buildProcedureFixtureSb3(
   options: { readonly foreignCollision?: boolean } = {}
 ): Promise<Uint8Array>
 {
@@ -7695,7 +7695,7 @@ const GROUP_E_UPDATED_ORDER = Object.freeze([
   'delta',
 ])
 
-function registeredGroupEContracts(
+function registeredProcedureContracts(
   sourceArtifactSha256: string,
   sourceProject: ProjectIR
 ): {
@@ -7724,7 +7724,7 @@ function registeredGroupEContracts(
   )
   assert.ok(procedureEvidence)
   const parameterRef = (name: string) =>
-    groupEParameterRef(
+    procedureFixtureParameterRef(
       sourceProject,
       targetIndex,
       GROUP_E_SOURCE_PROCCODE,
@@ -7759,12 +7759,12 @@ function registeredGroupEContracts(
   const updateSignature = {
     kind: 'procedure.updateSignature',
     opId: 'group-e-update-signature',
-    procedure: groupEProcedureRef(
+    procedure: procedureFixtureRef(
       sourceProject,
       targetIndex,
       GROUP_E_SOURCE_PROCCODE
     ),
-    signature: groupEProcedureSignature(GROUP_E_UPDATED_ORDER, true),
+    signature: procedureFixtureSignature(GROUP_E_UPDATED_ORDER, true),
     parameterLineage: [
       {
         parameterLocalKey: 'charlie',
@@ -7813,12 +7813,12 @@ function registeredGroupEContracts(
         removedArguments: [],
       },
     ],
-    expectedSignatureSha256: groupESignatureStateSha256(
+    expectedSignatureSha256: procedureFixtureSignatureStateSha256(
       sourceProject,
       targetIndex,
       GROUP_E_SOURCE_PROCCODE
     ),
-    expectedCallSetSha256: groupECallSetSha256(
+    expectedCallSetSha256: procedureFixtureCallSetSha256(
       sourceProject,
       targetIndex,
       GROUP_E_SOURCE_PROCCODE
@@ -7849,8 +7849,8 @@ function registeredGroupEContracts(
       scopeKind: 'procedureOwnedClosure',
       procedure: procedureContractRef,
     },
-  } as GroupECreationBindingDescriptorV1
-  const deltaContentSha256 = groupECreationContentFingerprintForResultV1({
+  } as ProcedureCreationBindingDescriptorV1
+  const deltaContentSha256 = procedureCreationContentFingerprintForResultV1({
     project: sourceProject,
     targetIndex,
     operation: {
@@ -8000,11 +8000,11 @@ function registeredGroupEContracts(
   }
 }
 
-async function beginGroupESession(input: {
+async function beginProcedureSession(input: {
   readonly store: EditArtifactStorePort
   readonly sourceBytes: Uint8Array
   readonly sourceArtifactSha256: string
-  readonly groupE: ReturnType<typeof registeredGroupEContracts>
+  readonly groupE: ReturnType<typeof registeredProcedureContracts>
   readonly dispatchers: readonly ProductionOperationDispatcherV1[]
 }): Promise<EditSessionV1>
 {
@@ -8071,16 +8071,16 @@ async function beginGroupESession(input: {
 test('Group E production lifecycle reorders a signature, realizes a parameter future binding, and exactly replays', async (t) =>
 {
   const root = tempRoot(t)
-  const sourceBytes = await buildGroupEFixtureSb3()
+  const sourceBytes = await buildProcedureFixtureSb3()
   const sourceProject = await ProjectIR.fromSb3(sourceBytes)
   const sourceArtifactSha256 = sha256Hex(sourceBytes)
-  const groupE = registeredGroupEContracts(sourceArtifactSha256, sourceProject)
+  const groupE = registeredProcedureContracts(sourceArtifactSha256, sourceProject)
   const store = createEditArtifactStoreHostAdapter(root)
   const dispatchers: readonly ProductionOperationDispatcherV1[] = [
-    ...groupEProductionOperationDispatchersV1(),
-    ...groupFProductionOperationDispatchersV1(),
+    ...procedureProductionOperationDispatchersV1(),
+    ...mediaTargetProductionOperationDispatchersV1(),
   ]
-  const session = await beginGroupESession({
+  const session = await beginProcedureSession({
     store,
     sourceBytes,
     sourceArtifactSha256,
@@ -8088,7 +8088,7 @@ test('Group E production lifecycle reorders a signature, realizes a parameter fu
     dispatchers,
   })
   const inspection = await session.inspect({ issueHandles: true })
-  const planner = await GroupCProductionBatchPlannerV1.create({
+  const planner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -8278,23 +8278,23 @@ test('Group E production lifecycle reorders a signature, realizes a parameter fu
 test('Group E refuses an injected mid-transaction failure and leaves exact prior bytes, allocator, and quota', async (t) =>
 {
   const root = tempRoot(t)
-  const sourceBytes = await buildGroupEFixtureSb3()
+  const sourceBytes = await buildProcedureFixtureSb3()
   const sourceProject = await ProjectIR.fromSb3(sourceBytes)
   const sourceArtifactSha256 = sha256Hex(sourceBytes)
-  const groupE = registeredGroupEContracts(sourceArtifactSha256, sourceProject)
+  const groupE = registeredProcedureContracts(sourceArtifactSha256, sourceProject)
   const store = createEditArtifactStoreHostAdapter(root)
-  const session = await beginGroupESession({
+  const session = await beginProcedureSession({
     store,
     sourceBytes,
     sourceArtifactSha256,
     groupE,
     dispatchers: [
-      ...groupEProductionOperationDispatchersV1(),
-      ...groupFProductionOperationDispatchersV1(),
+      ...procedureProductionOperationDispatchersV1(),
+      ...mediaTargetProductionOperationDispatchersV1(),
     ],
   })
   const inspection = await session.inspect({ issueHandles: true })
-  const planner = await GroupCProductionBatchPlannerV1.create({
+  const planner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -8390,10 +8390,10 @@ test('Group E refuses an injected mid-transaction failure and leaves exact prior
 test('Group E refuses a signature rename that collides with a foreign proccode', async (t) =>
 {
   const root = tempRoot(t)
-  const sourceBytes = await buildGroupEFixtureSb3({ foreignCollision: true })
+  const sourceBytes = await buildProcedureFixtureSb3({ foreignCollision: true })
   const sourceProject = await ProjectIR.fromSb3(sourceBytes)
   const sourceArtifactSha256 = sha256Hex(sourceBytes)
-  const groupE = registeredGroupEContracts(sourceArtifactSha256, sourceProject)
+  const groupE = registeredProcedureContracts(sourceArtifactSha256, sourceProject)
   // the foreign procedure already claims the renamed proccode, so the external
   // prospective collision count is nonzero & the frozen literal zero refuses
   const collisions = prospectiveProcedureCollisionSetV1(
@@ -8410,18 +8410,18 @@ test('Group E refuses a signature rename that collides with a foreign proccode',
     true
   )
   const store = createEditArtifactStoreHostAdapter(root)
-  const session = await beginGroupESession({
+  const session = await beginProcedureSession({
     store,
     sourceBytes,
     sourceArtifactSha256,
     groupE,
     dispatchers: [
-      ...groupEProductionOperationDispatchersV1(),
-      ...groupFProductionOperationDispatchersV1(),
+      ...procedureProductionOperationDispatchersV1(),
+      ...mediaTargetProductionOperationDispatchersV1(),
     ],
   })
   const inspection = await session.inspect({ issueHandles: true })
-  const planner = await GroupCProductionBatchPlannerV1.create({
+  const planner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes,
     session,
@@ -8443,7 +8443,7 @@ test('Group E refuses a signature rename that collides with a foreign proccode',
 
 // an authoring-eligible truecolour-alpha PNG; the red channel is the only
 // varying byte so two calls differ in payload without differing in shape
-function groupFSolidPng(
+function mediaFixtureSolidPng(
   width: number,
   height: number,
   red: number,
@@ -8473,13 +8473,13 @@ function groupFSolidPng(
     0x0a,
     0x1a,
     0x0a,
-    ...groupFPngChunk('IHDR', header),
-    ...groupFPngChunk('IDAT', deflateSync(Uint8Array.from(raw))),
-    ...groupFPngChunk('IEND', new Uint8Array()),
+    ...pngChunk('IHDR', header),
+    ...pngChunk('IDAT', deflateSync(Uint8Array.from(raw))),
+    ...pngChunk('IEND', new Uint8Array()),
   ])
 }
 
-function groupFPcmWav(frameCount: number, seed: number): Uint8Array
+function mediaFixturePcmWav(frameCount: number, seed: number): Uint8Array
 {
   const dataBytes = frameCount * 2
   const bytes = new Uint8Array(44 + dataBytes)
@@ -8504,7 +8504,7 @@ function groupFPcmWav(frameCount: number, seed: number): Uint8Array
 const GROUP_F_ADDED_COSTUME = 'delta'
 const GROUP_F_SPRITE_INDEX = 1
 
-interface GroupFFixtureV1
+interface MediaTargetFixtureV1
 {
   readonly bytes: Uint8Array
   readonly sharedPng: Uint8Array
@@ -8516,24 +8516,24 @@ interface GroupFFixtureV1
 // alpha & bravo deliberately share one payload so a removal can prove the
 // shared-asset case; gamma is the sole claimant of its own payload & is the
 // costume the block name reference points at
-async function buildGroupFFixtureSb3(
+async function buildMediaTargetFixtureSb3(
   options: {
     readonly orderSensitiveBlock?: boolean
     readonly soleCostume?: boolean
     readonly selectedCostumeIndex?: number
   } = {}
-): Promise<GroupFFixtureV1>
+): Promise<MediaTargetFixtureV1>
 {
   const fixture = await buildFixtureSb3()
   const project = await ProjectIR.fromSb3(fixture.sb3)
   const json = project.toProjectJson()
-  const sharedPng = groupFSolidPng(4, 3, 0x10)
-  const gammaPng = groupFSolidPng(2, 2, 0x80)
-  const deltaPng = groupFSolidPng(6, 5, 0xc0)
-  const popWav = groupFPcmWav(400, 3)
-  const shared = await groupFCostumeIdentity(sharedPng)
-  const gamma = await groupFCostumeIdentity(gammaPng)
-  const pop = await groupFSoundIdentity(popWav)
+  const sharedPng = mediaFixtureSolidPng(4, 3, 0x10)
+  const gammaPng = mediaFixtureSolidPng(2, 2, 0x80)
+  const deltaPng = mediaFixtureSolidPng(6, 5, 0xc0)
+  const popWav = mediaFixturePcmWav(400, 3)
+  const shared = await mediaFixtureCostumeIdentity(sharedPng)
+  const gamma = await mediaFixtureCostumeIdentity(gammaPng)
+  const pop = await mediaFixtureSoundIdentity(popWav)
   const sprite = json.targets[GROUP_F_SPRITE_INDEX] as unknown as {
     costumes: unknown[]
     sounds: unknown[]
@@ -8626,7 +8626,7 @@ async function buildGroupFFixtureSb3(
 
 // the derived identity is a union over media kind; every costume assertion
 // below needs the costume arm, so the narrowing happens once here
-async function groupFCostumeIdentity(bytes: Uint8Array)
+async function mediaFixtureCostumeIdentity(bytes: Uint8Array)
 {
   const identity = await deriveAuthoringMediaIdentity(
     bytes,
@@ -8639,7 +8639,7 @@ async function groupFCostumeIdentity(bytes: Uint8Array)
   return identity
 }
 
-async function groupFSoundIdentity(bytes: Uint8Array)
+async function mediaFixtureSoundIdentity(bytes: Uint8Array)
 {
   const identity = await deriveAuthoringMediaIdentity(
     bytes,
@@ -8652,7 +8652,7 @@ async function groupFSoundIdentity(bytes: Uint8Array)
   return identity
 }
 
-function groupFCostumeEvidence(
+function mediaFixtureCostumeEvidence(
   project: ProjectIR,
   name: string
 ): MediaRecordEntityEvidenceV1
@@ -8667,21 +8667,21 @@ function groupFCostumeEvidence(
   return evidence
 }
 
-function groupFCostumeNames(project: ProjectIR): readonly string[]
+function mediaFixtureCostumeNames(project: ProjectIR): readonly string[]
 {
   return project.json.targets[GROUP_F_SPRITE_INDEX]!.costumes.map(
     (costume) => costume.name
   )
 }
 
-function groupFAssetBytes(project: ProjectIR, path: string): Uint8Array
+function mediaFixtureAssetBytes(project: ProjectIR, path: string): Uint8Array
 {
   const asset = project.assets.find((entry) => entry.path === path)
   assert.ok(asset, `archive entry ${path} is absent`)
   return asset.bytes
 }
 
-interface GroupFAdmittedAssetV1
+interface MediaTargetAdmittedAssetV1
 {
   readonly assetToken: string
   readonly expectedPayloadSha256: string
@@ -8690,7 +8690,7 @@ interface GroupFAdmittedAssetV1
 
 // both digests derive from the bytes alone, so a change contract can bind the
 // content it authorizes before a session exists to mint the token
-async function groupFCostumeDigests(bytes: Uint8Array): Promise<{
+async function mediaFixtureCostumeDigests(bytes: Uint8Array): Promise<{
   readonly expectedPayloadSha256: string
   readonly expectedMetadataSha256: string
 }>
@@ -8706,7 +8706,7 @@ async function groupFCostumeDigests(bytes: Uint8Array): Promise<{
   }
 }
 
-function groupFTargetRef(evidence: {
+function mediaFixtureTargetRef(evidence: {
   readonly semanticLocationSha256: string
   readonly semanticFingerprintSha256: string
   readonly contextFingerprintSha256: string
@@ -8726,7 +8726,7 @@ function groupFTargetRef(evidence: {
   } as const
 }
 
-interface GroupFContractsV1
+interface MediaTargetContractsV1
 {
   readonly registry: EditChangeContractRegistryV1
   readonly valid: BoundChangeContractV1
@@ -8747,11 +8747,11 @@ const GROUP_F_MEDIA_SCOPES = Object.freeze([
   { operationKind: 'media.setCurrentCostume', property: 'name' },
 ] as const)
 
-function registeredGroupFContracts(
+function registeredMediaTargetContracts(
   sourceArtifactSha256: string,
   sourceProject: ProjectIR,
-  asset: GroupFAdmittedAssetV1
-): GroupFContractsV1
+  asset: MediaTargetAdmittedAssetV1
+): MediaTargetContractsV1
 {
   const sprite = targetEntityEvidenceSetV1(sourceProject.json).find(
     (entry) => entry.targetKind === 'sprite'
@@ -8766,7 +8766,7 @@ function registeredGroupFContracts(
   const spriteTarget = sourceProject.json.targets[GROUP_F_SPRITE_INDEX]!
   const currentState = currentCostumeStateV1(spriteTarget)
   assert.notEqual(currentState.effectiveIndex, null)
-  const selected = groupFCostumeEvidence(
+  const selected = mediaFixtureCostumeEvidence(
     sourceProject,
     spriteTarget.costumes[currentState.effectiveIndex!]!.name
   )
@@ -8775,7 +8775,7 @@ function registeredGroupFContracts(
   const addCostume = {
     kind: 'media.addCostume',
     opId: 'group-f-add-costume',
-    target: groupFTargetRef(sprite),
+    target: mediaFixtureTargetRef(sprite),
     asset,
     name: GROUP_F_ADDED_COSTUME,
     order: 0,
@@ -8818,8 +8818,8 @@ function registeredGroupFContracts(
       scopeKind: 'targetAndOwnedDescendants',
       target: spriteRef,
     },
-  } as GroupFCreationBindingDescriptorV1
-  const createdContentSha256 = groupFCreationContentFingerprintForResultV1({
+  } as MediaTargetCreationBindingDescriptorV1
+  const createdContentSha256 = mediaTargetCreationContentFingerprintForResultV1({
     project: sourceProject,
     targetIndex: GROUP_F_SPRITE_INDEX,
     operation: {
@@ -8959,7 +8959,7 @@ async function beginGroupFSession(input: {
   readonly store: EditArtifactStorePort
   readonly sourceBytes: Uint8Array
   readonly sourceArtifactSha256: string
-  readonly groupF: GroupFContractsV1
+  readonly groupF: MediaTargetContractsV1
   readonly executor: EditTransactionExecutorV1
   readonly policy?: Parameters<
     typeof createEditSessionRegistryForExecutorV1
@@ -9027,14 +9027,14 @@ async function beginGroupFSession(input: {
   return sessions.session(begun.sessionId)
 }
 
-interface GroupFHarnessV1
+interface MediaTargetHarnessV1
 {
-  readonly fixture: GroupFFixtureV1
+  readonly fixture: MediaTargetFixtureV1
   readonly sourceProject: ProjectIR
-  readonly groupF: GroupFContractsV1
+  readonly groupF: MediaTargetContractsV1
   readonly admitted: EditAssetAdmitDomainResultV1
-  readonly asset: GroupFAdmittedAssetV1
-  readonly planner: GroupCProductionBatchPlannerV1
+  readonly asset: MediaTargetAdmittedAssetV1
+  readonly planner: ProductionBatchPlannerV1
   readonly session: EditSessionV1
   readonly store: EditArtifactStorePort
 }
@@ -9049,16 +9049,16 @@ async function beginGroupFHarness(
     readonly soleCostume?: boolean
     readonly selectedCostumeIndex?: number
   } = {}
-): Promise<GroupFHarnessV1>
+): Promise<MediaTargetHarnessV1>
 {
   const root = tempRoot(t)
-  const fixture = await buildGroupFFixtureSb3(options)
+  const fixture = await buildMediaTargetFixtureSb3(options)
   const sourceProject = await ProjectIR.fromSb3(fixture.bytes)
   const sourceArtifactSha256 = sha256Hex(fixture.bytes)
   // the contract binds the created content by payload & metadata digest, both
   // of which come from the bytes, so it registers before any token is minted
-  const digests = await groupFCostumeDigests(fixture.deltaPng)
-  const groupF = registeredGroupFContracts(
+  const digests = await mediaFixtureCostumeDigests(fixture.deltaPng)
+  const groupF = registeredMediaTargetContracts(
     sourceArtifactSha256,
     sourceProject,
     {
@@ -9067,7 +9067,7 @@ async function beginGroupFHarness(
     }
   )
   const store = createEditArtifactStoreHostAdapter(root)
-  const dispatchers = groupFProductionOperationDispatchersV1()
+  const dispatchers = mediaTargetProductionOperationDispatchersV1()
   const session = await beginGroupFSession({
     store,
     sourceBytes: fixture.bytes,
@@ -9093,7 +9093,7 @@ async function beginGroupFHarness(
     ...digests,
   }
   const inspection = await session.inspect({ issueHandles: true })
-  const planner = await GroupCProductionBatchPlannerV1.create({
+  const planner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes: fixture.bytes,
     session,
@@ -9122,11 +9122,11 @@ async function beginGroupFHarness(
 
 test('Group F artifact refusal leaves asset admission provisional and the session active', async (t) =>
 {
-  const fixture = await buildGroupFFixtureSb3()
+  const fixture = await buildMediaTargetFixtureSb3()
   const sourceProject = await ProjectIR.fromSb3(fixture.bytes)
   const sourceArtifactSha256 = sha256Hex(fixture.bytes)
-  const digests = await groupFCostumeDigests(fixture.deltaPng)
-  const groupF = registeredGroupFContracts(
+  const digests = await mediaFixtureCostumeDigests(fixture.deltaPng)
+  const groupF = registeredMediaTargetContracts(
     sourceArtifactSha256,
     sourceProject,
     {
@@ -9134,7 +9134,7 @@ test('Group F artifact refusal leaves asset admission provisional and the sessio
       ...digests,
     }
   )
-  const dispatchers = groupFProductionOperationDispatchersV1()
+  const dispatchers = mediaTargetProductionOperationDispatchersV1()
   const calibrationStore = createEditArtifactStoreHostAdapter(tempRoot(t))
   const calibration = await beginGroupFSession({
     store: calibrationStore,
@@ -9211,7 +9211,7 @@ test('Group F media authoring adds a costume, realizes its future binding, prese
   const harness = await beginGroupFHarness(t)
   const planned = harness.planner.add(harness.groupF.addCostume)
   assert.equal(planned.kind, 'media.addCostume')
-  const deltaIdentity = await groupFCostumeIdentity(harness.fixture.deltaPng)
+  const deltaIdentity = await mediaFixtureCostumeIdentity(harness.fixture.deltaPng)
   assert.deepEqual(harness.planner.assetMaterializationUsage, {
     schemaVersion: 1,
     authoredCostumeAssetTokens: [harness.admitted.assetToken],
@@ -9223,7 +9223,7 @@ test('Group F media authoring adds a costume, realizes its future binding, prese
   // the record landed at the requested ordinal & the selection kept naming the
   // same costume across the insert that shifted it
   assert.deepEqual(
-    [...groupFCostumeNames(candidate)],
+    [...mediaFixtureCostumeNames(candidate)],
     [GROUP_F_ADDED_COSTUME, 'alpha', 'bravo', 'gamma']
   )
   const target = candidate.json.targets[GROUP_F_SPRITE_INDEX]!
@@ -9240,13 +9240,13 @@ test('Group F media authoring adds a costume, realizes its future binding, prese
   // the admitted payload landed byte-exact & no payload the source already
   // carried was rewritten
   assert.deepEqual(
-    [...groupFAssetBytes(candidate, deltaIdentity.md5ext)],
+    [...mediaFixtureAssetBytes(candidate, deltaIdentity.md5ext)],
     [...harness.fixture.deltaPng]
   )
   for (const priorAsset of harness.sourceProject.assets)
   {
     assert.deepEqual(
-      [...groupFAssetBytes(candidate, priorAsset.path)],
+      [...mediaFixtureAssetBytes(candidate, priorAsset.path)],
       [...priorAsset.bytes],
       `${priorAsset.path} is not byte-exact after the media add`
     )
@@ -9276,11 +9276,11 @@ test('Group F media authoring adds a costume, realizes its future binding, prese
   // the packed candidate readmits & still carries the added record
   const reopened = await ProjectIR.fromSb3(packedOnce)
   assert.deepEqual(
-    [...groupFCostumeNames(reopened)],
+    [...mediaFixtureCostumeNames(reopened)],
     [GROUP_F_ADDED_COSTUME, 'alpha', 'bravo', 'gamma']
   )
   assert.deepEqual(
-    [...groupFAssetBytes(reopened, deltaIdentity.md5ext)],
+    [...mediaFixtureAssetBytes(reopened, deltaIdentity.md5ext)],
     [...harness.fixture.deltaPng]
   )
 })
@@ -9288,17 +9288,17 @@ test('Group F media authoring adds a costume, realizes its future binding, prese
 // a media reference always names a record as it stood at batch start, so the
 // ref comes from the pre-batch project while every state-dependent expectation
 // comes from the running candidate
-function groupFCurrentSelection(preBatch: ProjectIR, candidate: ProjectIR)
+function mediaFixtureCurrentSelection(preBatch: ProjectIR, candidate: ProjectIR)
 {
   const target = candidate.json.targets[GROUP_F_SPRITE_INDEX]!
   const state = currentCostumeStateV1(target)
   assert.notEqual(state.effectiveIndex, null)
   const name = target.costumes[state.effectiveIndex!]!.name
-  const selected = groupFCostumeEvidence(candidate, name)
+  const selected = mediaFixtureCostumeEvidence(candidate, name)
   return {
     selectionState: 'selected',
     expectedEffectiveCurrentCostume: exactMediaRefV1(
-      groupFCostumeEvidence(preBatch, name)
+      mediaFixtureCostumeEvidence(preBatch, name)
     ),
     expectedEffectiveCurrentCostumeFingerprint:
       selected.semanticFingerprintSha256,
@@ -9307,7 +9307,7 @@ function groupFCurrentSelection(preBatch: ProjectIR, candidate: ProjectIR)
   } as const
 }
 
-function groupFRemoveCostumeOp(
+function mediaFixtureRemoveCostumeOp(
   preBatch: ProjectIR,
   candidate: ProjectIR,
   opId: string,
@@ -9320,13 +9320,13 @@ function groupFRemoveCostumeOp(
       }
 ): UnplannedSemanticEditOperationV1
 {
-  const current = groupFCostumeEvidence(candidate, name)
+  const current = mediaFixtureCostumeEvidence(candidate, name)
   const target = candidate.json.targets[GROUP_F_SPRITE_INDEX]!
   return {
     kind: 'media.removeCostume',
     opId,
-    media: exactMediaRefV1(groupFCostumeEvidence(preBatch, name)),
-    currentSelection: groupFCurrentSelection(preBatch, candidate),
+    media: exactMediaRefV1(mediaFixtureCostumeEvidence(preBatch, name)),
+    currentSelection: mediaFixtureCurrentSelection(preBatch, candidate),
     expectedCostumeCount: target.costumes.length,
     expectedCurrentCostume: false,
     expectedFinalCurrentCostumeState,
@@ -9342,7 +9342,7 @@ function groupFRemoveCostumeOp(
   } as UnplannedSemanticEditOperationV1
 }
 
-function groupFReorderCostumeOp(
+function mediaFixtureReorderCostumeOp(
   preBatch: ProjectIR,
   candidate: ProjectIR,
   opId: string,
@@ -9359,9 +9359,9 @@ function groupFReorderCostumeOp(
   return {
     kind: 'media.reorderCostume',
     opId,
-    media: exactMediaRefV1(groupFCostumeEvidence(preBatch, name)),
-    currentSelection: groupFCurrentSelection(preBatch, candidate),
-    expectedIndex: groupFCostumeEvidence(candidate, name).ordinal,
+    media: exactMediaRefV1(mediaFixtureCostumeEvidence(preBatch, name)),
+    currentSelection: mediaFixtureCurrentSelection(preBatch, candidate),
+    expectedIndex: mediaFixtureCostumeEvidence(candidate, name).ordinal,
     newIndex,
     expectedMediaOrderSha256: mediaOrderEvidenceV1(
       candidate.json.targets[GROUP_F_SPRITE_INDEX]!,
@@ -9371,7 +9371,7 @@ function groupFReorderCostumeOp(
   } as UnplannedSemanticEditOperationV1
 }
 
-function groupFSetCurrentCostumeOp(
+function mediaFixtureSetCurrentCostumeOp(
   preBatch: ProjectIR,
   candidate: ProjectIR,
   opId: string,
@@ -9385,10 +9385,10 @@ function groupFSetCurrentCostumeOp(
   return {
     kind: 'media.setCurrentCostume',
     opId,
-    target: groupFTargetRef(sprite),
-    media: exactMediaRefV1(groupFCostumeEvidence(preBatch, name)),
-    currentSelection: groupFCurrentSelection(preBatch, candidate),
-    expectedFinalCurrentCostumeIndex: groupFCostumeEvidence(candidate, name)
+    target: mediaFixtureTargetRef(sprite),
+    media: exactMediaRefV1(mediaFixtureCostumeEvidence(preBatch, name)),
+    currentSelection: mediaFixtureCurrentSelection(preBatch, candidate),
+    expectedFinalCurrentCostumeIndex: mediaFixtureCostumeEvidence(candidate, name)
       .ordinal,
   } as UnplannedSemanticEditOperationV1
 }
@@ -9398,7 +9398,7 @@ test('Group F reconciles the current costume across add, reorder, and remove, an
   // (a) a reorder moves the selected record itself, so the raw index follows it
   const reordering = await beginGroupFHarness(t)
   reordering.planner.add(
-    groupFReorderCostumeOp(
+    mediaFixtureReorderCostumeOp(
       reordering.sourceProject,
       reordering.planner.candidate,
       'group-f-reorder-alpha',
@@ -9409,7 +9409,7 @@ test('Group F reconciles the current costume across add, reorder, and remove, an
   )
   const reordered = reordering.planner.candidate
   assert.deepEqual(
-    [...groupFCostumeNames(reordered)],
+    [...mediaFixtureCostumeNames(reordered)],
     ['bravo', 'gamma', 'alpha']
   )
   const reorderedTarget = reordered.json.targets[GROUP_F_SPRITE_INDEX]!
@@ -9421,14 +9421,14 @@ test('Group F reconciles the current costume across add, reorder, and remove, an
   // stays referenced & retained because V1 never collects
   const removing = await beginGroupFHarness(t)
   const beforeRemoval = removing.planner.candidate
-  const sharedPath = groupFCostumeEvidence(beforeRemoval, 'alpha').archivePath
+  const sharedPath = mediaFixtureCostumeEvidence(beforeRemoval, 'alpha').archivePath
   assert.equal(
-    groupFCostumeEvidence(beforeRemoval, 'bravo').archivePath,
+    mediaFixtureCostumeEvidence(beforeRemoval, 'bravo').archivePath,
     sharedPath,
     'the fixture no longer shares one payload between alpha and bravo'
   )
   removing.planner.add(
-    groupFRemoveCostumeOp(
+    mediaFixtureRemoveCostumeOp(
       removing.sourceProject,
       beforeRemoval,
       'group-f-remove-alpha',
@@ -9437,7 +9437,7 @@ test('Group F reconciles the current costume across add, reorder, and remove, an
     )
   )
   const removed = removing.planner.candidate
-  assert.deepEqual([...groupFCostumeNames(removed)], ['bravo', 'gamma'])
+  assert.deepEqual([...mediaFixtureCostumeNames(removed)], ['bravo', 'gamma'])
   const removedTarget = removed.json.targets[GROUP_F_SPRITE_INDEX]!
   assert.equal(removedTarget.currentCostume, 0)
   assert.equal(removedTarget.costumes[0]!.name, 'bravo')
@@ -9449,15 +9449,15 @@ test('Group F reconciles the current costume across add, reorder, and remove, an
   )
   assert.deepEqual([...removedReachability.protectedArchivePaths], [])
   assert.deepEqual(
-    [...groupFAssetBytes(removed, sharedPath)],
-    [...groupFAssetBytes(beforeRemoval, sharedPath)]
+    [...mediaFixtureAssetBytes(removed, sharedPath)],
+    [...mediaFixtureAssetBytes(beforeRemoval, sharedPath)]
   )
 
   // (c) an explicit selection change writes the raw index of the named record
   // rather than reconciling anything
   const selecting = await beginGroupFHarness(t)
   selecting.planner.add(
-    groupFSetCurrentCostumeOp(
+    mediaFixtureSetCurrentCostumeOp(
       selecting.sourceProject,
       selecting.planner.candidate,
       'group-f-select-gamma',
@@ -9469,7 +9469,7 @@ test('Group F reconciles the current costume across add, reorder, and remove, an
   assert.equal(selectedTarget.currentCostume, 2)
   assert.equal(selectedTarget.costumes[2]!.name, 'gamma')
   assert.deepEqual(
-    [...groupFCostumeNames(selecting.planner.candidate)],
+    [...mediaFixtureCostumeNames(selecting.planner.candidate)],
     ['alpha', 'bravo', 'gamma'],
     'a selection change moved a record'
   )
@@ -9480,7 +9480,7 @@ test('Group F reconciles the current costume across add, reorder, and remove, an
   assert.throws(
     () =>
       protectedRemoval.planner.add(
-        groupFRemoveCostumeOp(
+        mediaFixtureRemoveCostumeOp(
           protectedRemoval.sourceProject,
           protectedRemoval.planner.candidate,
           'group-f-remove-current',
@@ -9496,8 +9496,8 @@ test('Group F reconciles the current costume across add, reorder, and remove, an
 test('Group F separates admission from committed materialization use and refuses mismatched or nonauthorable media', async (t) =>
 {
   void t
-  const png = groupFSolidPng(4, 3, 0x10)
-  const identity = await groupFCostumeIdentity(png)
+  const png = mediaFixtureSolidPng(4, 3, 0x10)
+  const identity = await mediaFixtureCostumeIdentity(png)
   const metadataSha256 = editCanonicalSha256V1(identity)
   const store = new SessionAssetStoreV1({
     sessionSalt: new Uint8Array(32).fill(0x5a),
@@ -9578,7 +9578,7 @@ test('Group F separates admission from committed materialization use and refuses
   )
   // sourceMedia reuse is path-free, not a format bypass: an interlaced PNG is
   // preservable but never authoring eligible, so reuse refuses it too
-  const interlaced = groupFSolidPng(4, 3, 0x10, true)
+  const interlaced = mediaFixtureSolidPng(4, 3, 0x10, true)
   const interlacedSha256 = sha256Hex(interlaced)
   await assert.rejects(
     store.admitSourceMedia({
@@ -9690,7 +9690,7 @@ test('Group F propagates a costume rename to its exact block reference and refus
   // (a) gamma is named by one costume-menu field; the rename must rewrite it
   const renaming = await beginGroupFHarness(t)
   const beforeRename = renaming.planner.candidate
-  const gammaBefore = groupFCostumeEvidence(beforeRename, 'gamma')
+  const gammaBefore = mediaFixtureCostumeEvidence(beforeRename, 'gamma')
   const referencesBefore = mediaReferenceEvidenceV1(beforeRename, {
     targetIndex: GROUP_F_SPRITE_INDEX,
     mediaKind: 'costume',
@@ -9719,7 +9719,7 @@ test('Group F propagates a costume rename to its exact block reference and refus
   } as UnplannedSemanticEditOperationV1)
   const renamed = renaming.planner.candidate
   assert.deepEqual(
-    [...groupFCostumeNames(renamed)],
+    [...mediaFixtureCostumeNames(renamed)],
     ['alpha', 'bravo', 'renamed']
   )
   const menuField = (
@@ -9755,7 +9755,7 @@ test('Group F propagates a costume rename to its exact block reference and refus
   assert.throws(
     () =>
       ordered.planner.add(
-        groupFReorderCostumeOp(
+        mediaFixtureReorderCostumeOp(
           ordered.sourceProject,
           ordered.planner.candidate,
           'group-f-reorder-under-order-reference',
@@ -9867,7 +9867,7 @@ test('Group F admits a costume through the session, applies it, and exactly repl
   )
   assert.equal(
     afterApplyAdmission.ledger.authoredCostumeReferencePixels,
-    (await groupFCostumeIdentity(harness.fixture.deltaPng)).canvasPixels
+    (await mediaFixtureCostumeIdentity(harness.fixture.deltaPng)).canvasPixels
   )
 
   // (c) the committed revision carries the costume & its payload byte-exact
@@ -9876,12 +9876,12 @@ test('Group F admits a costume through the session, applies it, and exactly repl
     await harness.store.readImmutable(accepted.candidateKey)
   )
   assert.deepEqual(
-    [...groupFCostumeNames(committed)],
+    [...mediaFixtureCostumeNames(committed)],
     [GROUP_F_ADDED_COSTUME, 'alpha', 'bravo', 'gamma']
   )
-  const identity = await groupFCostumeIdentity(harness.fixture.deltaPng)
+  const identity = await mediaFixtureCostumeIdentity(harness.fixture.deltaPng)
   assert.deepEqual(
-    [...groupFAssetBytes(committed, identity.md5ext)],
+    [...mediaFixtureAssetBytes(committed, identity.md5ext)],
     [...harness.fixture.deltaPng],
     'the committed archive does not carry the admitted payload byte-exact'
   )
@@ -9905,7 +9905,7 @@ test('Group F admits a costume through the session, applies it, and exactly repl
     sessionKey: session.manifest.sessionKey,
     boundChangeContract: harness.groupF.valid,
     transactionExecutor: new ProductionTransactionExecutorV1(
-      groupFProductionOperationDispatchersV1()
+      mediaTargetProductionOperationDispatchersV1()
     ),
   })
   assert.deepEqual(replay.failures, [])
@@ -9923,14 +9923,14 @@ test('Group F applies removeCostume then setCurrentCostume in one session batch 
   const session = harness.session
   const preBatch = harness.sourceProject
   assert.deepEqual(
-    [...groupFCostumeNames(preBatch)],
+    [...mediaFixtureCostumeNames(preBatch)],
     ['alpha', 'bravo', 'gamma']
   )
   assert.equal(preBatch.json.targets[GROUP_F_SPRITE_INDEX]!.currentCostume, 2)
-  assert.equal(groupFCostumeEvidence(preBatch, 'bravo').ordinal, 1)
+  assert.equal(mediaFixtureCostumeEvidence(preBatch, 'bravo').ordinal, 1)
 
   harness.planner.add(
-    groupFRemoveCostumeOp(
+    mediaFixtureRemoveCostumeOp(
       preBatch,
       harness.planner.candidate,
       'session-remove-alpha',
@@ -9941,17 +9941,17 @@ test('Group F applies removeCostume then setCurrentCostume in one session batch 
   // the removal shifted bravo down, so the pre-batch ordinal the next operation
   // carries no longer addresses it
   assert.equal(
-    groupFCostumeEvidence(harness.planner.candidate, 'bravo').ordinal,
+    mediaFixtureCostumeEvidence(harness.planner.candidate, 'bravo').ordinal,
     0,
     'the running candidate did not shift bravo down after the removal'
   )
   assert.equal(
-    groupFCostumeEvidence(harness.planner.candidate, 'gamma').ordinal,
+    mediaFixtureCostumeEvidence(harness.planner.candidate, 'gamma').ordinal,
     1,
     'a pre-batch ordinal of 1 would now select gamma rather than bravo'
   )
   harness.planner.add(
-    groupFSetCurrentCostumeOp(
+    mediaFixtureSetCurrentCostumeOp(
       preBatch,
       harness.planner.candidate,
       'session-select-bravo',
@@ -9987,7 +9987,7 @@ test('Group F applies removeCostume then setCurrentCostume in one session batch 
   const committed = await ProjectIR.fromSb3(
     await harness.store.readImmutable(session.revisions.at(-1)!.candidateKey)
   )
-  assert.deepEqual([...groupFCostumeNames(committed)], ['bravo', 'gamma'])
+  assert.deepEqual([...mediaFixtureCostumeNames(committed)], ['bravo', 'gamma'])
   const committedTarget = committed.json.targets[GROUP_F_SPRITE_INDEX]!
   // the selection names bravo: a stale pre-batch ordinal would have left gamma
   // selected at index 1
@@ -10009,7 +10009,7 @@ test('Group F applies removeCostume then setCurrentCostume in one session batch 
     sessionKey: session.manifest.sessionKey,
     boundChangeContract: harness.groupF.valid,
     transactionExecutor: new ProductionTransactionExecutorV1(
-      groupFProductionOperationDispatchersV1()
+      mediaTargetProductionOperationDispatchersV1()
     ),
   })
   assert.deepEqual(replay.failures, [])
@@ -10035,7 +10035,7 @@ const GROUP_F_CREATED_SPRITE_PROPERTIES = Object.freeze({
 function registeredGroupFCreationContracts(
   sourceArtifactSha256: string,
   sourceProject: ProjectIR,
-  asset: GroupFAdmittedAssetV1
+  asset: MediaTargetAdmittedAssetV1
 ): {
   readonly registry: EditChangeContractRegistryV1
   readonly valid: BoundChangeContractV1
@@ -10084,7 +10084,7 @@ function registeredGroupFCreationContracts(
       scopeKind: 'projectEntityCollection',
       collection: 'targets',
     },
-  } as GroupFCreationBindingDescriptorV1
+  } as MediaTargetCreationBindingDescriptorV1
   const costumeDescriptor = {
     bindingKind: 'future',
     entityKind: 'media',
@@ -10100,11 +10100,11 @@ function registeredGroupFCreationContracts(
       scopeKind: 'targetAndOwnedDescendants',
       target: spriteRef,
     },
-  } as GroupFCreationBindingDescriptorV1
+  } as MediaTargetCreationBindingDescriptorV1
   // the created sprite is appended, so its content fingerprint is projected at
   // the index the append will take
   const createdTargetIndex = sourceProject.json.targets.length
-  const targetContentSha256 = groupFCreationContentFingerprintForResultV1({
+  const targetContentSha256 = mediaTargetCreationContentFingerprintForResultV1({
     project: sourceProject,
     targetIndex: createdTargetIndex,
     operation: {
@@ -10115,8 +10115,8 @@ function registeredGroupFCreationContracts(
     resultRole: { roleKind: 'fixed', name: 'target' },
     resolveContractEntityRef: () => spriteRef,
   })
-  const addCostume = groupFCreatedSpriteCostumeOp(asset, 'group-f-add-sprite')
-  const costumeContentSha256 = groupFCreationContentFingerprintForResultV1({
+  const addCostume = mediaFixtureCreatedSpriteCostumeOp(asset, 'group-f-add-sprite')
+  const costumeContentSha256 = mediaTargetCreationContentFingerprintForResultV1({
     project: sourceProject,
     targetIndex: createdTargetIndex,
     operation: {
@@ -10267,8 +10267,8 @@ function registeredGroupFCreationContracts(
 // the order & activation digests describe the created sprite's still-empty
 // costume collection, so they are supplied from the running candidate. neither
 // feeds the creation-content fingerprint, which reads only authored fields
-function groupFCreatedSpriteCostumeOp(
-  asset: GroupFAdmittedAssetV1,
+function mediaFixtureCreatedSpriteCostumeOp(
+  asset: MediaTargetAdmittedAssetV1,
   creatorOpId: string,
   digests: {
     readonly orderSha256: string
@@ -10309,22 +10309,22 @@ function groupFCreatedSpriteCostumeOp(
 test('Group F creates a sprite and its first costume atomically in one session batch, selecting costume 0', async (t) =>
 {
   const root = tempRoot(t)
-  const fixture = await buildGroupFFixtureSb3()
+  const fixture = await buildMediaTargetFixtureSb3()
   const sourceProject = await ProjectIR.fromSb3(fixture.bytes)
   const sourceArtifactSha256 = sha256Hex(fixture.bytes)
-  const digests = await groupFCostumeDigests(fixture.deltaPng)
+  const digests = await mediaFixtureCostumeDigests(fixture.deltaPng)
   const creation = registeredGroupFCreationContracts(
     sourceArtifactSha256,
     sourceProject,
     { assetToken: 'asset-unadmitted-placeholder', ...digests }
   )
   const store = createEditArtifactStoreHostAdapter(root)
-  const dispatchers = groupFProductionOperationDispatchersV1()
+  const dispatchers = mediaTargetProductionOperationDispatchersV1()
   const session = await beginGroupFSession({
     store,
     sourceBytes: fixture.bytes,
     sourceArtifactSha256,
-    groupF: creation as unknown as GroupFContractsV1,
+    groupF: creation as unknown as MediaTargetContractsV1,
     executor: new ProductionTransactionExecutorV1(dispatchers),
   })
   const admitted = await session.admitAsset(
@@ -10341,7 +10341,7 @@ test('Group F creates a sprite and its first costume atomically in one session b
     invocation(2)
   )
   const inspection = await session.inspect({ issueHandles: true })
-  const planner = await GroupCProductionBatchPlannerV1.create({
+  const planner = await ProductionBatchPlannerV1.create({
     source: sourceProject,
     sourceBytes: fixture.bytes,
     session,
@@ -10366,7 +10366,7 @@ test('Group F creates a sprite and its first costume atomically in one session b
   )
 
   planner.add(
-    groupFCreatedSpriteCostumeOp(
+    mediaFixtureCreatedSpriteCostumeOp(
       { assetToken: admitted.assetToken, ...digests },
       'group-f-add-sprite',
       {
@@ -10425,10 +10425,10 @@ test('Group F creates a sprite and its first costume atomically in one session b
   const committedSelection = currentCostumeStateV1(committedSprite)
   assert.deepEqual(committedSelection.rawState, { state: 'missing' })
   assert.equal(committedSelection.effectiveIndex, 0)
-  const identity = await groupFCostumeIdentity(fixture.deltaPng)
+  const identity = await mediaFixtureCostumeIdentity(fixture.deltaPng)
   assert.equal(committedSprite.costumes[0]!.md5ext, identity.md5ext)
   assert.deepEqual(
-    [...groupFAssetBytes(committed, identity.md5ext)],
+    [...mediaFixtureAssetBytes(committed, identity.md5ext)],
     [...fixture.deltaPng]
   )
   // every sprite the fixture already carried is untouched
@@ -10454,7 +10454,7 @@ test('Group F creates a sprite and its first costume atomically in one session b
     sessionKey: session.manifest.sessionKey,
     boundChangeContract: creation.valid,
     transactionExecutor: new ProductionTransactionExecutorV1(
-      groupFProductionOperationDispatchersV1()
+      mediaTargetProductionOperationDispatchersV1()
     ),
   })
   assert.deepEqual(replay.failures, [])
@@ -10471,7 +10471,7 @@ test('Group F refuses removing the final costume and leaves repeated admissions 
   const harness = await beginGroupFHarness(t, { soleCostume: true })
   const session = harness.session
   assert.deepEqual(
-    [...groupFCostumeNames(harness.planner.candidate)],
+    [...mediaFixtureCostumeNames(harness.planner.candidate)],
     ['alpha']
   )
   // the sole costume is also still named by a block field, so the refusal
@@ -10482,7 +10482,7 @@ test('Group F refuses removing the final costume and leaves repeated admissions 
     ordinal: 0,
   })
   assert.equal(references.directReferenceCount, 1)
-  const removal = groupFRemoveCostumeOp(
+  const removal = mediaFixtureRemoveCostumeOp(
     harness.sourceProject,
     harness.planner.candidate,
     'session-remove-last-costume',

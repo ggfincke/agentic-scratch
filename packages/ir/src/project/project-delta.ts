@@ -22,7 +22,7 @@ import {
   ownRecordEntries,
   ownRecordKeys,
   ownRecordValue,
-} from '../edit/own-record.js'
+} from '../edit/support/own-record.js'
 import {
   PROJECT_ORDERED_HEAD_VERSION_V1,
   OrderedCorrespondenceError,
@@ -34,20 +34,20 @@ import {
   type ProjectOrderedCorrespondenceEvidence,
   type ProjectOrderedHeadEvidence,
   type SemanticLineageHeadEvidence,
-} from '../edit/correspondence.js'
+} from '../edit/lineage/correspondence.js'
 import {
   activeOrderedSemanticLineages,
   semanticLineageById,
   validateSemanticLineageSnapshot,
   type SemanticLineageRecord,
   type SemanticLineageSnapshot,
-} from '../edit/lineage.js'
+} from '../edit/lineage/lineage.js'
 import {
   DEFAULT_STRICT_PROCEDURE_MUTATION_LIMITS,
   parseStrictEditMutationArray,
   parseStrictEditProcedureMutation,
   procedurePlaceholderKinds,
-} from '../edit/procedure-mutation.js'
+} from '../edit/semantic-index/procedure-mutation.js'
 import {
   jsonPointerPart as pointerPart,
   KNOWN_BLOCK_FIELDS,

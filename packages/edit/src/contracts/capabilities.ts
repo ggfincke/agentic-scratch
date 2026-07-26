@@ -46,7 +46,7 @@ interface EditCapabilityProfileInputV1 extends EditCapabilityProjectAssessmentV1
   readonly pinnedScratchRuntimeSourceSha256: string
 }
 
-interface GroupCCapabilityProfileInputV1 extends EditCapabilityProfileInputV1
+interface TargetCapabilityProfileInputV1 extends EditCapabilityProfileInputV1
 {
   readonly operationCapabilityAssessmentSha256: string
   readonly familyAvailability: Readonly<
@@ -54,7 +54,7 @@ interface GroupCCapabilityProfileInputV1 extends EditCapabilityProfileInputV1
   >
 }
 
-interface GroupDCapabilityProfileInputV1 extends GroupCCapabilityProfileInputV1
+interface ScriptBlockCapabilityProfileInputV1 extends TargetCapabilityProfileInputV1
 {
   readonly familyAvailability: Readonly<
     Record<'target' | 'declaration' | 'script' | 'block' | 'comment', boolean>
@@ -63,7 +63,7 @@ interface GroupDCapabilityProfileInputV1 extends GroupCCapabilityProfileInputV1
 
 // procedure carries a single aggregate boolean over all four operation kinds;
 // plan step E8 forbids advertising the family one operation at a time
-interface GroupECapabilityProfileInputV1 extends GroupDCapabilityProfileInputV1
+interface ProcedureCapabilityProfileInputV1 extends ScriptBlockCapabilityProfileInputV1
 {
   readonly familyAvailability: Readonly<
     Record<
@@ -75,7 +75,7 @@ interface GroupECapabilityProfileInputV1 extends GroupDCapabilityProfileInputV1
 
 // media carries a single aggregate boolean over all eleven operation kinds;
 // plan step F6 forbids advertising the family one operation at a time
-export interface GroupFCapabilityProfileInputV1 extends GroupECapabilityProfileInputV1
+export interface MediaTargetCapabilityProfileInputV1 extends ProcedureCapabilityProfileInputV1
 {
   readonly familyAvailability: Readonly<
     Record<
@@ -91,7 +91,7 @@ export interface GroupFCapabilityProfileInputV1 extends GroupECapabilityProfileI
   >
 }
 
-type GroupGCapabilityProfileInputV1 = GroupFCapabilityProfileInputV1
+type GroupGCapabilityProfileInputV1 = MediaTargetCapabilityProfileInputV1
 
 interface EditCapabilitySnapshotInputV1
 {
@@ -165,8 +165,8 @@ function supportedFamilyAssessmentFactoryV1<
 // Group F is the last operation-family group, so this profile carries no
 // `unsupported` helper at all: every remaining unavailable family is a
 // hand-written literal that names the group which opens it
-function groupFFamilyAssessments(
-  input: GroupFCapabilityProfileInputV1
+function mediaTargetPhaseFamilyAssessments(
+  input: MediaTargetCapabilityProfileInputV1
 ): readonly CapabilityFamilyAssessmentV1[]
 {
   const supported = supportedFamilyAssessmentFactoryV1<
@@ -239,7 +239,7 @@ function groupGFamilyAssessments(
 ): readonly CapabilityFamilyAssessmentV1[]
 {
   return Object.freeze(
-    groupFFamilyAssessments(input).map((assessment) =>
+    mediaTargetPhaseFamilyAssessments(input).map((assessment) =>
     {
       if (assessment.family === 'evaluation')
       {
