@@ -37,6 +37,10 @@ when a cheaper lane cannot answer.
 - **Test** — deterministic VM scenario tests, a native lockstep model runner,
   IR mutation testing, and a browser visual lane with screenshots and
   video-on-failure.
+- **Drive & observe** — control one callback-scoped TurboWarp session through a
+  strict JSONL protocol; hold keyboard/mouse state across exact logical ticks,
+  read bounded original-target state without adding a draw, and exact-replay
+  the retained evidence without modifying the selected `.sb3`.
 - **Repair** — a transactional, baseline-relative repair controller: candidate
   evaluation, deterministic failure localization, evidence escalation, and
   preservation-safe promotion, with JSON + Markdown reports.
@@ -81,6 +85,8 @@ npm run build                     # tsc -b + bundle the browser page
 npm run spike                     # compatibility VM + browser run on the fixture
 npm run validate -- fixtures/fixture.sb3
 npm run project-check -- --input /absolute/path/project.sb3
+npm --silent run drive-observe -- \
+  --headless --input /absolute/path/project.sb3
 ```
 
 Test & evaluation lanes:
@@ -94,6 +100,7 @@ npm run mutate        # mutation run (scores which mutants the suite kills)
 npm run repair-bench  # R1-R5 aggregate repair gate
 npm run semantic-edit-bench   # semantic editing benchmark
 npm run multimodal-bench      # deterministic multimodal acceptance
+npm run drive-observe-bench   # three-case interactive-session acceptance
 ```
 
 Requires **Node 22+**. ESM throughout; relative imports use explicit `.js`
@@ -107,7 +114,9 @@ export the source. Edit tools keep a private baseline and can write only a new
 certified artifact beneath an approved output root. The in-process Scratch VM is
 **not** a hostile-code sandbox — running arbitrary untrusted projects needs a
 separate OS-contained worker. Bounded observations do not claim complete gameplay
-correctness or universal semantic equivalence.
+correctness or universal semantic equivalence. Drive-observe runs deny browser
+network access and retain private evidence, but browser cleanup has no OS
+hard-kill guarantee.
 
 ## License
 
