@@ -23,6 +23,8 @@
     "roundtrip": "tsx scripts/project/roundtrip.ts",
     "prevalidate": "npm run build",
     "validate": "tsx scripts/project/validate.ts",
+    "prefragility-check": "npm run build",
+    "fragility-check": "tsx scripts/project/fragility-check.ts",
     "preproject-check": "npm run build",
     "project-check": "tsx scripts/project/project-check.ts",
     "preproject-walkthrough:codex": "npm run build",

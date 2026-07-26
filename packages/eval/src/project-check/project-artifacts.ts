@@ -25,9 +25,18 @@ export interface ProjectArtifactReference
   sha256: string
 }
 
+export interface ProjectArtifactTextBatchEntry
+{
+  relativePath: string
+  kind: string
+  mediaType: string
+  value: string
+}
+
 interface ProjectArtifactStoreOptions
 {
   maxBytes?: number
+  requireNewRoot?: boolean
 }
 
 export class ProjectArtifactStoreLimitError extends Error
@@ -70,7 +79,12 @@ export class ProjectArtifactStore
       throw new Error('project artifact maxBytes must be a positive integer')
     }
     this.maxBytes = maxBytes ?? null
-    mkdirSync(this.root, { recursive: true, mode: 0o700 })
+    if (options.requireNewRoot)
+    {
+      mkdirSync(dirname(this.root), { recursive: true, mode: 0o700 })
+      mkdirSync(this.root, { mode: 0o700 })
+    }
+    else mkdirSync(this.root, { recursive: true, mode: 0o700 })
     if (!lstatSync(this.root).isDirectory())
     {
       throw new Error('project artifact root is not a directory')
@@ -131,6 +145,140 @@ export class ProjectArtifactStore
     )
   }
 
+  writeTextBatch(
+    entries: readonly ProjectArtifactTextBatchEntry[]
+  ): ProjectArtifactReference[]
+  {
+    if (entries.length === 0) return []
+    const transactionId = `${process.pid}-${randomUUID()}`
+    const prepared = entries.map((entry) =>
+    {
+      const path = this.absolutePath(entry.relativePath)
+      this.ensureParent(path)
+      const bytes = Buffer.from(entry.value, 'utf-8')
+      return {
+        ...entry,
+        bytes,
+        id: artifactId(posixPath(entry.relativePath)),
+        path,
+        temp: `${path}.tmp-${transactionId}`,
+        backup: `${path}.bak-${transactionId}`,
+      }
+    })
+    if (new Set(prepared.map((entry) => entry.id)).size !== prepared.length)
+      throw new Error('artifact batch paths must be unique')
+
+    if (this.maxBytes !== null)
+    {
+      const projected = new Map(
+        [...this.catalog.values()].map((artifact) => [
+          artifact.id,
+          artifact.byteLength,
+        ])
+      )
+      for (const entry of prepared)
+        projected.set(entry.id, entry.bytes.byteLength)
+      let projectedBytes = 0
+      for (const byteLength of projected.values()) projectedBytes += byteLength
+      if (projectedBytes > this.maxBytes)
+        throw new ProjectArtifactStoreLimitError(this.maxBytes)
+    }
+
+    const backedUp: typeof prepared = []
+    const installed: typeof prepared = []
+    try
+    {
+      for (const entry of prepared)
+        writeFileSync(entry.temp, entry.bytes, { flag: 'wx', mode: 0o600 })
+      for (const entry of prepared)
+      {
+        try
+        {
+          lstatSync(entry.path)
+          renameSync(entry.path, entry.backup)
+          backedUp.push(entry)
+        }
+        catch (error)
+        {
+          if (!(
+            error instanceof Error &&
+            'code' in error &&
+            error.code === 'ENOENT'
+          ))
+            throw error
+        }
+      }
+      for (const entry of prepared)
+      {
+        this.installPreparedArtifact(entry.temp, entry.path)
+        installed.push(entry)
+      }
+      for (const entry of backedUp)
+      {
+        try
+        {
+          unlinkSync(entry.backup)
+        }
+        catch
+        {
+          // committed artifacts remain authoritative if backup cleanup fails
+        }
+      }
+    }
+    catch (error)
+    {
+      for (const entry of [...installed].reverse())
+      {
+        try
+        {
+          unlinkSync(entry.path)
+        }
+        catch
+        {
+          // rollback is best-effort after the original batch failure
+        }
+      }
+      for (const entry of [...backedUp].reverse())
+      {
+        try
+        {
+          renameSync(entry.backup, entry.path)
+        }
+        catch
+        {
+          // rollback is best-effort after the original batch failure
+        }
+      }
+      for (const entry of prepared)
+      {
+        for (const path of [entry.temp, entry.backup])
+        {
+          try
+          {
+            unlinkSync(path)
+          }
+          catch
+          {
+            // cleanup is best-effort after the original batch failure
+          }
+        }
+      }
+      throw error
+    }
+
+    const references = prepared.map((entry): ProjectArtifactReference => ({
+      id: entry.id,
+      kind: entry.kind,
+      path: posixPath(entry.relativePath),
+      mediaType: entry.mediaType,
+      byteLength: entry.bytes.byteLength,
+      sha256: sha256(entry.bytes),
+    }))
+    for (const reference of references)
+      this.catalog.set(reference.id, reference)
+    return references
+  }
+
   writeBytes(
     relativePath: string,
     kind: string,
@@ -145,8 +293,7 @@ export class ProjectArtifactStore
       let catalogBytes = 0
       for (const artifact of this.catalog.values())
         catalogBytes += artifact.byteLength
-      const projectedBytes =
-        catalogBytes - replacedBytes + value.byteLength
+      const projectedBytes = catalogBytes - replacedBytes + value.byteLength
       if (projectedBytes > this.maxBytes)
       {
         throw new ProjectArtifactStoreLimitError(this.maxBytes)
@@ -196,6 +343,14 @@ export class ProjectArtifactStore
         this.catalog.delete(artifact.id)
       }
     }
+  }
+
+  protected installPreparedArtifact(
+    temporaryPath: string,
+    finalPath: string
+  ): void
+  {
+    renameSync(temporaryPath, finalPath)
   }
 
   private ensureParent(path: string): void

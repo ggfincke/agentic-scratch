@@ -34,6 +34,20 @@ const BACKDROP_KEYWORDS = new Set([
   'random backdrop',
 ])
 
+export const STATIC_DIAGNOSTIC_CODES = {
+  messageNeverReceived: 'message-never-received',
+  messageNeverSent: 'message-never-sent',
+  unusedVariable: 'unused-variable',
+  unusedCustomBlock: 'unused-custom-block',
+  deadCode: 'dead-code',
+  emptyScript: 'empty-script',
+  emptyControlBody: 'empty-control-body',
+  hideWithoutShow: 'hide-without-show',
+  comparingLiterals: 'comparing-literals',
+  missingBackdrop: 'missing-backdrop',
+  ambiguousCustomBlockSignature: 'ambiguous-custom-block-signature',
+} as const
+
 interface Facts
 {
   sentNames: Set<string>
@@ -147,7 +161,7 @@ function checkBroadcasts(
       if (!ref.dynamic && ref.name && !facts.receivedNames.has(ref.name))
       {
         diags.warn(
-          'message-never-received',
+          STATIC_DIAGNOSTIC_CODES.messageNeverReceived,
           `broadcast "${ref.name}" has no matching "when I receive" hat`,
           { target: target.name, block: id }
         )
@@ -164,7 +178,7 @@ function checkBroadcasts(
       if (name && !facts.sentNames.has(name))
       {
         diags.warn(
-          'message-never-sent',
+          STATIC_DIAGNOSTIC_CODES.messageNeverSent,
           `nothing ever broadcasts "${name}", so this hat never runs`,
           { target: target.name, block: id }
         )
@@ -186,7 +200,7 @@ function checkUnusedVariables(
       if (!facts.referencedVarIds.has(varId))
       {
         diags.info(
-          'unused-variable',
+          STATIC_DIAGNOSTIC_CODES.unusedVariable,
           `variable "${entry[0]}" is declared but never used`,
           { target: target.name }
         )
@@ -211,7 +225,7 @@ function checkUnusedCustomBlocks(
       if (typeof proccode === 'string' && !calls.has(proccode))
       {
         diags.info(
-          'unused-custom-block',
+          STATIC_DIAGNOSTIC_CODES.unusedCustomBlock,
           `custom block "${proccode}" is defined but never called`,
           { target: target.name, block: id }
         )
@@ -234,7 +248,7 @@ function checkScripts(json: ProjectJson, diags: Diagnostics): void
         if (block.opcode !== 'procedures_definition' && block.next == null)
         {
           diags.info(
-            'empty-script',
+            STATIC_DIAGNOSTIC_CODES.emptyScript,
             `${block.opcode} has no blocks under it`,
             loc
           )
@@ -247,7 +261,7 @@ function checkScripts(json: ProjectJson, diags: Diagnostics): void
       )
       {
         diags.info(
-          'dead-code',
+          STATIC_DIAGNOSTIC_CODES.deadCode,
           `detached stack starting with ${block.opcode} has no hat & never runs`,
           loc
         )
@@ -260,7 +274,7 @@ function checkScripts(json: ProjectJson, diags: Diagnostics): void
       if (substack && primarySlot(substack) == null)
       {
         diags.info(
-          'empty-control-body',
+          STATIC_DIAGNOSTIC_CODES.emptyControlBody,
           `${block.opcode} has an empty ${input.label} body`,
           loc
         )
@@ -316,7 +330,7 @@ function checkHideWithoutShow(json: ProjectJson, diags: Diagnostics): void
     if (hides > 0 && shows === 0)
     {
       diags.warn(
-        'hide-without-show',
+        STATIC_DIAGNOSTIC_CODES.hideWithoutShow,
         `sprite hides but never shows; it may stay invisible`,
         { target: target.name }
       )
@@ -339,7 +353,7 @@ function checkComparisons(json: ProjectJson, diags: Diagnostics): void
     )
     {
       diags.warn(
-        'comparing-literals',
+        STATIC_DIAGNOSTIC_CODES.comparingLiterals,
         `${block.opcode} compares two constants; the result never changes`,
         { target: target.name, block: id }
       )
@@ -376,7 +390,7 @@ function checkMissingBackdrops(
     if (!names.has(name))
     {
       diags.warn(
-        'missing-backdrop',
+        STATIC_DIAGNOSTIC_CODES.missingBackdrop,
         `switches to backdrop "${name}" that the Stage does not have`,
         { target: target.name, block: id }
       )
@@ -399,7 +413,7 @@ function checkAmbiguousSignatures(
       if (ids.length > 1)
       {
         diags.warn(
-          'ambiguous-custom-block-signature',
+          STATIC_DIAGNOSTIC_CODES.ambiguousCustomBlockSignature,
           `custom block "${proccode}" is defined ${ids.length} times in this sprite`,
           { target: target.name, block: ids[0] }
         )
