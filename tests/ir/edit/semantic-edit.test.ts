@@ -3935,7 +3935,7 @@ test('Group C name-bearing edits fail closed on actual opcode inventory', () =>
 test('Group C structural name edits require exact raw surface envelopes', () =>
 {
   const catalogSource = readFileSync(
-    join(PROJECT_ROOT, 'packages/ir/src/edit/name-semantics-catalog.ts'),
+    join(PROJECT_ROOT, 'packages/ir/src/edit/semantic-index/name-semantics-catalog.ts'),
     'utf8'
   )
   assert.equal(catalogSource.includes('review/phase-8-a0'), false)

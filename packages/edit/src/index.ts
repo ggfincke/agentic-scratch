@@ -72,13 +72,13 @@ export { editCanonicalSha256V1 } from './support/canonical.js'
 
 export { editOperationOccurrenceIdV1 } from './lineage/cumulative-attribution.js'
 
-export { exactTargetRef } from './dispatch/group-c-dispatchers.js'
+export { exactTargetRef } from './dispatch/target-dispatchers.js'
 
 export {
-  groupFProductionOperationDispatchersV1,
-  productionGroupFAddCostumePlanningCompletionV1,
-  productionGroupFSpritePlanningCompletionV1,
-} from './dispatch/group-f-dispatchers.js'
+  mediaTargetProductionOperationDispatchersV1,
+  productionMediaTargetAddCostumePlanningCompletionV1,
+  productionMediaTargetSpritePlanningCompletionV1,
+} from './dispatch/media-target-dispatchers.js'
 
 export { emptyFutureBindingLedgerV1 } from './lineage/future-binding-ledger.js'
 
@@ -104,7 +104,7 @@ export {
   buildGroupGCapabilityProfileV1,
 } from './contracts/capabilities.js'
 export type {
-  GroupFCapabilityProfileInputV1,
+  MediaTargetCapabilityProfileInputV1,
 } from './contracts/capabilities.js'
 
 export type { EditOperationPlanningChoiceSlotV1 } from './transaction/transaction.js'

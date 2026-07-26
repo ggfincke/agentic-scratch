@@ -22,7 +22,7 @@ import {
   type RepairFieldShape as FieldShape,
   type RepairInputShape as InputShape,
 } from './repair-block-catalog.js'
-import { repairCoreCompatibleShapeV1 } from '../edit/repair-core-compatibility.js'
+import { repairCoreCompatibleShapeV1 } from '../edit/core-blocks/repair-core-compatibility.js'
 import type { Uids } from '../core/uid.js'
 import {
   isRepairLiteralKind,

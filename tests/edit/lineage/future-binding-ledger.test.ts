@@ -6,7 +6,7 @@ import test from 'node:test'
 
 import {
   SEMANTICALLY_VALID_CHANGE_CONTRACT_SAMPLE,
-  groupCDeclarationCreationContentFingerprintV1,
+  declarationCreationContentFingerprintV1,
   parseSemanticChangeContractV1,
   semanticHashV1,
   type EditSemanticChangeContractV1,
@@ -85,7 +85,7 @@ function futureBindingContract(): EditSemanticChangeContractV1
     },
   } as const
   const expectedCreationContentFingerprintSha256 =
-    groupCDeclarationCreationContentFingerprintV1(
+    declarationCreationContentFingerprintV1(
       {
         kind: 'declaration.addVariable',
         name: 'Bound',

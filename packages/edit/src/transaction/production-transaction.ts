@@ -97,35 +97,35 @@ import { sha256Hex } from '@scratch-agent/sb3/crypto-node'
 
 import { editCanonicalSha256V1, exactRevisionFromHeadV1 } from '../support/canonical.js'
 import {
-  groupCProductionOperationDispatchersV1,
+  targetProductionOperationDispatchersV1,
   productionCommentPlanningCompletionV1,
   productionDeclarationPlanningCompletionV1,
-  productionGroupCConflictProofWithIndexV1,
+  productionConflictProofWithIndexV1,
   productionScriptWorkspacePlanningCompletionV1,
-  type GroupCProductionOperationResultV1,
-  type GroupCProductionResultSlotV1,
+  type ProductionOperationResultV1,
+  type ProductionResultSlotV1,
   type ProductionDynamicBlockResultSlotV1,
   uniqueSorted,
-} from '../dispatch/group-c-dispatchers.js'
+} from '../dispatch/target-dispatchers.js'
 import {
-  groupDProductionOperationDispatchersV1,
-  productionGroupDChoicePlanningCompletionV1,
-  productionGroupDPlanningCompletionV1,
-} from '../dispatch/group-d-dispatchers.js'
+  scriptBlockProductionOperationDispatchersV1,
+  productionScriptBlockChoicePlanningCompletionV1,
+  productionScriptBlockPlanningCompletionV1,
+} from '../dispatch/script-block-dispatchers.js'
 import {
-  groupEProductionOperationDispatchersV1,
-  productionGroupESimplePlanningCompletionV1,
-  productionGroupEUpdateSignatureChoiceSlotsV1,
-  productionGroupEUpdateSignaturePlanningCompletionV1,
-  type GroupEProductionDynamicResultSlotV1,
-} from '../dispatch/group-e-dispatchers.js'
+  procedureProductionOperationDispatchersV1,
+  productionProcedureSimplePlanningCompletionV1,
+  productionProcedureUpdateSignatureChoiceSlotsV1,
+  productionProcedureUpdateSignaturePlanningCompletionV1,
+  type ProcedureProductionDynamicResultSlotV1,
+} from '../dispatch/procedure-dispatchers.js'
 import { editJsonPointerPartV1 as pointerPart } from '../support/internal-values.js'
 import {
-  groupFProductionOperationDispatchersV1,
-  productionGroupFAddCostumePlanningCompletionV1,
-  productionGroupFMediaPlanningCompletionV1,
-  productionGroupFSpritePlanningCompletionV1,
-} from '../dispatch/group-f-dispatchers.js'
+  mediaTargetProductionOperationDispatchersV1,
+  productionMediaTargetAddCostumePlanningCompletionV1,
+  productionMediaTargetMediaPlanningCompletionV1,
+  productionMediaTargetSpritePlanningCompletionV1,
+} from '../dispatch/media-target-dispatchers.js'
 import {
   combineAssetMaterializationUsageDeltasV1,
   EMPTY_ASSET_MATERIALIZATION_USAGE_DELTA_V1,
@@ -501,9 +501,9 @@ function finalResultEvidenceForSlot(
   project: ProjectIR,
   activeLineage: SemanticLineageSnapshot,
   slot:
-    | GroupCProductionResultSlotV1
+    | ProductionResultSlotV1
     | ProductionDynamicBlockResultSlotV1
-    | GroupEProductionDynamicResultSlotV1
+    | ProcedureProductionDynamicResultSlotV1
 ):
   | DeclarationEntityEvidenceV1
   | CommentEntityEvidenceV1
@@ -715,7 +715,7 @@ function reconcileOperationResultWithFinalHead(
 ): unknown
 {
   if (value === null || typeof value !== 'object') return value
-  const result = value as Partial<GroupCProductionOperationResultV1>
+  const result = value as Partial<ProductionOperationResultV1>
   if (!Array.isArray(result.fixedSlots)) return value
   const fixedSlots = result.fixedSlots.map((slot) =>
   {
@@ -872,9 +872,9 @@ function projectResultSlotV1(
   project: ProjectIR,
   activeLineage: SemanticLineageSnapshot,
   slot:
-    | GroupCProductionResultSlotV1
+    | ProductionResultSlotV1
     | ProductionDynamicBlockResultSlotV1
-    | GroupEProductionDynamicResultSlotV1
+    | ProcedureProductionDynamicResultSlotV1
 ): Record<string, unknown>
 {
   const evidence = finalResultEvidenceForSlot(project, activeLineage, slot)
@@ -928,7 +928,7 @@ function projectOperationResultSummariesV1(
   const summaries = Object.freeze(
     applied.map((entry) =>
     {
-      const result = entry.result as Partial<GroupCProductionOperationResultV1>
+      const result = entry.result as Partial<ProductionOperationResultV1>
       const fixedSlots = result.fixedSlots ?? []
       const dynamicSlots = result.dynamicSlots ?? []
       const fixed: Record<string, unknown> = {}
@@ -2898,7 +2898,7 @@ function observationSelectsAppliedTarget(
   )
 }
 
-function groupCSemanticPropertyObservation(
+function targetSemanticPropertyObservation(
   observation: ProductionDeltaObservationV1,
   applied: AppliedProductionOperationV1
 ): {
@@ -3068,7 +3068,7 @@ function scopeCoversObservation(
       )
     )
   }
-  const property = groupCSemanticPropertyObservation(evidence, applied)
+  const property = targetSemanticPropertyObservation(evidence, applied)
   // a procedure operation rewrites raw prototype, reporter, & call structure the
   // property surfaces do not name, so it is authorized structurally like a graph
   // edit; its scope still had to declare the procedure signature property path
@@ -3110,7 +3110,7 @@ function scopeCoversObservation(
         (candidate) =>
           (candidate.createdEntityKind === 'script' ||
             candidate.createdEntityKind === 'block') &&
-          groupDResultBindingOwnsObservation(
+          scriptBlockResultBindingOwnsObservation(
             candidate.bindingKey,
             candidate.createdEntityKind,
             evidence,
@@ -3381,7 +3381,7 @@ function addedEntityContentMatches(
 // a media addition writes three shapes the created record owns: the collection
 // it joined, its own member slot, & the archive entry its payload landed at.
 // ordinal addressing means member ownership is proven against running order
-function groupFResultBindingOwnsObservation(
+function mediaTargetResultBindingOwnsObservation(
   bindingKey: string,
   observation: ProductionDeltaObservationV1,
   applied: AppliedProductionOperationV1,
@@ -3438,7 +3438,7 @@ function groupFResultBindingOwnsObservation(
 
 // a created sprite owns its whole subtree plus the collection & derived order
 // projections its append necessarily moved
-function groupFTargetCreationOwnsObservation(
+function mediaTargetTargetCreationOwnsObservation(
   bindingKey: string,
   observation: ProductionDeltaObservationV1,
   applied: AppliedProductionOperationV1,
@@ -3471,7 +3471,7 @@ function groupFTargetCreationOwnsObservation(
   )
 }
 
-function groupDResultBindingOwnsObservation(
+function scriptBlockResultBindingOwnsObservation(
   bindingKey: string,
   entityKind: 'script' | 'block',
   observation: ProductionDeltaObservationV1,
@@ -3593,18 +3593,23 @@ function specificAllowanceCovers(
   if (allowance.kind === 'propertyTransition')
   {
     const property = targetPropertyObservation(evidence)
-    const groupCProperty = groupCSemanticPropertyObservation(evidence, applied)
+    const targetSemanticProperty = targetSemanticPropertyObservation(
+      evidence,
+      applied
+    )
     return (
       ((allowance.property.surface === 'target' &&
         property?.property === allowance.property.property &&
         observationSelectsAppliedTarget(evidence, applied)) ||
-        (groupCProperty !== null &&
-          groupCProperty.properties.length === 1 &&
-          allowance.property.surface === groupCProperty.surface &&
+        (targetSemanticProperty !== null &&
+          targetSemanticProperty.properties.length === 1 &&
+          allowance.property.surface === targetSemanticProperty.surface &&
           (allowance.property.surface === 'blockField' ||
           allowance.property.surface === 'blockInput'
-            ? allowance.property.descriptorName === groupCProperty.properties[0]
-            : allowance.property.property === groupCProperty.properties[0]))) &&
+            ? allowance.property.descriptorName ===
+              targetSemanticProperty.properties[0]
+            : allowance.property.property ===
+              targetSemanticProperty.properties[0]))) &&
       allowanceRefMatches(allowance.entity, applied) &&
       allowance.beforeValueSha256 ===
         productionCanonicalValueSha256V1(evidence.beforeState) &&
@@ -3619,19 +3624,19 @@ function specificAllowanceCovers(
         binding.bindingKey === allowance.candidate.bindingKey &&
         binding.bindingKind === 'future'
     )
-    const groupDAddition =
+    const scriptBlockAddition =
       futureBinding?.bindingKind === 'future' &&
       (futureBinding.entityKind === 'script' ||
         futureBinding.entityKind === 'block') &&
-      groupDResultBindingOwnsObservation(
+      scriptBlockResultBindingOwnsObservation(
         allowance.candidate.bindingKey,
         futureBinding.entityKind,
         evidence,
         applied,
         activeLineage
       )
-    const groupDSemanticAddition =
-      groupDAddition &&
+    const scriptBlockSemanticAddition =
+      scriptBlockAddition &&
       (evidence.kind === 'added' ||
         (evidence.kind === 'changed' &&
           futureBinding?.bindingKind === 'future' &&
@@ -3640,12 +3645,12 @@ function specificAllowanceCovers(
           futureBinding.expectedCreationRole.name === 'destinationScript'))
     // a created media record owns the collection it joined as well as its own
     // slot, so an addition legitimately shows up as a change to the collection
-    const groupFAddition =
+    const mediaTargetAddition =
       futureBinding?.bindingKind === 'future' &&
       ((futureBinding.entityKind === 'media' &&
         (applied.operation.kind === 'media.addCostume' ||
           applied.operation.kind === 'media.addSound') &&
-        groupFResultBindingOwnsObservation(
+        mediaTargetResultBindingOwnsObservation(
           allowance.candidate.bindingKey,
           evidence,
           applied,
@@ -3653,22 +3658,24 @@ function specificAllowanceCovers(
         )) ||
         (futureBinding.entityKind === 'target' &&
           applied.operation.kind === 'target.addSprite' &&
-          groupFTargetCreationOwnsObservation(
+          mediaTargetTargetCreationOwnsObservation(
             allowance.candidate.bindingKey,
             evidence,
             applied,
             activeLineage
           )))
     return (
-      (groupDSemanticAddition ||
-        groupFAddition ||
+      (scriptBlockSemanticAddition ||
+        mediaTargetAddition ||
         applied.operation.kind === 'declaration.addVariable' ||
         applied.operation.kind === 'declaration.addList' ||
         applied.operation.kind === 'declaration.addBroadcast' ||
         applied.operation.kind === 'comment.add') &&
-      (groupDSemanticAddition || groupFAddition || evidence.kind === 'added') &&
-      (groupDSemanticAddition ||
-        groupFAddition ||
+      (scriptBlockSemanticAddition ||
+        mediaTargetAddition ||
+        evidence.kind === 'added') &&
+      (scriptBlockSemanticAddition ||
+        mediaTargetAddition ||
         entityObservationLineageId(evidence, applied, activeLineage) !==
           null) &&
       addedEntityContentMatches(evidence, applied, appliedOperations) &&
@@ -4491,7 +4498,7 @@ function preservationResult(
   )
   const familyOwnsChange = (
     change: ValueDelta,
-    family: 'declaration' | 'comment' | 'script' | 'groupD'
+    family: 'declaration' | 'comment' | 'script' | 'scriptBlock'
   ): boolean =>
     change.operationIds.length > 0 &&
     change.operationIds.every((operationId) =>
@@ -4508,13 +4515,13 @@ function preservationResult(
       }
       return (
         operation !== undefined &&
-        (family === 'groupD'
+        (family === 'scriptBlock'
           ? operation.operation.kind !== 'script.moveWorkspace' &&
             (operation.operation.kind.startsWith('script.') ||
               operation.operation.kind.startsWith('block.'))
           : operation.operation.kind.startsWith(`${family}.`)) &&
         (observationHasStructuralPath(observation, operation) ||
-          groupCSemanticPropertyObservation(observation, operation) !== null)
+          targetSemanticPropertyObservation(observation, operation) !== null)
       )
     })
   const declarationChanges = parentDelta.targets.flatMap(
@@ -4556,10 +4563,10 @@ function preservationResult(
   const allowsDeclarationMonitors =
     monitorChanges.length > 0 &&
     monitorChanges.every((change) => familyOwnsChange(change, 'declaration'))
-  const allowsGroupDComments =
+  const allowsScriptBlockComments =
     commentChanges.length > 0 &&
-    commentChanges.every((change) => familyOwnsChange(change, 'groupD'))
-  const groupDOwnsExactScriptViolation = (path: string): boolean =>
+    commentChanges.every((change) => familyOwnsChange(change, 'scriptBlock'))
+  const scriptBlockOwnsExactScriptViolation = (path: string): boolean =>
   {
     const match = /^\/targets\/(\d+)\/blocks\/([^/]+)$/u.exec(path)
     if (!match) return false
@@ -4647,10 +4654,10 @@ function preservationResult(
     if (
       (violation.code === 'existing-script-missing' ||
         violation.code === 'existing-script-layout-changed') &&
-      groupDOwnsExactScriptViolation(violation.path)
+      scriptBlockOwnsExactScriptViolation(violation.path)
     )
       return true
-    if (violation.code === 'comments-changed' && allowsGroupDComments)
+    if (violation.code === 'comments-changed' && allowsScriptBlockComments)
       return true
     // the selection index is the one gameplay property a media operation may
     // move, & only at the exact target path it reconciled
@@ -5150,10 +5157,10 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
   constructor(
     dispatchers: readonly ProductionOperationDispatcherV1[] = [
       new TargetProductionOperationDispatcherV1(),
-      ...groupCProductionOperationDispatchersV1(),
-      ...groupDProductionOperationDispatchersV1(),
-      ...groupEProductionOperationDispatchersV1(),
-      ...groupFProductionOperationDispatchersV1(),
+      ...targetProductionOperationDispatchersV1(),
+      ...scriptBlockProductionOperationDispatchersV1(),
+      ...procedureProductionOperationDispatchersV1(),
+      ...mediaTargetProductionOperationDispatchersV1(),
     ]
   )
   {
@@ -5385,7 +5392,7 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
         facts: Object.freeze([]),
         choiceSlots:
           goal.kind === 'procedure.updateSignature'
-            ? productionGroupEUpdateSignatureChoiceSlotsV1(context, goal)
+            ? productionProcedureUpdateSignatureChoiceSlotsV1(context, goal)
             : Object.freeze([]),
       })
     if (goal.kind === 'target.renameSprite')
@@ -5429,7 +5436,7 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
     }
     if (goal.kind === 'target.addSprite')
     {
-      const completed = productionGroupFSpritePlanningCompletionV1(
+      const completed = productionMediaTargetSpritePlanningCompletionV1(
         context,
         goal
       )
@@ -5452,7 +5459,7 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
     }
     if (goal.kind === 'media.addCostume')
     {
-      const completed = productionGroupFAddCostumePlanningCompletionV1(
+      const completed = productionMediaTargetAddCostumePlanningCompletionV1(
         context,
         goal
       )
@@ -5489,7 +5496,7 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
       })
     }
     if (goal.kind.startsWith('media.'))
-      return productionGroupFMediaPlanningCompletionV1(
+      return productionMediaTargetMediaPlanningCompletionV1(
         context,
         goal as Extract<
           SemanticEditOperationGoalV1,
@@ -5521,7 +5528,7 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
       goal.kind === 'block.insertSubstack' ||
       goal.kind === 'block.setField'
     )
-      return productionGroupDPlanningCompletionV1(context, goal)
+      return productionScriptBlockPlanningCompletionV1(context, goal)
     if (
       goal.kind === 'script.duplicate' ||
       goal.kind === 'script.remove' ||
@@ -5530,7 +5537,7 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
       goal.kind === 'block.remove' ||
       goal.kind === 'block.setInput'
     )
-      return productionGroupDChoicePlanningCompletionV1(
+      return productionScriptBlockChoicePlanningCompletionV1(
         context,
         goal,
         request.choices
@@ -5540,13 +5547,13 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
       goal.kind === 'procedure.setCallArgument' ||
       goal.kind === 'procedure.remove'
     )
-      return productionGroupESimplePlanningCompletionV1(
+      return productionProcedureSimplePlanningCompletionV1(
         context,
         goal,
         request.choices
       )
     if (goal.kind === 'procedure.updateSignature')
-      return productionGroupEUpdateSignaturePlanningCompletionV1(
+      return productionProcedureUpdateSignaturePlanningCompletionV1(
         context,
         goal,
         request.choices
@@ -5577,7 +5584,7 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
     const beforeActiveLineage = validateSemanticLineageSnapshot(
       input.currentRevision.activeLineage as SemanticLineageSnapshot
     )
-    const conflictProof = productionGroupCConflictProofWithIndexV1(
+    const conflictProof = productionConflictProofWithIndexV1(
       input,
       current,
       beforeActiveLineage,

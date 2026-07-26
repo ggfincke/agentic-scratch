@@ -27,7 +27,7 @@ import {
   declarationBoundedLocationProjectionV1,
   declarationEntityEvidenceSetV1,
   DEFAULT_PHASE_8_RESOURCE_POLICY,
-  GroupCEntityResolutionError,
+  EntityResolutionError,
   inspectSemanticEditBatchV1,
   mediaBoundedLocationProjectionV1,
   mediaRecordEntityEvidenceSetV1,
@@ -104,7 +104,7 @@ import {
   buildGroupGCapabilityProfileV1,
   EDIT_EVALUATION_RUNNER_LANES_V1,
   validatedRunnerAvailabilityV1,
-  type GroupFCapabilityProfileInputV1,
+  type MediaTargetCapabilityProfileInputV1,
 } from '../contracts/capabilities.js'
 import {
   type BoundChangeContractV1,
@@ -1333,7 +1333,7 @@ function openingRefusalSourceBindingV1(
   }
 }
 
-function resolveGroupCExistingBindings(
+function resolveTargetExistingBindings(
   registration: RegisteredChangeContractV1,
   project: ProjectIR
 ): readonly ExistingContractBindingResolutionV1[]
@@ -1593,7 +1593,7 @@ function capabilityAssessment(
   semanticSourceSha256: string,
   preflight: Awaited<ReturnType<typeof inspectSemanticEditArtifact>>,
   pinnedScratchRuntimeSourceSha256: string
-): GroupFCapabilityProfileInputV1
+): MediaTargetCapabilityProfileInputV1
 {
   const admission = preflight.admission!
   const index = preflight.referenceIndex!
@@ -4867,7 +4867,7 @@ export class EditSessionV1
     }
     catch (error)
     {
-      if (error instanceof GroupCEntityResolutionError)
+      if (error instanceof EntityResolutionError)
         throw new EditSessionErrorV1(
           'edit.unsupported_media',
           `source media reference could not be resolved: ${error.message}`
@@ -10919,7 +10919,7 @@ export class EditSessionRegistryV1
       registrationId: request.changeContractRegistrationId,
       expectedSemanticContractSha256: request.expectedSemanticContractSha256,
       source: sourceBinding,
-      existingBindings: resolveGroupCExistingBindings(
+      existingBindings: resolveTargetExistingBindings(
         registeredContract,
         preflight.project
       ),
