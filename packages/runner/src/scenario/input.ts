@@ -2,7 +2,11 @@
 // faithful headless input: keyboard via postIOData; sprite/stage clicks & broadcasts via startHats
 
 import type { ScratchVm } from '../vm/vm-api.js'
-import { RUN_ISSUE_CODES, RunnerIssueError, createRunIssue } from '../policy/issues.js'
+import {
+  RUN_ISSUE_CODES,
+  RunnerIssueError,
+  createRunIssue,
+} from '../policy/issues.js'
 import { STAGE_HEIGHT, STAGE_WIDTH } from './stage.js'
 
 // mouse.postData derives coords from stage canvas px centered at (0,0)
@@ -10,16 +14,42 @@ import { STAGE_HEIGHT, STAGE_WIDTH } from './stage.js'
 // map friendly scenario key names to the DOM-event `key` string the VM normalizes
 const KEY_ALIASES: Record<string, string> = {
   right: 'ArrowRight',
+  arrowright: 'ArrowRight',
+  'right arrow': 'ArrowRight',
   left: 'ArrowLeft',
+  arrowleft: 'ArrowLeft',
+  'left arrow': 'ArrowLeft',
   up: 'ArrowUp',
+  arrowup: 'ArrowUp',
+  'up arrow': 'ArrowUp',
   down: 'ArrowDown',
+  arrowdown: 'ArrowDown',
+  'down arrow': 'ArrowDown',
   space: ' ',
+  ' ': ' ',
   enter: 'Enter',
 }
 
-function domKey(key: string): string
+export function normalizeInputKey(key: string): string
 {
   return KEY_ALIASES[key.toLowerCase()] ?? key
+}
+
+export function canonicalInputKey(key: string): string | null
+{
+  const normalized = normalizeInputKey(key)
+  if (
+    normalized === 'ArrowRight' ||
+    normalized === 'ArrowLeft' ||
+    normalized === 'ArrowUp' ||
+    normalized === 'ArrowDown' ||
+    normalized === ' ' ||
+    normalized === 'Enter'
+  )
+    return normalized
+  if (normalized.length !== 1) return null
+  const canonical = normalized.toUpperCase()
+  return canonical.length === 1 ? canonical : null
 }
 
 export class InputController
@@ -30,12 +60,18 @@ export class InputController
   // whenkeypressed fires synchronously inside postData; the body advances on later _step()
   pressKey(key: string): void
   {
-    this.vm.postIOData('keyboard', { key: domKey(key), isDown: true })
+    this.vm.postIOData('keyboard', {
+      key: normalizeInputKey(key),
+      isDown: true,
+    })
   }
 
   releaseKey(key: string): void
   {
-    this.vm.postIOData('keyboard', { key: domKey(key), isDown: false })
+    this.vm.postIOData('keyboard', {
+      key: normalizeInputKey(key),
+      isDown: false,
+    })
   }
 
   moveMouse(scratchX: number, scratchY: number): void

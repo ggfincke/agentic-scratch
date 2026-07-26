@@ -6,6 +6,7 @@ import { installDeterminism, type Determinism } from '../policy/determinism.js'
 import { InputController } from '../scenario/input.js'
 import { RUNNER_TICK_MS } from './browser-config.js'
 import {
+  captureBoundedRuntimeObservation,
   readBoundedSnapshot,
   readCloneCountSample,
   readResolvedCloneCountSample,
@@ -110,6 +111,10 @@ export function installRuntimePage(host: BrowserRuntimePageHost): void
   let lineageUnavailable: RuntimeLineageAdapterResultV1 | null = null
   let binder: IdentityBoundVmBinder | null = null
   let runtimeObservationBudget: RuntimeObservationBudgetV1 | null = null
+  let driveObservationBudget: RuntimeObservationBudgetV1 | null = null
+  let driveDrawEpoch = 0
+  let driveDraw: PageRenderer['draw'] | null = null
+  let prepared = false
   let boundManifest: RuntimeLineageManifestV1 | null = null
 
   // the in-page binder only exists once the seam bound cleanly; without it every
@@ -134,6 +139,15 @@ export function installRuntimePage(host: BrowserRuntimePageHost): void
     runtime._step()
     if (det) det.flushTimers()
     await Promise.resolve()
+  }
+
+  function activeDriveObservationBudget(): RuntimeObservationBudgetV1
+  {
+    if (driveObservationBudget === null || driveDraw === null)
+      throw new Error('drive-observe has not begun')
+    if (host.renderer.draw !== driveDraw)
+      throw new Error('drive-observe renderer instrumentation drifted')
+    return driveObservationBudget
   }
 
   const api: SpikeApi = {
@@ -185,6 +199,8 @@ export function installRuntimePage(host: BrowserRuntimePageHost): void
     },
     async prep(opts: { seed?: number; fixedDateMs?: number }): Promise<void>
     {
+      if (driveDraw !== null)
+        throw new Error('drive-observe cannot be prepared after it begins')
       host.stopFreeRunning()
       for (let index = 0; index < 3; index++)
       {
@@ -196,6 +212,65 @@ export function installRuntimePage(host: BrowserRuntimePageHost): void
         fixedDateMs: opts.fixedDateMs,
       })
       runtime.currentStepTime = RUNNER_TICK_MS
+      prepared = true
+    },
+    beginDriveObserve(caps)
+    {
+      if (!prepared)
+        throw new Error('drive-observe requires a prepared runtime')
+      if (driveDraw !== null || driveObservationBudget !== null)
+        throw new Error('drive-observe has already begun')
+      const budget = createRuntimeObservationBudget(
+        clampRuntimeObservationCaps(caps)
+      )
+      const originalDraw = host.renderer.draw
+      const instrumentedDraw = function (
+        this: PageRenderer,
+        ...args: Parameters<PageRenderer['draw']>
+      ): ReturnType<PageRenderer['draw']>
+      {
+        driveDrawEpoch++
+        return Reflect.apply(originalDraw, this, args)
+      }
+      host.renderer.draw = instrumentedDraw
+      driveObservationBudget = budget
+      driveDraw = instrumentedDraw
+      driveDrawEpoch = 0
+      return { drawEpoch: driveDrawEpoch }
+    },
+    inspectDriveObserve()
+    {
+      activeDriveObservationBudget()
+      return { drawEpoch: driveDrawEpoch }
+    },
+    async advanceDriveObserve(ticks: number)
+    {
+      if (!Number.isSafeInteger(ticks) || ticks <= 0)
+        throw new Error('drive-observe ticks must be a positive safe integer')
+      activeDriveObservationBudget()
+      for (let index = 0; index < ticks; index++)
+      {
+        await tickOnce()
+        activeDriveObservationBudget()
+      }
+      return { ticksAdvanced: ticks, drawEpoch: driveDrawEpoch }
+    },
+    readDriveObserveState(input)
+    {
+      const budget = activeDriveObservationBudget()
+      const drawEpochBefore = driveDrawEpoch
+      const capture = captureBoundedRuntimeObservation(
+        runtime,
+        budget,
+        input.tick,
+        input.commandSequence,
+        input.label,
+        input.heldInput
+      )
+      activeDriveObservationBudget()
+      if (driveDrawEpoch !== drawEpochBefore)
+        throw new Error('drive-observe state observation attempted a draw')
+      return { capture, drawEpoch: driveDrawEpoch }
     },
     greenFlag(): void
     {
