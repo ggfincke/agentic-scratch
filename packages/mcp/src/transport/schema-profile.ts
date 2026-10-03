@@ -9,6 +9,7 @@ import {
   emitJsonSchema202012,
   toolInputSchemaModel,
   toolOutputSchemaModel,
+  standardAuthoringToolOutputSchemaModelV2,
   type EditToolName,
 } from '@scratch-agent/edit'
 
@@ -1653,7 +1654,7 @@ function materializeRootReference(schema: JsonSchema): JsonSchema
   return pruneUnusedDefinitions({ ...materialized, $defs: definitions })
 }
 
-function editTool(name: EditToolName): Tool
+function editTool(name: EditToolName, standard = false): Tool
 {
   const descriptor = EDIT_TOOL_DESCRIPTORS.find((entry) => entry.name === name)
   if (!descriptor) throw new Error(`missing edit tool descriptor ${name}`)
@@ -1667,7 +1668,11 @@ function editTool(name: EditToolName): Tool
   )
   const outputSchema = compactDefinitions(
     structuredClone(
-      emitJsonSchema202012(toolOutputSchemaModel(name))
+      emitJsonSchema202012(
+        standard
+          ? standardAuthoringToolOutputSchemaModelV2(name)
+          : toolOutputSchemaModel(name)
+      )
     ) as JsonSchema,
     true
   )
@@ -1703,6 +1708,14 @@ export function scratchMcpProfileToolsV1(): Tool[]
 {
   return [
     ...PROJECT_TOOL_NAMES.map(projectTool),
-    ...EDIT_TOOL_NAMES.map(editTool),
+    ...EDIT_TOOL_NAMES.map((name) => editTool(name)),
+  ]
+}
+
+export function standardScratchMcpProfileToolsV2(): Tool[]
+{
+  return [
+    ...PROJECT_TOOL_NAMES.map(projectTool),
+    ...EDIT_TOOL_NAMES.map((name) => editTool(name, true)),
   ]
 }

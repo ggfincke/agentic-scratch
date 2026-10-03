@@ -33,6 +33,15 @@ const SUPPORTED_KEYWORDS = new Set([
 ])
 
 const MAX_DEPTH = 64
+const SUPPORTED_TYPES = new Set([
+  'object',
+  'array',
+  'string',
+  'boolean',
+  'null',
+  'integer',
+  'number',
+])
 
 interface CheckState
 {
@@ -72,6 +81,25 @@ function schemaOf(value: unknown): JsonSchema
     {
       throw new TypeError(`unsupported JSON Schema keyword ${key}`)
     }
+  }
+  if (Array.isArray(value.type))
+  {
+    if (
+      value.type.length === 0 ||
+      value.type.some(
+        (type) => typeof type !== 'string' || !SUPPORTED_TYPES.has(type)
+      ) ||
+      new Set(value.type).size !== value.type.length
+    )
+    {
+      throw new TypeError(
+        'schema type union must contain distinct supported types'
+      )
+    }
+  }
+  else if (value.type !== undefined && typeof value.type !== 'string')
+  {
+    throw new TypeError('schema type must be a string or a type union')
   }
   return value
 }
@@ -311,9 +339,18 @@ function checkNode(
   {
     state.issues.push(`${path}: value is not in the advertised enum`)
   }
-  if (typeof node.type === 'string' && !typeMatches(node.type, value))
+  const expectedTypes =
+    typeof node.type === 'string'
+      ? [node.type]
+      : Array.isArray(node.type)
+        ? node.type
+        : null
+  if (
+    expectedTypes !== null &&
+    !expectedTypes.some((expected) => typeMatches(expected, value))
+  )
   {
-    state.issues.push(`${path}: expected ${node.type}`)
+    state.issues.push(`${path}: expected ${expectedTypes.join(' or ')}`)
     return
   }
   if (Array.isArray(node.anyOf))

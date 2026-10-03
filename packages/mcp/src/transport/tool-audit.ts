@@ -2083,7 +2083,7 @@ export class DurableToolAuditJournalV1
       }
       catch (error)
       {
-        let exactRetained = false
+        let exactRetained: boolean
         try
         {
           const retained = this.#retainedIdempotencyOutcomeV1(

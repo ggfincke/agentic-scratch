@@ -616,11 +616,13 @@ function registryIdentity(
   roots: EditMcpProtectedRootsV1,
   manifestSha256: string,
   nonAuditSecretAuthoritySha256: string,
-  paginationCursorAuthoritySha256: string
+  paginationCursorAuthoritySha256: string,
+  semanticAuthorityId: 'a0-v1' | 'standard-v2' = 'a0-v1'
 ): ProductionEditRegistryIdentityV1
 {
   const profileSha256 = productionEditProfileAuthoritySha256V1(
-    EDIT_STATEFUL_RESPONSE_PROJECTOR_VERSION_V1
+    EDIT_STATEFUL_RESPONSE_PROJECTOR_VERSION_V1,
+    semanticAuthorityId
   )
   const retentionPolicySha256 = canonicalSha256(DEFAULT_PHASE_8_RESOURCE_POLICY)
   const descriptorAuthoritySha256 =
@@ -1327,7 +1329,7 @@ export async function recoverProductionEditAuditPredecessorHandoffV1(input: {
   )
   let recoveryStore: ReturnType<typeof createEditArtifactStoreHostAdapter>
   let recoveredAttempts: readonly RecoveredRetainedEditAttemptV1[] = []
-  let recoveredSessions: readonly RetainedEditSessionEvidenceV1[] = []
+  let recoveredSessions: readonly RetainedEditSessionEvidenceV1[]
   try
   {
     const artifactStore = createEditArtifactStoreHostAdapter(
@@ -2224,11 +2226,21 @@ function writeAcceptedEvidenceBytesV1(
 }
 
 export async function createProductionEditMcpServerFromEnvironmentV1(
-  environment: NodeJS.ProcessEnv = process.env
+  environment: NodeJS.ProcessEnv = process.env,
+  authoring?: {
+    readonly host: import('../authoring/tools.js').AuthoringToolHostV1
+    readonly audit: import('../authoring/audit.js').WorkbenchCallAuditV1
+    readonly nativeAdmissionBudget?: import('../transport/native-admission-budget.js').NativeAdmissionBudgetV1
+  }
 ): Promise<RepairMcpServer>
 {
-  if (environment.SCRATCH_AGENT_MCP_PROFILE !== 'project-edit')
+  const standard = environment.SCRATCH_AGENT_MCP_PROFILE === 'authoring-v1'
+  if (environment.SCRATCH_AGENT_MCP_PROFILE !== 'project-edit' && !standard)
     return refuse('production edit bootstrap requires project-edit profile')
+  if (standard && !authoring)
+    return refuse(
+      'standard authoring bootstrap requires a whole-project host and audit'
+    )
   const expectedDescriptorSha256 = requiredSha256Environment(
     environment,
     'SCRATCH_AGENT_EDIT_EXPECTED_DESCRIPTOR_SHA256'
@@ -2339,7 +2351,8 @@ export async function createProductionEditMcpServerFromEnvironmentV1(
     productionEditNonAuditSecretAuthoritySha256V1(secrets),
     productionEditPaginationCursorAuthoritySha256V1(
       secrets.paginationCursorSecret
-    )
+    ),
+    standard ? 'standard-v2' : 'a0-v1'
   )
   await preflightAuditSuccessorV1({
     privateRoot: roots.editPrivate.canonicalRoot,
@@ -2467,6 +2480,7 @@ export async function createProductionEditMcpServerFromEnvironmentV1(
     projects.registerEditPublicationRootV1(publicationRoot)
     const publicationPort = createEditPublicationPort(publicationRoot)
     const editHost = await createEditTransportRegistryV1({
+      ...(standard ? { semanticAuthorityId: 'standard-v2' as const } : {}),
       projects,
       changeContracts: loaded.registry,
       identity,
@@ -2484,7 +2498,14 @@ export async function createProductionEditMcpServerFromEnvironmentV1(
     })
     recheckRoots(roots)
     return createScratchMcpServer(paths, {
-      profile: 'project-edit',
+      profile: standard ? 'authoring-v1' : 'project-edit',
+      ...(authoring
+        ? {
+            authoringHost: authoring.host,
+            workbenchAudit: authoring.audit,
+            nativeAdmissionBudget: authoring.nativeAdmissionBudget,
+          }
+        : {}),
       projectRegistry: projects,
       editHost,
       editJournal: audit.journal,
@@ -2527,7 +2548,8 @@ export async function createProductionEditMcpServerFromEnvironmentV1(
     {
       throw new AggregateError(
         [error, terminalError],
-        'project-edit startup failed and its audit allocation requires exclusive recovery'
+        'project-edit startup failed and its audit allocation requires exclusive recovery',
+        { cause: terminalError }
       )
     }
     throw error

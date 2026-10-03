@@ -12,6 +12,9 @@ import {
   parseEditToolInputV1,
   toolInputSchemaModel,
   toolOutputSchemaModel,
+  standardAuthoringToolOutputSchemaModelV2,
+  standardAuthoringToolReceiptFreeResultSchemaModelV2,
+  resolveEditSemanticAuthorityV1,
   toolReceiptFreeResultSchemaModel,
   validateSchemaValue,
   semanticHashV1,
@@ -24,6 +27,7 @@ import {
   type EditToolReceiptFreeResultV1,
   type EditToolRequestForV1,
   type EditToolName,
+  type SemanticAuthoringAuthorityIdV2,
   type HostInvocationContextV1,
   type HeadProjectionV1,
   type ReviewToolDescriptor,
@@ -38,6 +42,8 @@ import { McpBoundaryError } from '../transport/errors.js'
 import { validateClosedJsonSchemaValueV1 } from '../transport/json-schema-check.js'
 import { internalProjectOutputSchema } from '../project/project-output-schema.js'
 import { scratchMcpProfileToolsV1 } from '../transport/schema-profile.js'
+import { authoringProfileToolsV1 } from '../authoring/tools.js'
+import { DEVELOPMENT_TOOLS_V1 } from '../development/tools.js'
 import {
   editReceiptFreeOutcomeSha256V1,
   editTransportRequestSha256V1,
@@ -48,7 +54,12 @@ import {
 export const MAX_MCP_TOOLS_LIST_BYTES = 384 * 1024
 export const MAX_MCP_AGGREGATE_DESCRIPTION_BYTES = 32 * 1024
 
-export const SCRATCH_MCP_PROFILE_NAMES = ['repair', 'project-edit'] as const
+export const SCRATCH_MCP_PROFILE_NAMES = [
+  'repair',
+  'project-edit',
+  'authoring-v1',
+  'development-v1',
+] as const
 
 export type ScratchMcpProfileName = (typeof SCRATCH_MCP_PROFILE_NAMES)[number]
 
@@ -67,9 +78,21 @@ const PROFILE_TOOLS = Object.freeze(scratchMcpProfileToolsV1())
 const EDIT_TOOL_NAME_SET: ReadonlySet<string> = new Set(EDIT_TOOL_NAMES)
 
 export function productionEditProfileAuthoritySha256V1(
-  statefulProjectorVersion: string
+  statefulProjectorVersion: string,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): string
 {
+  if (authorityId === 'standard-v2')
+    return semanticHashV1('transport-request', {
+      schemaVersion: 2,
+      kind: 'standard-authoring-profile-authority-v2',
+      baselineAuthoritySha256: productionEditProfileAuthoritySha256V1(
+        statefulProjectorVersion
+      ),
+      semanticAuthoritySha256:
+        resolveEditSemanticAuthorityV1(authorityId).semanticAuthoritySha256,
+      tools: authoringProfileToolsV1(),
+    })
   const semanticAuthority = semanticAuthorityManifestV1()
   return semanticHashV1('transport-request', {
     schemaVersion: 1,
@@ -403,7 +426,8 @@ function assertRequestStructureV1(
 // validate one tool request against its own frozen closed input schema
 export function parseEditToolArgumentsV1<Name extends EditToolName>(
   name: Name,
-  rawArguments: unknown
+  rawArguments: unknown,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): EditToolRequestForV1<Name>
 {
   const descriptor = editToolDescriptor(name)
@@ -418,7 +442,7 @@ export function parseEditToolArgumentsV1<Name extends EditToolName>(
     )
   }
   assertRequestStructureV1(name, rawArguments)
-  const parsed = parseEditToolInputV1(name, rawArguments)
+  const parsed = parseEditToolInputV1(name, rawArguments, authorityId)
   if (!parsed.ok)
   {
     const stray = unknownTopLevelField(name, rawArguments)
@@ -436,7 +460,8 @@ export function parseEditToolArgumentsV1<Name extends EditToolName>(
 // no response leaves without validating against the frozen closed output schema
 export function assertEditToolResponseV1(
   name: EditToolName,
-  response: unknown
+  response: unknown,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): void
 {
   const descriptor = editToolDescriptor(name)
@@ -463,7 +488,12 @@ export function assertEditToolResponseV1(
       )
     }
   }
-  const validated = validateSchemaValue(toolOutputSchemaModel(name), response)
+  const validated = validateSchemaValue(
+    authorityId === 'standard-v2'
+      ? standardAuthoringToolOutputSchemaModelV2(name)
+      : toolOutputSchemaModel(name),
+    response
+  )
   if (!validated.ok)
   {
     throw new McpBoundaryError(
@@ -477,11 +507,14 @@ export function assertEditToolResponseV1(
 // appender, so its result is checked against the receipt-free contract
 export function assertEditToolReceiptFreeResponseV1(
   name: EditToolName,
-  response: unknown
+  response: unknown,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): void
 {
   const validated = validateSchemaValue(
-    toolReceiptFreeResultSchemaModel(name),
+    authorityId === 'standard-v2'
+      ? standardAuthoringToolReceiptFreeResultSchemaModelV2(name)
+      : toolReceiptFreeResultSchemaModel(name),
     response
   )
   if (!validated.ok)
@@ -560,11 +593,12 @@ export function editToolRefusalResultV1(
 export function attachEditToolAuditReceiptV1(
   name: EditToolName,
   receiptFree: Record<string, unknown>,
-  audit: EditToolAuditReceiptV1
+  audit: EditToolAuditReceiptV1,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): Record<string, unknown>
 {
   const response = { ...receiptFree, audit: { ...audit } }
-  assertEditToolResponseV1(name, response)
+  assertEditToolResponseV1(name, response, authorityId)
   return response
 }
 
@@ -591,6 +625,7 @@ export function assertProjectToolResponseV1(
 // owns the audit pair & attaches the receipt
 export interface EditToolHostV1
 {
+  readonly semanticAuthorityId?: SemanticAuthoringAuthorityIdV2
   callEditTool(
     name: EditToolName,
     request: unknown,
@@ -869,19 +904,24 @@ function prevalidateAuditedEditResponseV1(
     readonly callId: string
     readonly sequence: number
     readonly recordSha256: string
-  }
+  },
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): void
 {
-  assertEditToolResponseV1(name, {
-    ...receiptFree,
-    audit: {
-      callId: begun.callId,
-      beginSequence: begun.sequence,
-      beginRecordSha256: begun.recordSha256,
-      completeSequence: begun.sequence + 1,
-      completeRecordSha256: AUDIT_RECEIPT_HASH_PLACEHOLDER,
+  assertEditToolResponseV1(
+    name,
+    {
+      ...receiptFree,
+      audit: {
+        callId: begun.callId,
+        beginSequence: begun.sequence,
+        beginRecordSha256: begun.recordSha256,
+        completeSequence: begun.sequence + 1,
+        completeRecordSha256: AUDIT_RECEIPT_HASH_PLACEHOLDER,
+      },
     },
-  })
+    authorityId
+  )
 }
 
 // * dispatch one edit tool. Both paths append the same begin/complete pair &
@@ -901,13 +941,21 @@ export async function callEditTool(
   let request: unknown
   try
   {
-    request = parseEditToolArgumentsV1(name, rawArguments)
+    request = parseEditToolArgumentsV1(
+      name,
+      rawArguments,
+      host?.semanticAuthorityId
+    )
   }
   catch (error)
   {
     if (!(error instanceof EditToolRefusalErrorV1)) throw error
     const receiptFree = editToolRefusalResultV1(name, error)
-    assertEditToolReceiptFreeResponseV1(name, receiptFree)
+    assertEditToolReceiptFreeResponseV1(
+      name,
+      receiptFree,
+      host?.semanticAuthorityId
+    )
     return attachEditToolAuditReceiptV1(
       name,
       receiptFree,
@@ -915,7 +963,8 @@ export async function callEditTool(
         toolName: name,
         rawArguments,
         receiptFree,
-      })
+      }),
+      host?.semanticAuthorityId
     )
   }
   const requestSha256 = editRequestSha256V1(name, request, options)
@@ -995,19 +1044,33 @@ export async function callEditTool(
             context: {},
           },
         }
-        assertEditToolReceiptFreeResponseV1(name, receiptFree)
-        prevalidateAuditedEditResponseV1(name, receiptFree, begun)
+        assertEditToolReceiptFreeResponseV1(
+          name,
+          receiptFree,
+          host?.semanticAuthorityId
+        )
+        prevalidateAuditedEditResponseV1(
+          name,
+          receiptFree,
+          begun,
+          host?.semanticAuthorityId
+        )
         return attachEditToolAuditReceiptV1(
           name,
           receiptFree,
-          complete('refused', receiptFree)
+          complete('refused', receiptFree),
+          host?.semanticAuthorityId
         )
       }
       if (retained.state === 'matched')
       {
         const receiptFree = retained.outcome
           .receiptFreeOutcome as unknown as Record<string, unknown>
-        assertEditToolReceiptFreeResponseV1(name, receiptFree)
+        assertEditToolReceiptFreeResponseV1(
+          name,
+          receiptFree,
+          host?.semanticAuthorityId
+        )
         if (
           editReceiptFreeOutcomeSha256V1(
             receiptFree as unknown as EditToolReceiptFreeResultV1
@@ -1017,14 +1080,20 @@ export async function callEditTool(
             'mcp.audit-idempotency-invalid',
             'retained idempotency envelope does not match its authenticated hash'
           )
-        prevalidateAuditedEditResponseV1(name, receiptFree, begun)
+        prevalidateAuditedEditResponseV1(
+          name,
+          receiptFree,
+          begun,
+          host?.semanticAuthorityId
+        )
         return attachEditToolAuditReceiptV1(
           name,
           receiptFree,
           complete(
             receiptFree.ok === false ? 'refused' : 'completed',
             receiptFree
-          )
+          ),
+          host?.semanticAuthorityId
         )
       }
       if (!host)
@@ -1045,15 +1114,25 @@ export async function callEditTool(
         })
       )) as Record<string, unknown>
       options.afterHostCall?.()
-      assertEditToolReceiptFreeResponseV1(name, receiptFree)
-      prevalidateAuditedEditResponseV1(name, receiptFree, begun)
+      assertEditToolReceiptFreeResponseV1(
+        name,
+        receiptFree,
+        host?.semanticAuthorityId
+      )
+      prevalidateAuditedEditResponseV1(
+        name,
+        receiptFree,
+        begun,
+        host?.semanticAuthorityId
+      )
       return attachEditToolAuditReceiptV1(
         name,
         receiptFree,
         complete(
           receiptFree.ok === false ? 'refused' : 'completed',
           receiptFree
-        )
+        ),
+        host?.semanticAuthorityId
       )
     }
     catch (error)
@@ -1089,6 +1168,8 @@ export function profileTools(
   projectTools: readonly Tool[]
 ): readonly Tool[]
 {
+  if (profile === 'authoring-v1') return authoringProfileToolsV1()
+  if (profile === 'development-v1') return DEVELOPMENT_TOOLS_V1
   return profile === 'project-edit'
     ? PROJECT_EDIT_PROFILE_TOOLS
     : Object.freeze([...repairTools, ...projectTools])

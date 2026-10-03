@@ -22,8 +22,10 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { buildFixtureSb3, packSb3, unpackSb3 } from '@scratch-agent/sb3'
 
 import {
+  DEVELOPMENT_TOOLS_V1,
   MAX_MCP_PROJECT_ENVELOPE_BYTES,
   createScratchMcpServer,
+  validateClosedJsonSchemaValueV1,
 } from '@scratch-agent/mcp'
 import {
   MAX_PROJECT_TOOL_DATA_BYTES,
@@ -166,6 +168,62 @@ test('project MCP opens, paginates, runs, reports, and rejects policy bypasses',
     const schema = JSON.stringify(tool.inputSchema)
     assert.doesNotMatch(schema, /allowNetwork|allowedOrigins/)
     assert.doesNotMatch(schema, /inputRoot|outputRoot|artifactRoot/)
+  }
+
+  const viewSchema = DEVELOPMENT_TOOLS_V1.find(
+    (tool) => tool.name === 'development_command'
+  )?.inputSchema
+  assert.ok(viewSchema)
+  const overlayRequest = (cloneKey: unknown) => ({
+    sessionId: 'session',
+    command: {
+      kind: 'view',
+      overlays: [
+        {
+          id: 'collision',
+          kind: 'rectangle',
+          purpose: 'declared-collision',
+          x: {
+            probe: {
+              targetIndex: 1,
+              instance: { cloneKey },
+              property: 'x',
+            },
+          },
+          y: 0,
+          width: 10,
+          height: 10,
+        },
+      ],
+    },
+  })
+  for (const cloneKey of ['fighter', 1, true])
+  {
+    assert.deepEqual(
+      validateClosedJsonSchemaValueV1(viewSchema, overlayRequest(cloneKey)),
+      []
+    )
+  }
+  for (const cloneKey of [[], null])
+  {
+    assert.ok(
+      validateClosedJsonSchemaValueV1(viewSchema, overlayRequest(cloneKey))
+        .length > 0
+    )
+  }
+  assert.deepEqual(validateClosedJsonSchemaValueV1({ type: 'string' }, 1), [
+    ': expected string',
+  ])
+  assert.deepEqual(
+    validateClosedJsonSchemaValueV1({ type: ['string', 'null'] }, null),
+    []
+  )
+  for (const type of [[], ['string', 'unsupported'], ['string', 1]])
+  {
+    assert.throws(
+      () => validateClosedJsonSchemaValueV1({ type }, 'fighter'),
+      TypeError
+    )
   }
 
   errorEnvelope(
