@@ -205,7 +205,10 @@ export function officialScratchRuntimeDescriptor(options: {
       '@scratch/scratch-render',
       options.rendererBundle
     ),
-    componentIdentityForBytes('scratch-storage', options.storageBundle),
+    componentIdentityForBytes(
+      '@scratch/scratch-storage',
+      options.storageBundle
+    ),
     componentIdentityForBytes(
       '@scratch/scratch-svg-renderer',
       options.svgBundle

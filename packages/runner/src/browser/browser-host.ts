@@ -1,7 +1,7 @@
 // packages/runner/src/browser/browser-host.ts
 // shared rendered-page launch, routing, network, input-guard, identity, & teardown policy
 
-import { mkdirSync, readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -126,6 +126,24 @@ function packageBytes(name: string, relativePath: string): Buffer
   return readFileSync(join(resolvePackageManifest(name).root, relativePath))
 }
 
+// hashed chunk names change per upstream release; scan instead of hardcoding
+function storageFetchWorkers(): { path: string; bytes: Buffer }[]
+{
+  const chunksRoot = join(
+    resolvePackageManifest('@scratch/scratch-storage').root,
+    'dist',
+    'web',
+    'chunks'
+  )
+  return readdirSync(chunksRoot)
+    .filter((name) => /^fetch-worker\..+\.js$/.test(name))
+    .sort()
+    .map((name) => ({
+      path: `chunks/${name}`,
+      bytes: readFileSync(join(chunksRoot, name)),
+    }))
+}
+
 function loadRuntimeAssets(
   kind: RenderedBrowserRuntime,
   options: RenderedBrowserNetworkOptions
@@ -154,7 +172,7 @@ function loadRuntimeAssets(
     'dist/web/scratch-render.js'
   )
   const storageBundle = packageBytes(
-    'scratch-storage',
+    '@scratch/scratch-storage',
     'dist/web/scratch-storage.js'
   )
   const svgBundle = packageBytes(
@@ -166,14 +184,10 @@ function loadRuntimeAssets(
     '@scratch/scratch-vm',
     'dist/web/extension-worker.js'
   )
-  const storageWorkerPath = 'chunks/fetch-worker.7298f079654fee093ceb.js'
-  const storageWorker = packageBytes(
-    'scratch-storage',
-    'dist/web/chunks/fetch-worker.7298f079654fee093ceb.js'
-  )
+  const fetchWorkers = storageFetchWorkers()
   const workers = [
     identityForBytes('extension-worker.js', extensionWorker),
-    identityForBytes(storageWorkerPath, storageWorker),
+    ...fetchWorkers.map(({ path, bytes }) => identityForBytes(path, bytes)),
   ]
   return {
     runtimeId: OFFICIAL_RUNTIME_ID,
@@ -186,7 +200,10 @@ function loadRuntimeAssets(
       { routePath: '/vendor/scratch-svg-renderer.js', bytes: svgBundle },
       { routePath: '/runtime.js', bytes: bundle },
       { routePath: '/extension-worker.js', bytes: extensionWorker },
-      { routePath: `/${storageWorkerPath}`, bytes: storageWorker },
+      ...fetchWorkers.map(({ path, bytes }) => ({
+        routePath: `/${path}`,
+        bytes,
+      })),
     ],
     descriptor(browserVersion: string): RuntimeDescriptorV1
     {

@@ -429,8 +429,8 @@ export function verifyMultimodalRetainedJudgmentInputs(
   judgment: MultimodalAgentJudgmentRecordV2
 ): { artifact: boolean; rubric: boolean }
 {
-  let artifact = false
-  let rubric = false
+  let artifact: boolean
+  let rubric: boolean
   try
   {
     const bytes = readMultimodalBoundedRegularFile(
@@ -1861,7 +1861,7 @@ export async function recordMultimodalAgent(
   let corpusDefinition: RetainedCorpusDefinitionEntryV1[] | null = null
   let corpusDefinitionPath: string | null = null
   let capturedSelected: CapturedSelectedProject | null = null
-  let stagedSelected: StagedJudgment | null = null
+  let stagedSelected: StagedJudgment | null
   let activeStaged: StagedJudgment | null = null
   let finalizationStarted = false
   const judgments: MultimodalAgentJudgmentRecordV2[] = []

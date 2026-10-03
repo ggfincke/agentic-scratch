@@ -2900,8 +2900,8 @@ async function experimentMain(): Promise<void>
   const commit = startSource.commit ?? 'unknown'
   const npmVersion = commandOutput('npm', ['--version'])
   const sandboxes: string[] = []
-  let experimentStatus: 'complete' | 'invalid' = 'invalid'
-  let report: MultimodalHeadlessGlReportV2 | null = null
+  let experimentStatus: 'complete' | 'invalid'
+  let report: MultimodalHeadlessGlReportV2 | null
   try
   {
     const prepared = await prepareCases(runRoot)

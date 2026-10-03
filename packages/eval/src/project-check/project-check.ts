@@ -710,7 +710,7 @@ export async function runProjectCheck(
 
   let inspection: InspectionState | null = null
   let parsedJson: ProjectJson | null = null
-  let admission: Sb3Admission | null = null
+  let admission: Sb3Admission | null
   const admissionStart = nowMs()
   try
   {

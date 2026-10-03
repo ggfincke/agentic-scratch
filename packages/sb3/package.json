@@ -21,6 +21,10 @@
   },
   "dependencies": {
     "jszip": "^3.10.1",
+    "pngjs": "7.0.0",
     "scratch-parser": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/pngjs": "6.0.5"
   }
 }

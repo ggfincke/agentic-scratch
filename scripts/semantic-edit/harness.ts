@@ -743,7 +743,9 @@ export function readBoundedJsonV1(
   catch (error)
   {
     const message = error instanceof Error ? error.message : 'invalid JSON'
-    throw new Error(`${label} is not strict bounded JSON: ${message}`)
+    throw new Error(`${label} is not strict bounded JSON: ${message}`, {
+      cause: error,
+    })
   }
 }
 

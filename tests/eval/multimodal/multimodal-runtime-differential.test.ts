@@ -300,10 +300,10 @@ test('Multimodal runs and classifies a real rendered runtime differential', asyn
       ({ name, version }) => [name, version]
     ),
     [
-      ['@scratch/scratch-vm', '14.1.0'],
-      ['@scratch/scratch-render', '14.1.0'],
-      ['scratch-storage', '6.2.1'],
-      ['@scratch/scratch-svg-renderer', '14.1.0'],
+      ['@scratch/scratch-vm', '15.1.0'],
+      ['@scratch/scratch-render', '15.1.0'],
+      ['@scratch/scratch-storage', '15.1.0'],
+      ['@scratch/scratch-svg-renderer', '15.1.0'],
       ['scratch-audio', '2.0.268'],
       ['playwright', '1.61.1'],
     ]
@@ -321,12 +321,13 @@ test('Multimodal runs and classifies a real rendered runtime differential', asyn
   assert.ok(
     (differential.report.left.runtimeDescriptor.bundle?.byteLength ?? 0) > 0
   )
-  assert.deepEqual(
-    differential.official.runtimeDescriptor.workers.map(
-      (worker) => worker.path
-    ),
-    ['extension-worker.js', 'chunks/fetch-worker.7298f079654fee093ceb.js']
+  const workerPaths = differential.official.runtimeDescriptor.workers.map(
+    (worker) => worker.path
   )
+  assert.equal(workerPaths[0], 'extension-worker.js')
+  assert.ok(workerPaths.length >= 2)
+  for (const path of workerPaths.slice(1))
+    assert.match(path, /^chunks\/fetch-worker\..+\.js$/)
   for (const worker of differential.report.left.runtimeDescriptor.workers)
   {
     assert.match(worker.sha256, /^[0-9a-f]{64}$/)

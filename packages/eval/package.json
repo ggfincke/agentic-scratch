@@ -19,5 +19,8 @@
     "@scratch-agent/sb3": "*",
     "@scratch-agent/static": "*",
     "@scratch-agent/validate": "*"
+  },
+  "optionalDependencies": {
+    "fs-ext": "2.1.1"
   }
 }

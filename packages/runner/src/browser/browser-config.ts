@@ -18,7 +18,7 @@ export const OFFICIAL_BROWSER_LINEAGE_IDENTITY: RuntimeLineageLoaderIdentityV1 =
   Object.freeze({
     laneId: 'official-browser',
     loaderId: '@scratch/scratch-vm/dist/web sb3.deserialize',
-    loaderVersion: '14.1.0',
+    loaderVersion: '15.1.0',
     seamId: 'VirtualMachine.installTargets(wholeProject)',
     declarationNormalizationId: 'replaceUnsafeCharsInVariableIds@sb3',
   })

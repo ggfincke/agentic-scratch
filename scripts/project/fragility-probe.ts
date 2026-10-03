@@ -286,7 +286,7 @@ function projectWithBlocks(
     extensions: [],
     meta: {
       semver: '3.0.0',
-      vm: '14.1.0',
+      vm: '15.1.0',
       agent: 'fragility-probe',
     },
   }

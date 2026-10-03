@@ -401,7 +401,7 @@ function parseCodexTrace(
     .entries())
     {
     if (!line.trim()) continue
-    let event: Record<string, unknown> | null = null
+    let event: Record<string, unknown> | null
     try
     {
       event = record(JSON.parse(line))
@@ -1439,7 +1439,7 @@ async function main(): Promise<void>
   )
     errors.push('edit_export result does not reconcile its terminal output')
 
-  let completionHost: PreparedSemanticEditMcpHostEvidenceV1 | null = null
+  let completionHost: PreparedSemanticEditMcpHostEvidenceV1 | null
   let acceptedEvidence: SemanticEditAcceptedEvidenceV1 | null = null
   let reconciliation: ReturnType<typeof reconcileSemanticEditTraceV1> | null =
     null

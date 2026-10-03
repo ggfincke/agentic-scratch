@@ -5,6 +5,9 @@
   "description": "IR-first, .sb3-backed agentic Scratch development workbench",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "workspaces": [
     "packages/*"
   ],
@@ -84,7 +87,8 @@
     "arrowParens": "always"
   },
   "allowScripts": {
-    "esbuild@0.28.1": true
+    "esbuild@0.28.2": true,
+    "fs-ext@2.1.1": true
   },
   "overrides": {
     "@scratch/scratch-render": {
@@ -95,16 +99,18 @@
     }
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.0",
+    "@eslint/js": "^10.0.1",
+    "@turbowarp/sb3fix": "^0.5.0",
     "@types/node": "^24.10.0",
-    "esbuild": "^0.28.1",
-    "eslint": "^9.39.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.9.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.7.0",
+    "parse-sb3-blocks": "^0.5.2",
     "prettier": "^3.9.0",
     "prettier-plugin-brace-style": "^0.10.2",
     "scratch-blocks": "2.1.19",
-    "tsx": "^4.22.0",
+    "tsx": "^4.23.12",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "typescript-eslint": "^8.62.0"
   }
