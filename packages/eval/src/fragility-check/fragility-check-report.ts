@@ -125,6 +125,20 @@ export function fragilityCheckReportMarkdown(
     `- boundary table sha256: ${mdCode(report.boundaryModel.boundaryTableSha256)}`,
     `- probe script sha256: ${mdCode(report.boundaryModel.corroboratedBy.probeScriptSha256)}`,
     '',
+    '## Analysis budget',
+    '',
+    `- completion: ${mdCode(report.analysis.completion)}`,
+    `- policy sha256: ${mdCode(report.analysis.budget.policySha256)}`,
+    `- expanded occurrences: ${mdCode(report.analysis.budget.usage.expandedOccurrences)} / ${mdCode(report.analysis.budget.limits.expandedOccurrences)}`,
+    `- maximum depth: ${mdCode(report.analysis.budget.usage.depth)} / ${mdCode(report.analysis.budget.limits.depth)}`,
+    `- work units: ${mdCode(report.analysis.budget.usage.workUnits)} / ${mdCode(report.analysis.budget.limits.workUnits)}`,
+    `- exhausted limit: ${mdCode(report.analysis.budget.exhaustedBy ?? 'none')}`,
+    `- bounded partial execution blocks: ${mdCode(report.analysis.budget.partialExecution.length)}`,
+    ...report.analysis.budget.partialExecution.map(
+      (entry) =>
+        `  - target ${mdCode(entry.targetName)}; block ${mdCode(entry.blockId)}; opcode ${mdCode(entry.opcode)}; detail ${mdCode(entry.detail)}`
+    ),
+    '',
     '## Signature coverage',
     '',
     '| Signature | Ran | Findings | Indeterminate |',
@@ -174,7 +188,9 @@ export function writeFragilityCheckCheckpoint(
     throw new Error('fragility checkpoint requires a terminal report')
   if (
     report.overall.status === 'passed' &&
-    (report.issues.length > 0 || report.overall.gatedFindingCount > 0)
+    (report.analysis.completion !== 'complete' ||
+      report.issues.length > 0 ||
+      report.overall.gatedFindingCount > 0)
   )
     throw new Error('fragility PASS checkpoint violates report invariants')
   store.writeTextBatch([

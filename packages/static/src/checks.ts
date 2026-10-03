@@ -12,6 +12,7 @@ import {
   type Diagnostics,
   type ProjectIndex,
 } from '@scratch-agent/validate'
+import { buildSemanticReferenceIndex, ProjectIR } from '@scratch-agent/ir'
 
 import {
   broadcastReceivedName,
@@ -19,6 +20,7 @@ import {
   eachBlock,
   isHat,
   isLiteralPrimitive,
+  isStatementOpcode,
   primarySlot,
 } from './helpers.js'
 
@@ -65,6 +67,7 @@ function gather(json: ProjectJson): Facts
   const referencedVarIds = new Set<string>()
   const callProccodes = new Map<Target, Set<string>>()
   let hasDynamicSend = false
+  let hasSensingProperty = false
 
   for (const target of json.targets)
   {
@@ -80,6 +83,7 @@ function gather(json: ProjectJson): Facts
         continue
       }
       const varField = scratchRecordValue(entry.fields, 'VARIABLE')
+      if (entry.opcode === 'sensing_of') hasSensingProperty = true
       if (varField && typeof varField[1] === 'string')
         referencedVarIds.add(varField[1])
       for (const [, input] of scratchRecordEntries(entry.inputs))
@@ -115,6 +119,29 @@ function gather(json: ProjectJson): Facts
   for (const monitor of json.monitors ?? [])
   {
     if (monitor.opcode === 'data_variable') referencedVarIds.add(monitor.id)
+  }
+
+  if (hasSensingProperty)
+  {
+    const references = buildSemanticReferenceIndex(
+      ProjectIR.fromProjectJson(json)
+    )
+    for (const use of references.sensingDeclarationUses)
+    {
+      if (use.declaration) referencedVarIds.add(use.declaration.id)
+      for (const declaration of use.candidateDeclarations)
+        referencedVarIds.add(declaration.id)
+    }
+    const dynamicNames = new Set(
+      references.dynamicDeclarationNameReferences.map(
+        (use) => use.referencedName
+      )
+    )
+    for (const variable of references.variables)
+    {
+      if (dynamicNames.has(variable.declaration.name))
+        referencedVarIds.add(variable.declaration.id)
+    }
   }
 
   return {
@@ -254,11 +281,7 @@ function checkScripts(json: ProjectJson, diags: Diagnostics): void
           )
         }
       }
-      else if (
-        block.opcode !== 'procedures_prototype' &&
-        !block.opcode.startsWith('argument_reporter') &&
-        !isReporterOpcode(block.opcode)
-      )
+      else if (isStatementOpcode(block.opcode))
       {
         diags.info(
           STATIC_DIAGNOSTIC_CODES.deadCode,
@@ -281,15 +304,6 @@ function checkScripts(json: ProjectJson, diags: Diagnostics): void
       }
     }
   })
-}
-
-function isReporterOpcode(opcode: string): boolean
-{
-  return (
-    opcode.startsWith('operator_') ||
-    opcode.startsWith('sensing_') ||
-    opcode.startsWith('argument_')
-  )
 }
 
 function substackInputs(opcode: string): { name: string; label: string }[]

@@ -350,14 +350,14 @@ function declarationMatchesTarget(
 function assertionDeclarations(
   indexes: LocalizationIndexes,
   kind: 'variable' | 'list',
-  ownerName: string,
+  ownerName: string | undefined,
   name: string
 ): AnyIndexedDeclaration[]
 {
-  const targets = indexes.targets.filter(
-    (target) =>
-      target.name === ownerName &&
-      (ownerName === 'Stage' ? target.isStage : !target.isStage)
+  const targets = indexes.targets.filter((target) =>
+    ownerName === undefined
+      ? target.isStage
+      : !target.isStage && target.name === ownerName
   )
   const declarations = kind === 'variable' ? indexes.variables : indexes.lists
   return declarations.filter((declaration) =>
@@ -927,7 +927,7 @@ export function localizeFailures(input: LocalizationInput): LocalizationReport
       const declarations = assertionDeclarations(
         indexes,
         probe.on === 'var' ? 'variable' : 'list',
-        owner,
+        probe.sprite,
         probe.name
       )
       if (declarations.length === 0)

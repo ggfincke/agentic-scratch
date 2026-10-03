@@ -8,6 +8,8 @@ import { collectVersions, newRunId } from '@scratch-agent/runner'
 import { admitSb3, type ProjectJson } from '@scratch-agent/sb3'
 import {
   analyzeFragility,
+  FRAGILITY_ANALYSIS_POLICY_V1,
+  FRAGILITY_ANALYSIS_POLICY_SHA256_V1,
   type FragilityAnalysis,
   type FragilityFinding,
 } from '@scratch-agent/static'
@@ -254,6 +256,21 @@ function initialReport(
         probeScriptSha256: 'unavailable',
       },
     },
+    analysis: {
+      completion: 'not-started',
+      budget: {
+        policySha256: FRAGILITY_ANALYSIS_POLICY_SHA256_V1,
+        limits: {
+          expandedOccurrences:
+            FRAGILITY_ANALYSIS_POLICY_V1.maximumExpandedOccurrences,
+          depth: FRAGILITY_ANALYSIS_POLICY_V1.maximumDepth,
+          workUnits: FRAGILITY_ANALYSIS_POLICY_V1.maximumWorkUnits,
+        },
+        usage: { expandedOccurrences: 0, depth: 0, workUnits: 0 },
+        exhaustedBy: null,
+        partialExecution: [],
+      },
+    },
     findings: [],
     advisories: [],
     signatureCoverage: [],
@@ -273,7 +290,7 @@ function initialReport(
     },
     claims: {
       proves: [
-        'the listed signatures were evaluated against the admitted block graph',
+        'signature coverage distinguishes completed checks from bounded partial evidence',
         'the boundary model hash + probe hash bind the semantics used',
       ],
       doesNotProve: [
@@ -390,25 +407,26 @@ function boundFinding(
 
 function maximumEvidenceOmitted(analysis: FragilityAnalysis): number
 {
-  return Math.max(
-    0,
-    ...[...analysis.findings, ...analysis.advisories].map((finding) =>
-      Math.max(0, finding.evidence.length - MAX_EVIDENCE_PER_FINDING)
-    )
-  )
+  let maximum = 0
+  for (const findings of [analysis.findings, analysis.advisories])
+    for (const finding of findings)
+      maximum = Math.max(
+        maximum,
+        finding.evidence.length - MAX_EVIDENCE_PER_FINDING
+      )
+  return maximum
 }
 
 function maximumCounterEvidenceOmitted(analysis: FragilityAnalysis): number
 {
-  return Math.max(
-    0,
-    ...[...analysis.findings, ...analysis.advisories].map((finding) =>
-      Math.max(
-        0,
+  let maximum = 0
+  for (const findings of [analysis.findings, analysis.advisories])
+    for (const finding of findings)
+      maximum = Math.max(
+        maximum,
         finding.counterEvidence.length - MAX_COUNTER_EVIDENCE_PER_FINDING
       )
-    )
-  )
+  return maximum
 }
 
 function retainAnalysis(
@@ -417,6 +435,24 @@ function retainAnalysis(
   projector: TextProjector
 ): void
 {
+  const partialStats: TextProjectionStats = {
+    valuesTruncated: 0,
+    bytesOmitted: 0,
+  }
+  report.analysis = {
+    completion: analysis.completion,
+    budget: {
+      ...analysis.budget,
+      partialExecution: analysis.budget.partialExecution.map((entry) => ({
+        targetName: projector.project(entry.targetName, partialStats),
+        blockId: projector.project(entry.blockId, partialStats),
+        opcode: projector.project(entry.opcode, partialStats),
+        role: projector.project(entry.role, partialStats),
+        detail: projector.project(entry.detail, partialStats),
+      })),
+    },
+  }
+  addTextProjectionStats(report, partialStats)
   report.findings = analysis.findings
     .slice(0, MAX_REPORT_FINDINGS)
     .map((finding) => boundFinding(report, projector, finding))
@@ -475,7 +511,10 @@ function completeOverall(
 {
   report.overall.gatedFindingCount = gated
   report.overall.status =
-    analysisCompleted && report.issues.length === 0 && gated === 0
+    analysisCompleted &&
+    report.analysis.completion === 'complete' &&
+    report.issues.length === 0 &&
+    gated === 0
       ? 'passed'
       : 'failed'
 }
@@ -634,6 +673,16 @@ export async function runFragilityCheck(
     report.conversionProvenance = conversionProvenance(json, report, projector)
     analysis = analyzeFragility(json, buildIndex(json))
     retainAnalysis(report, analysis, projector)
+    if (analysis.completion === 'incomplete')
+      report.issues.push(
+        issue(
+          report,
+          projector,
+          FRAGILITY_CHECK_ISSUE_CODES.analysisBudgetExhausted,
+          `fragility analysis exhausted its ${analysis.budget.exhaustedBy} budget; retained evidence is incomplete`,
+          'analysis'
+        )
+      )
   }
   catch (error)
   {
@@ -673,6 +722,12 @@ export async function runFragilityCheck(
     analysis.findings,
     report.overall.failOnSeverity
   )
-  finalizeAndCheckpoint(store, report, projector, true, gated)
+  finalizeAndCheckpoint(
+    store,
+    report,
+    projector,
+    analysis.completion === 'complete',
+    gated
+  )
   return result(report, options.runRoot, store)
 }

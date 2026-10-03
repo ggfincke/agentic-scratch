@@ -190,8 +190,84 @@ for (const c of cases)
   })
 }
 
-test('a clean sprite raises no static diagnostics', () =>
+test('static keeps shape & sensing diagnostics precise', () =>
 {
-  const { ir } = makeProject()
+  const { ir, sprite } = makeProject()
   assert.equal(analyzeStaticProject(ir).diagnostics.length, 0)
+
+  for (const opcode of [
+    'motion_xposition',
+    'looks_costumenumbername',
+    'sound_volume',
+    'legacy_unknown_reporter',
+  ])
+    sprite.blocks[opcode] = stub(opcode)
+  sprite.blocks['ask'] = stub('sensing_askandwait', {
+    inputs: { QUESTION: [1, [10, 'ready?']] },
+  })
+
+  const stage = ir.json.targets.find((target) => target.isStage)!
+  stage.variables['stage-score'] = ['score', 0]
+  sprite.variables['sprite-score'] = ['score', 0]
+  stage.variables['stage-maybe'] = ['maybe', 0]
+  sprite.variables['sprite-maybe'] = ['maybe', 0]
+  sprite.variables['lonely'] = ['lonely', 0]
+  stage.blocks['flag'] = stub('event_whenflagclicked', { next: 'say-score' })
+  stage.blocks['say-score'] = stub('looks_say', {
+    topLevel: false,
+    parent: 'flag',
+    next: 'say-maybe',
+    inputs: { MESSAGE: [2, 'read-score'] },
+  })
+  stage.blocks['read-score'] = stub('sensing_of', {
+    topLevel: false,
+    parent: 'say-score',
+    fields: { PROPERTY: ['score', null] },
+    inputs: { OBJECT: [1, 'score-target'] },
+  })
+  stage.blocks['score-target'] = stub('sensing_of_object_menu', {
+    topLevel: false,
+    parent: 'read-score',
+    shadow: true,
+    fields: { OBJECT: ['Sprite1', null] },
+  })
+  stage.blocks['say-maybe'] = stub('looks_say', {
+    topLevel: false,
+    parent: 'say-score',
+    inputs: { MESSAGE: [2, 'read-maybe'] },
+  })
+  stage.blocks['read-maybe'] = stub('sensing_of', {
+    topLevel: false,
+    parent: 'say-maybe',
+    fields: { PROPERTY: ['maybe', null] },
+    inputs: { OBJECT: [3, 'computed-target', 'maybe-target'] },
+  })
+  stage.blocks['computed-target'] = stub('operator_join', {
+    topLevel: false,
+    parent: 'read-maybe',
+    inputs: { STRING1: [1, [10, 'Sprite']], STRING2: [1, [10, '1']] },
+  })
+  stage.blocks['maybe-target'] = stub('sensing_of_object_menu', {
+    topLevel: false,
+    parent: 'read-maybe',
+    shadow: true,
+    fields: { OBJECT: ['Sprite1', null] },
+  })
+
+  const report = analyzeStaticProject(ir)
+  assert.deepEqual(
+    report.diagnostics
+      .filter((entry) => entry.code === 'dead-code')
+      .map((entry) => entry.location?.block),
+    ['ask']
+  )
+  assert.deepEqual(
+    report.diagnostics
+      .filter((entry) => entry.code === 'unused-variable')
+      .map((entry) => [entry.location?.target, entry.message]),
+    [
+      ['Stage', 'variable "score" is declared but never used'],
+      ['Sprite1', 'variable "lonely" is declared but never used'],
+    ]
+  )
 })

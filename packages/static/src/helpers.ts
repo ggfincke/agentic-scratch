@@ -14,14 +14,17 @@ import {
   scratchRecordValue,
 } from '@scratch-agent/sb3'
 import { isBlock } from '@scratch-agent/validate'
-
-// hat (script-starting) opcodes; the /when/ heuristic covers extension hats too,
-// so we over-include rather than risk calling a real script "dead"
-const HATS = new Set(['control_start_as_clone', 'procedures_definition'])
+import { knownScratchBlockShapeV2 } from '@scratch-agent/ir/edit'
 
 export function isHat(opcode: string): boolean
 {
-  return HATS.has(opcode) || /when/i.test(opcode)
+  return knownScratchBlockShapeV2(opcode) === 'hat'
+}
+
+export function isStatementOpcode(opcode: string): boolean
+{
+  const shape = knownScratchBlockShapeV2(opcode)
+  return shape === 'stack' || shape === 'cap' || shape === 'cShape'
 }
 
 // every object block in the project, paired w/ its owning target

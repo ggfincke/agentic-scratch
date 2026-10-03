@@ -21,6 +21,7 @@ import { isBlock, type ProjectIndex } from '@scratch-agent/validate'
 
 import { isLiteralPrimitive, primarySlot } from '../helpers.js'
 import { isBudgetBurner, warpBreakerFor } from './boundary-model.js'
+import { FragilityAnalysisBudgetV1 } from './analysis-budget.js'
 
 const LOOP_ENTRIES = new Set([
   'control_forever',
@@ -53,18 +54,31 @@ export interface ProcedureCallGraph
 function uniquePush<T>(
   values: T[],
   value: T,
-  keyOf: (entry: T) => string
+  keyOf: (entry: T) => string,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): void
 {
+  budget.work()
+
   const key = keyOf(value)
-  if (!values.some((entry) => keyOf(entry) === key)) values.push(value)
+  if (
+    !values.some((entry) =>
+    {
+      budget.work()
+      return keyOf(entry) === key
+    })
+  )
+    values.push(value)
 }
 
 export function buildProcedureCallGraph(
   json: ProjectJson,
-  index: ProjectIndex
+  index: ProjectIndex,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): ProcedureCallGraph
 {
+  budget.work()
+
   const procedures = index.semantic.procedures
   const calleesByProcedure = new Map<string, IndexedProcedure[]>()
   const callersByProcedure = new Map<string, IndexedProcedure[]>()
@@ -73,6 +87,8 @@ export function buildProcedureCallGraph(
 
   for (const procedure of procedures)
   {
+    budget.work()
+
     const key = procedureKey(procedure.target, procedure.proccode)
     calleesByProcedure.set(key, [])
     callersByProcedure.set(key, [])
@@ -83,9 +99,13 @@ export function buildProcedureCallGraph(
 
   for (const callee of procedures)
   {
+    budget.work()
+
     const calleeKey = procedureKey(callee.target, callee.proccode)
     for (const call of callee.calls)
     {
+      budget.work()
+
       if (!json.targets[call.target.targetIndex]) continue
       const indexedCall = index.semantic.blockByKey.get(blockKey(call))
       const callerScript = indexedCall?.topScript
@@ -101,13 +121,27 @@ export function buildProcedureCallGraph(
         const callerKey = procedureKey(caller.target, caller.proccode)
         const callees = calleesByProcedure.get(callerKey)
         if (callees)
-          uniquePush(callees, callee, (entry) =>
-            procedureKey(entry.target, entry.proccode)
+          uniquePush(
+            callees,
+            callee,
+            (entry) =>
+            {
+              budget.work()
+              return procedureKey(entry.target, entry.proccode)
+            },
+            budget
           )
         const callers = callersByProcedure.get(calleeKey)
         if (callers)
-          uniquePush(callers, caller, (entry) =>
-            procedureKey(entry.target, entry.proccode)
+          uniquePush(
+            callers,
+            caller,
+            (entry) =>
+            {
+              budget.work()
+              return procedureKey(entry.target, entry.proccode)
+            },
+            budget
           )
       }
       else
@@ -120,7 +154,7 @@ export function buildProcedureCallGraph(
         )
         if (callerTop?.opcode === 'procedures_definition') continue
         const callers = nonProcedureCallers.get(calleeKey)
-        if (callers) uniquePush(callers, callerScript, scriptKey)
+        if (callers) uniquePush(callers, callerScript, scriptKey, budget)
       }
     }
   }
@@ -128,6 +162,8 @@ export function buildProcedureCallGraph(
   const effectiveWarpProcedures = new Set<string>()
   for (const procedure of procedures)
   {
+    budget.work()
+
     if (procedure.warp === true)
       effectiveWarpProcedures.add(
         procedureKey(procedure.target, procedure.proccode)
@@ -136,13 +172,19 @@ export function buildProcedureCallGraph(
   let changed = true
   while (changed)
   {
+    budget.work()
+
     changed = false
     for (const caller of procedures)
     {
+      budget.work()
+
       const callerKey = procedureKey(caller.target, caller.proccode)
       if (!effectiveWarpProcedures.has(callerKey)) continue
       for (const callee of calleesByProcedure.get(callerKey) ?? [])
       {
+        budget.work()
+
         const calleeKey = procedureKey(callee.target, callee.proccode)
         if (effectiveWarpProcedures.has(calleeKey)) continue
         effectiveWarpProcedures.add(calleeKey)
@@ -154,6 +196,8 @@ export function buildProcedureCallGraph(
   const unwarpedProcedures = new Set<string>()
   for (const procedure of procedures)
   {
+    budget.work()
+
     const key = procedureKey(procedure.target, procedure.proccode)
     if (
       procedure.warp !== true &&
@@ -164,13 +208,19 @@ export function buildProcedureCallGraph(
   changed = true
   while (changed)
   {
+    budget.work()
+
     changed = false
     for (const caller of procedures)
     {
+      budget.work()
+
       const callerKey = procedureKey(caller.target, caller.proccode)
       if (!unwarpedProcedures.has(callerKey)) continue
       for (const callee of calleesByProcedure.get(callerKey) ?? [])
       {
+        budget.work()
+
         const calleeKey = procedureKey(callee.target, callee.proccode)
         if (callee.warp === true || unwarpedProcedures.has(calleeKey)) continue
         unwarpedProcedures.add(calleeKey)
@@ -182,6 +232,8 @@ export function buildProcedureCallGraph(
   const mixedContextProcedures = new Set<string>()
   for (const procedure of procedures)
   {
+    budget.work()
+
     const key = procedureKey(procedure.target, procedure.proccode)
     if (
       procedure.warp !== true &&
@@ -203,9 +255,12 @@ export function buildProcedureCallGraph(
 
 export function effectiveWarp(
   procedure: IndexedProcedure,
-  graph: ProcedureCallGraph
+  graph: ProcedureCallGraph,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): boolean
 {
+  budget.work()
+
   return graph.effectiveWarpProcedures.has(
     procedureKey(procedure.target, procedure.proccode)
   )
@@ -213,16 +268,25 @@ export function effectiveWarp(
 
 export function mixedContext(
   procedure: IndexedProcedure,
-  graph: ProcedureCallGraph
+  graph: ProcedureCallGraph,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): boolean
 {
+  budget.work()
+
   return graph.mixedContextProcedures.has(
     procedureKey(procedure.target, procedure.proccode)
   )
 }
 
-function rawBlock(json: ProjectJson, ref: BlockRef): Block | undefined
+function rawBlock(
+  json: ProjectJson,
+  ref: BlockRef,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
+): Block | undefined
 {
+  budget.work()
+
   const target = json.targets[ref.target.targetIndex]
   const entry = target
     ? scratchRecordValue(target.blocks, ref.blockId)
@@ -236,8 +300,13 @@ interface StaticValue
   value?: string | number | null
 }
 
-function fieldValue(field: BlockField | undefined): StaticValue
+function fieldValue(
+  field: BlockField | undefined,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
+): StaticValue
 {
+  budget.work()
+
   return field ? { known: true, value: field[0] } : { known: false }
 }
 
@@ -246,10 +315,13 @@ function inputValue(
   ref: BlockRef,
   inputName: string,
   menuOpcode: string,
-  fieldName: string
+  fieldName: string,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): StaticValue
 {
-  const block = rawBlock(json, ref)
+  budget.work()
+
+  const block = rawBlock(json, ref, budget)
   const input = block ? scratchRecordValue(block.inputs, inputName) : undefined
   if (!input) return { known: false }
   const slot = primarySlot(input)
@@ -259,18 +331,28 @@ function inputValue(
   const target = json.targets[ref.target.targetIndex]
   const menu = target ? scratchRecordValue(target.blocks, slot) : undefined
   if (!isBlock(menu) || menu.opcode !== menuOpcode) return { known: false }
-  return fieldValue(scratchRecordValue(menu.fields, fieldName))
+  return fieldValue(scratchRecordValue(menu.fields, fieldName), budget)
 }
 
-function scratchNumber(value: string | number | null | undefined): number
+function scratchNumber(
+  value: string | number | null | undefined,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
+): number
 {
+  budget.work()
+
   if (typeof value === 'number') return Number.isNaN(value) ? 0 : value
   const number = Number(value)
   return Number.isNaN(number) ? 0 : number
 }
 
-function scratchBoolean(value: string | number | null | undefined): boolean
+function scratchBoolean(
+  value: string | number | null | undefined,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
+): boolean
 {
+  budget.work()
+
   if (typeof value === 'string')
   {
     return !(value === '' || value === '0' || value.toLowerCase() === 'false')
@@ -280,159 +362,222 @@ function scratchBoolean(value: string | number | null | undefined): boolean
 
 function literalBooleanCondition(
   json: ProjectJson,
-  ref: BlockRef
+  ref: BlockRef,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): boolean | null
 {
-  const value = inputValue(json, ref, 'CONDITION', 'math_number', 'NUM')
-  return value.known ? scratchBoolean(value.value) : null
+  budget.work()
+
+  const value = inputValue(json, ref, 'CONDITION', 'math_number', 'NUM', budget)
+  return value.known ? scratchBoolean(value.value, budget) : null
 }
 
 function decision(
   state: BoundaryState,
   kind: BoundaryEvaluation['kind'],
   detail: string,
-  indeterminateReason: BoundaryEvaluation['indeterminateReason'] = null
+  indeterminateReason: BoundaryEvaluation['indeterminateReason'] = null,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): BoundaryEvaluation
 {
+  budget.work()
+
   return { state, kind, detail, indeterminateReason }
 }
 
 function waitDecision(
   json: ProjectJson,
   ref: BlockRef,
-  warpState: WarpState
+  warpState: WarpState,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): BoundaryEvaluation
 {
-  const value = inputValue(json, ref, 'DURATION', 'math_number', 'NUM')
+  budget.work()
+
+  const value = inputValue(json, ref, 'DURATION', 'math_number', 'NUM', budget)
   if (!value.known && warpState === 'non-warp')
     return decision(
       'triggered',
       'budget-burn',
-      'wait yields once outside warp regardless of its runtime duration'
+      'wait yields once outside warp regardless of its runtime duration',
+      undefined,
+      budget
     )
   if (!value.known)
     return decision(
       'indeterminate',
       'budget-burn',
       'wait duration is computed at runtime',
-      'unsupported-feature'
+      'unsupported-feature',
+      budget
     )
-  const duration = scratchNumber(value.value)
+  const duration = scratchNumber(value.value, budget)
   if (duration > 0)
     return decision(
       'triggered',
       'budget-burn',
-      `literal wait duration casts to ${duration} seconds`
+      `literal wait duration casts to ${duration} seconds`,
+      undefined,
+      budget
     )
   if (warpState === 'warp')
     return decision(
       'not-triggered',
       'budget-burn',
-      'nonpositive wait completes during the same warp pass'
+      'nonpositive wait completes during the same warp pass',
+      undefined,
+      budget
     )
   if (warpState === 'non-warp')
     return decision(
       'triggered',
       'budget-burn',
-      'nonpositive wait yields once outside warp'
+      'nonpositive wait yields once outside warp',
+      undefined,
+      budget
     )
   return decision(
     'indeterminate',
     'budget-burn',
     'nonpositive wait depends on caller warp context',
-    'unsupported-feature'
+    'unsupported-feature',
+    budget
   )
 }
 
 function waitUntilDecision(
   json: ProjectJson,
-  ref: BlockRef
+  ref: BlockRef,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): BoundaryEvaluation
 {
-  const condition = literalBooleanCondition(json, ref)
+  budget.work()
+
+  const condition = literalBooleanCondition(json, ref, budget)
   if (condition === null)
     return decision(
       'indeterminate',
       'budget-burn',
       'wait-until condition is computed at runtime',
-      'unsupported-feature'
+      'unsupported-feature',
+      budget
     )
   return condition
     ? decision(
         'not-triggered',
         'budget-burn',
-        'wait-until condition is already true'
+        'wait-until condition is already true',
+        undefined,
+        budget
       )
     : decision(
         'triggered',
         'budget-burn',
-        'wait-until condition is statically false'
+        'wait-until condition is statically false',
+        undefined,
+        budget
       )
 }
 
 function glideTargetDecision(
   json: ProjectJson,
   index: ProjectIndex,
-  ref: BlockRef
+  ref: BlockRef,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): BoundaryEvaluation
 {
-  const target = index.semantic.spriteReferences.find(
-    (entry) =>
+  budget.work()
+
+  const target = index.semantic.spriteReferences.find((entry) =>
+  {
+    budget.work()
+    return (
       entry.sourceBlock !== null &&
       blockKey(entry.sourceBlock) === blockKey(ref)
-  )
+    )
+  })
   if (target?.special || target?.targetStatus === 'unique')
-    return decision('triggered', 'budget-burn', 'glide target resolves')
+    return decision(
+      'triggered',
+      'budget-burn',
+      'glide target resolves',
+      undefined,
+      budget
+    )
   if (target?.targetStatus === 'unresolved')
     return decision(
       'not-triggered',
       'budget-burn',
-      'glide target does not resolve'
+      'glide target does not resolve',
+      undefined,
+      budget
     )
   if (target)
     return decision(
       'indeterminate',
       'budget-burn',
       'glide target is ambiguous',
-      'unsupported-feature'
+      'unsupported-feature',
+      budget
     )
-  const dynamic = index.semantic.dynamicSpriteReferences.some(
-    (entry) => blockKey(entry.block) === blockKey(ref)
-  )
+  const dynamic = index.semantic.dynamicSpriteReferences.some((entry) =>
+  {
+    budget.work()
+    return blockKey(entry.block) === blockKey(ref)
+  })
   if (dynamic)
     return decision(
       'indeterminate',
       'budget-burn',
       'glide target is computed at runtime',
-      'unsupported-feature'
+      'unsupported-feature',
+      budget
     )
-  const value = inputValue(json, ref, 'TO', 'motion_glideto_menu', 'TO')
+  const value = inputValue(json, ref, 'TO', 'motion_glideto_menu', 'TO', budget)
   if (!value.known)
     return decision(
       'indeterminate',
       'budget-burn',
       'glide target cannot be resolved',
-      'unsupported-feature'
+      'unsupported-feature',
+      budget
     )
   const name = String(value.value)
   if (name === '_mouse_' || name === '_random_')
-    return decision('triggered', 'budget-burn', 'glide target resolves')
-  const matches = json.targets.filter(
-    (entry) => !entry.isStage && entry.name === name
-  )
+    return decision(
+      'triggered',
+      'budget-burn',
+      'glide target resolves',
+      undefined,
+      budget
+    )
+  const matches = json.targets.filter((entry) =>
+  {
+    budget.work()
+    return !entry.isStage && entry.name === name
+  })
   if (matches.length === 1)
-    return decision('triggered', 'budget-burn', 'glide target resolves')
+    return decision(
+      'triggered',
+      'budget-burn',
+      'glide target resolves',
+      undefined,
+      budget
+    )
   if (matches.length === 0)
     return decision(
       'not-triggered',
       'budget-burn',
-      'glide target does not resolve'
+      'glide target does not resolve',
+      undefined,
+      budget
     )
   return decision(
     'indeterminate',
     'budget-burn',
     'glide target is ambiguous',
-    'unsupported-feature'
+    'unsupported-feature',
+    budget
   )
 }
 
@@ -440,113 +585,160 @@ function glideDecision(
   json: ProjectJson,
   index: ProjectIndex,
   ref: BlockRef,
-  opcode: string
+  opcode: string,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): BoundaryEvaluation
 {
-  const duration = inputValue(json, ref, 'SECS', 'math_number', 'NUM')
+  budget.work()
+
+  const duration = inputValue(json, ref, 'SECS', 'math_number', 'NUM', budget)
   if (!duration.known)
     return decision(
       'indeterminate',
       'budget-burn',
       'glide duration is computed at runtime',
-      'unsupported-feature'
+      'unsupported-feature',
+      budget
     )
-  const seconds = scratchNumber(duration.value)
+  const seconds = scratchNumber(duration.value, budget)
   if (seconds <= 0)
     return decision(
       'not-triggered',
       'budget-burn',
-      'nonpositive glide completes without yielding'
+      'nonpositive glide completes without yielding',
+      undefined,
+      budget
     )
-  if (opcode === 'motion_glideto') return glideTargetDecision(json, index, ref)
+  if (opcode === 'motion_glideto')
+    return glideTargetDecision(json, index, ref, budget)
   return decision(
     'triggered',
     'budget-burn',
-    `literal glide duration casts to ${seconds} seconds`
+    `literal glide duration casts to ${seconds} seconds`,
+    undefined,
+    budget
   )
 }
 
 function soundEffectDecision(
   json: ProjectJson,
-  ref: BlockRef
+  ref: BlockRef,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): BoundaryEvaluation
 {
-  const block = rawBlock(json, ref)
+  budget.work()
+
+  const block = rawBlock(json, ref, budget)
   if (!block)
     return decision(
       'indeterminate',
       'warp-break',
       'sound effect block is unavailable',
-      'unsupported-feature'
+      'unsupported-feature',
+      budget
     )
-  const effect = fieldValue(scratchRecordValue(block.fields, 'EFFECT'))
+  const effect = fieldValue(scratchRecordValue(block.fields, 'EFFECT'), budget)
   const name = String(effect.value).toLowerCase()
   return name === 'pitch' || name === 'pan'
     ? decision(
         'triggered',
         'warp-break',
-        `sound effect ${name} returns a promise`
+        `sound effect ${name} returns a promise`,
+        undefined,
+        budget
       )
     : decision(
         'not-triggered',
         'warp-break',
-        `sound effect ${name} returns without a promise`
+        `sound effect ${name} returns without a promise`,
+        undefined,
+        budget
       )
 }
 
-function soundDecision(json: ProjectJson, ref: BlockRef): BoundaryEvaluation
+function soundDecision(
+  json: ProjectJson,
+  ref: BlockRef,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
+): BoundaryEvaluation
 {
+  budget.work()
+
   const target = json.targets[ref.target.targetIndex]
   if (!target || target.sounds.length === 0)
     return decision(
       'not-triggered',
       'warp-break',
-      'target has no resolvable sounds'
+      'target has no resolvable sounds',
+      undefined,
+      budget
     )
   const selector = inputValue(
     json,
     ref,
     'SOUND_MENU',
     'sound_sounds_menu',
-    'SOUND_MENU'
+    'SOUND_MENU',
+    budget
   )
   if (!selector.known)
     return decision(
       'indeterminate',
       'warp-break',
       'sound selector is computed at runtime',
-      'unsupported-feature'
+      'unsupported-feature',
+      budget
     )
   const name = selector.value
-  const named = target.sounds.some((sound) => sound.name === name)
+  const named = target.sounds.some((sound) =>
+  {
+    budget.work()
+    return sound.name === name
+  })
   const ordinal = Number.parseInt(String(name), 10)
   if (!named && Number.isNaN(ordinal))
     return decision(
       'not-triggered',
       'warp-break',
-      'sound selector does not resolve'
+      'sound selector does not resolve',
+      undefined,
+      budget
     )
   return decision(
     'indeterminate',
     'warp-break',
     'sound resolves but sound-bank state is runtime-only',
-    'unsupported-feature'
+    'unsupported-feature',
+    budget
   )
 }
 
 function broadcastDecision(
   index: ProjectIndex,
-  ref: BlockRef
+  ref: BlockRef,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): BoundaryEvaluation
 {
+  budget.work()
+
   const key = blockKey(ref)
   const broadcast = index.semantic.broadcasts.find((entry) =>
-    entry.senders.some((sender) => blockKey(sender.block) === key)
-  )
+  {
+    budget.work()
+    return entry.senders.some((sender) =>
+    {
+      budget.work()
+      return blockKey(sender.block) === key
+    })
+  })
   const unresolved = [
-    ...index.semantic.unresolvedBroadcastUses,
-    ...index.semantic.dynamicBroadcastSenders,
-  ].find((sender) => blockKey(sender.block) === key)
+    ...budget.iterable(index.semantic.unresolvedBroadcastUses),
+    ...budget.iterable(index.semantic.dynamicBroadcastSenders),
+  ].find((sender) =>
+  {
+    budget.work()
+    return blockKey(sender.block) === key
+  })
   if (
     unresolved?.resolutionStatus === 'dynamic' ||
     unresolved?.resolutionStatus === 'unresolved' ||
@@ -557,38 +749,60 @@ function broadcastDecision(
       'indeterminate',
       'warp-break',
       `${unresolved.resolutionStatus} broadcast receivers`,
-      'unresolved-receivers'
+      'unresolved-receivers',
+      budget
     )
   }
   if (!broadcast || broadcast.receivers.length === 0)
     return decision(
       'not-triggered',
       'warp-break',
-      'broadcast starts no receiver scripts'
+      'broadcast starts no receiver scripts',
+      undefined,
+      budget
     )
   return decision(
     'triggered',
     'warp-break',
-    `${broadcast.receivers.length} resolved receiver script(s) start`
+    `${broadcast.receivers.length} resolved receiver script(s) start`,
+    undefined,
+    budget
   )
 }
 
-function wrappedIndex(oneBased: number, length: number): number
+function wrappedIndex(
+  oneBased: number,
+  length: number,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
+): number
 {
+  budget.work()
+
   const zeroBased = oneBased - 1
   return zeroBased - Math.floor(zeroBased / length) * length
 }
 
-function backdropName(json: ProjectJson, ref: BlockRef): StaticValue
+function backdropName(
+  json: ProjectJson,
+  ref: BlockRef,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
+): StaticValue
 {
-  const stage = json.targets.find((target) => target.isStage)
+  budget.work()
+
+  const stage = json.targets.find((target) =>
+  {
+    budget.work()
+    return target.isStage
+  })
   if (!stage || stage.costumes.length === 0) return { known: false }
   const selector = inputValue(
     json,
     ref,
     'BACKDROP',
     'looks_backdrops',
-    'BACKDROP'
+    'BACKDROP',
+    budget
   )
   if (!selector.known) return selector
   if (typeof selector.value === 'number')
@@ -596,12 +810,17 @@ function backdropName(json: ProjectJson, ref: BlockRef): StaticValue
     return {
       known: true,
       value:
-        stage.costumes[wrappedIndex(selector.value, stage.costumes.length)]
-          ?.name,
+        stage.costumes[
+          wrappedIndex(selector.value, stage.costumes.length, budget)
+        ]?.name,
     }
   }
   const value = String(selector.value)
-  const named = stage.costumes.find((costume) => costume.name === value)
+  const named = stage.costumes.find((costume) =>
+  {
+    budget.work()
+    return costume.name === value
+  })
   if (named) return { known: true, value: named.name }
   if (
     value === 'next backdrop' ||
@@ -614,29 +833,37 @@ function backdropName(json: ProjectJson, ref: BlockRef): StaticValue
   if (Number.isNaN(ordinal)) return { known: false }
   return {
     known: true,
-    value: stage.costumes[wrappedIndex(ordinal, stage.costumes.length)]?.name,
+    value:
+      stage.costumes[wrappedIndex(ordinal, stage.costumes.length, budget)]
+        ?.name,
   }
 }
 
 function backdropDecision(
   json: ProjectJson,
   index: ProjectIndex,
-  ref: BlockRef
+  ref: BlockRef,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): BoundaryEvaluation
 {
-  const selected = backdropName(json, ref)
+  budget.work()
+
+  const selected = backdropName(json, ref, budget)
   if (!selected.known || typeof selected.value !== 'string')
     return decision(
       'indeterminate',
       'warp-break',
       'resulting backdrop depends on runtime state',
-      'unresolved-receivers'
+      'unresolved-receivers',
+      budget
     )
   const selectedName = selected.value.toUpperCase()
   const receivers = index.semantic.eventHats.filter((hat) =>
   {
+    budget.work()
+
     if (hat.opcode !== 'event_whenbackdropswitchesto') return false
-    const block = rawBlock(json, hat.block)
+    const block = rawBlock(json, hat.block, budget)
     const field = block
       ? scratchRecordValue(block.fields, 'BACKDROP')
       : undefined
@@ -648,12 +875,16 @@ function backdropDecision(
     return decision(
       'not-triggered',
       'warp-break',
-      `backdrop ${selected.value} starts no receiver scripts`
+      `backdrop ${selected.value} starts no receiver scripts`,
+      undefined,
+      budget
     )
   return decision(
     'triggered',
     'warp-break',
-    `${receivers.length} matching backdrop receiver script(s) start`
+    `${receivers.length} matching backdrop receiver script(s) start`,
+    undefined,
+    budget
   )
 }
 
@@ -661,43 +892,58 @@ export function evaluateBoundary(
   json: ProjectJson,
   index: ProjectIndex,
   ref: BlockRef,
-  warpState: WarpState
+  warpState: WarpState,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): BoundaryEvaluation | null
 {
+  budget.work()
+
   const opcode = index.semantic.blockByKey.get(blockKey(ref))?.opcode
   if (!opcode) return null
   const breaker = warpBreakerFor(opcode)
   if (breaker)
   {
     if (breaker.group === 'unconditional')
-      return decision('triggered', 'warp-break', breaker.mechanism)
+      return decision(
+        'triggered',
+        'warp-break',
+        breaker.mechanism,
+        undefined,
+        budget
+      )
     if (breaker.group === 'argument-conditional')
-      return soundEffectDecision(json, ref)
-    if (breaker.group === 'state-conditional') return soundDecision(json, ref)
+      return soundEffectDecision(json, ref, budget)
+    if (breaker.group === 'state-conditional')
+      return soundDecision(json, ref, budget)
     return opcode === 'event_broadcastandwait'
-      ? broadcastDecision(index, ref)
-      : backdropDecision(json, index, ref)
+      ? broadcastDecision(index, ref, budget)
+      : backdropDecision(json, index, ref, budget)
   }
   if (!isBudgetBurner(opcode)) return null
-  if (opcode === 'control_wait') return waitDecision(json, ref, warpState)
-  if (opcode === 'control_wait_until') return waitUntilDecision(json, ref)
-  return glideDecision(json, index, ref, opcode)
+  if (opcode === 'control_wait')
+    return waitDecision(json, ref, warpState, budget)
+  if (opcode === 'control_wait_until')
+    return waitUntilDecision(json, ref, budget)
+  return glideDecision(json, index, ref, opcode, budget)
 }
 
 function calledProcedure(
   json: ProjectJson,
   index: ProjectIndex,
-  ref: BlockRef
+  ref: BlockRef,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): IndexedProcedure | undefined
 {
-  const block = rawBlock(json, ref)
+  budget.work()
+
+  const block = rawBlock(json, ref, budget)
   const proccode = block?.mutation?.proccode
   if (block?.opcode !== 'procedures_call' || typeof proccode !== 'string')
     return undefined
   return index.semantic.procedureByKey.get(procedureKey(ref.target, proccode))
 }
 
-export type ProcedureReturnState = 'returns' | 'nonreturning' | 'indeterminate'
+type ProcedureReturnState = 'returns' | 'nonreturning' | 'indeterminate'
 export type ProcedureReturnCache = Map<IndexedProcedure, ProcedureReturnState>
 
 function walkSequenceReturnState(
@@ -705,87 +951,121 @@ function walkSequenceReturnState(
   index: ProjectIndex,
   start: BlockRef | null,
   cache: ProcedureReturnCache,
-  activeProcedures: Set<IndexedProcedure>
+  activeProcedures: Set<IndexedProcedure>,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): ProcedureReturnState
 {
-  let current = start
-  let indeterminate = false
-  const seen = new Set<string>()
-  while (current)
+  budget.work()
+  budget.enter()
+  try
   {
-    const key = blockKey(current)
-    if (seen.has(key)) return 'indeterminate'
-    seen.add(key)
-    const indexed = index.semantic.blockByKey.get(key)
-    if (!indexed) return 'indeterminate'
-    if (indexed.opcode === 'control_forever') return 'nonreturning'
-    if (
-      (indexed.opcode === 'control_wait_until' ||
-        indexed.opcode === 'control_repeat_until') &&
-      literalBooleanCondition(json, current) === false
-    )
-      return 'nonreturning'
-    if (
-      indexed.opcode === 'control_while' &&
-      literalBooleanCondition(json, current) === true
-    )
-      return 'nonreturning'
-    if (indexed.opcode === 'control_stop')
+    let current = start
+    let indeterminate = false
+    const seen = new Set<string>()
+    while (current)
     {
-      const block = rawBlock(json, current)
-      const option = block
-        ? scratchRecordValue(block.fields, 'STOP_OPTION')
-        : undefined
+      budget.work()
+
+      const key = blockKey(current)
+      if (seen.has(key)) return 'indeterminate'
+      seen.add(key)
+      const indexed = index.semantic.blockByKey.get(key)
+      if (!indexed) return 'indeterminate'
+      if (indexed.opcode === 'control_forever') return 'nonreturning'
       if (
-        option === undefined ||
-        String(option[0]).toLowerCase() !== 'other scripts in sprite'
+        (indexed.opcode === 'control_wait_until' ||
+          indexed.opcode === 'control_repeat_until') &&
+        literalBooleanCondition(json, current, budget) === false
       )
         return 'nonreturning'
-    }
-    if (indexed.opcode === 'procedures_call')
-    {
-      const callee = calledProcedure(json, index, current)
-      const state = callee
-        ? procedureReturnState(json, index, callee, cache, activeProcedures)
-        : 'indeterminate'
-      if (state === 'nonreturning') return state
-      if (state === 'indeterminate') indeterminate = true
-    }
-    if (indexed.opcode === 'control_if_else')
-    {
-      const left = primaryBranch(indexed, 'SUBSTACK')
-      const right = primaryBranch(indexed, 'SUBSTACK2')
-      const leftState =
-        left === null
-          ? 'returns'
-          : walkSequenceReturnState(json, index, left, cache, activeProcedures)
-      const rightState =
-        right === null
-          ? 'returns'
-          : walkSequenceReturnState(json, index, right, cache, activeProcedures)
-      if (leftState === 'nonreturning' && rightState === 'nonreturning')
-        return 'nonreturning'
-      if (leftState !== 'returns' || rightState !== 'returns')
-        indeterminate = true
-    }
-    else if (indexed.opcode === 'control_if')
-    {
-      const branch = primaryBranch(indexed, 'SUBSTACK')
       if (
-        branch !== null &&
-        walkSequenceReturnState(
-          json,
-          index,
-          branch,
-          cache,
-          activeProcedures
-        ) !== 'returns'
+        indexed.opcode === 'control_while' &&
+        literalBooleanCondition(json, current, budget) === true
       )
-        indeterminate = true
+        return 'nonreturning'
+      if (indexed.opcode === 'control_stop')
+      {
+        const block = rawBlock(json, current, budget)
+        const option = block
+          ? scratchRecordValue(block.fields, 'STOP_OPTION')
+          : undefined
+        if (
+          option === undefined ||
+          String(option[0]).toLowerCase() !== 'other scripts in sprite'
+        )
+          return 'nonreturning'
+      }
+      if (indexed.opcode === 'procedures_call')
+      {
+        const callee = calledProcedure(json, index, current, budget)
+        const state = callee
+          ? procedureReturnState(
+              json,
+              index,
+              callee,
+              cache,
+              activeProcedures,
+              budget
+            )
+          : 'indeterminate'
+        if (state === 'nonreturning') return state
+        if (state === 'indeterminate') indeterminate = true
+      }
+      if (indexed.opcode === 'control_if_else')
+      {
+        const left = primaryBranch(indexed, 'SUBSTACK', budget)
+        const right = primaryBranch(indexed, 'SUBSTACK2', budget)
+        const leftState =
+          left === null
+            ? 'returns'
+            : walkSequenceReturnState(
+                json,
+                index,
+                left,
+                cache,
+                activeProcedures,
+                budget
+              )
+        const rightState =
+          right === null
+            ? 'returns'
+            : walkSequenceReturnState(
+                json,
+                index,
+                right,
+                cache,
+                activeProcedures,
+                budget
+              )
+        if (leftState === 'nonreturning' && rightState === 'nonreturning')
+          return 'nonreturning'
+        if (leftState !== 'returns' || rightState !== 'returns')
+          indeterminate = true
+      }
+      else if (indexed.opcode === 'control_if')
+      {
+        const branch = primaryBranch(indexed, 'SUBSTACK', budget)
+        if (
+          branch !== null &&
+          walkSequenceReturnState(
+            json,
+            index,
+            branch,
+            cache,
+            activeProcedures,
+            budget
+          ) !== 'returns'
+        )
+          indeterminate = true
+      }
+      current = indexed.successor
     }
-    current = indexed.successor
+    return indeterminate ? 'indeterminate' : 'returns'
   }
-  return indeterminate ? 'indeterminate' : 'returns'
+  finally
+  {
+    budget.leave()
+  }
 }
 
 export function procedureReturnState(
@@ -793,9 +1073,12 @@ export function procedureReturnState(
   index: ProjectIndex,
   procedure: IndexedProcedure,
   cache: ProcedureReturnCache = new Map(),
-  activeProcedures: Set<IndexedProcedure> = new Set()
+  activeProcedures: Set<IndexedProcedure> = new Set(),
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): ProcedureReturnState
 {
+  budget.work()
+
   const cached = cache.get(procedure)
   if (cached !== undefined) return cached
   if (activeProcedures.has(procedure)) return 'indeterminate'
@@ -803,17 +1086,25 @@ export function procedureReturnState(
   const indexedDefinition = definition
     ? index.semantic.blockByKey.get(blockKey(definition))
     : undefined
-  if (!indexedDefinition || topologyIssues(procedure).length > 0)
+  if (!indexedDefinition || topologyIssues(procedure, budget).length > 0)
     return 'indeterminate'
   activeProcedures.add(procedure)
-  const state = walkSequenceReturnState(
-    json,
-    index,
-    indexedDefinition.successor,
-    cache,
-    activeProcedures
-  )
-  activeProcedures.delete(procedure)
+  let state: ProcedureReturnState
+  try
+  {
+    state = walkSequenceReturnState(
+      json,
+      index,
+      indexedDefinition.successor,
+      cache,
+      activeProcedures,
+      budget
+    )
+  }
+  finally
+  {
+    activeProcedures.delete(procedure)
+  }
   cache.set(procedure, state)
   return state
 }
@@ -822,10 +1113,13 @@ export function executionSequenceReturnState(
   json: ProjectJson,
   index: ProjectIndex,
   start: BlockRef | null,
-  cache: ProcedureReturnCache = new Map()
+  cache: ProcedureReturnCache = new Map(),
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): ProcedureReturnState
 {
-  return walkSequenceReturnState(json, index, start, cache, new Set())
+  budget.work()
+
+  return walkSequenceReturnState(json, index, start, cache, new Set(), budget)
 }
 
 export function procedureCanReturn(
@@ -833,12 +1127,21 @@ export function procedureCanReturn(
   index: ProjectIndex,
   procedure: IndexedProcedure,
   cache: ProcedureReturnCache = new Map(),
-  activeProcedures: Set<IndexedProcedure> = new Set()
+  activeProcedures: Set<IndexedProcedure> = new Set(),
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): boolean
 {
+  budget.work()
+
   return (
-    procedureReturnState(json, index, procedure, cache, activeProcedures) ===
-    'returns'
+    procedureReturnState(
+      json,
+      index,
+      procedure,
+      cache,
+      activeProcedures,
+      budget
+    ) === 'returns'
   )
 }
 
@@ -862,38 +1165,58 @@ export interface ProcedureExecution
   issues: readonly ProcedureClosureIssue[]
 }
 
-function mergeWarpStates(left: WarpState, right: WarpState): WarpState
+function mergeWarpStates(
+  left: WarpState,
+  right: WarpState,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
+): WarpState
 {
+  budget.work()
+
   return left === right ? left : 'mixed'
 }
 
 export function procedureEntryWarpState(
   procedure: IndexedProcedure,
-  graph: ProcedureCallGraph
+  graph: ProcedureCallGraph,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): WarpState
 {
-  if (mixedContext(procedure, graph)) return 'mixed'
-  return effectiveWarp(procedure, graph) ? 'warp' : 'non-warp'
+  budget.work()
+
+  if (mixedContext(procedure, graph, budget)) return 'mixed'
+  return effectiveWarp(procedure, graph, budget) ? 'warp' : 'non-warp'
 }
 
 function procedureParentWarpState(
   procedure: IndexedProcedure,
-  graph: ProcedureCallGraph
+  graph: ProcedureCallGraph,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): WarpState
 {
+  budget.work()
+
   const key = procedureKey(procedure.target, procedure.proccode)
   let state: WarpState | null =
     (graph.nonProcedureCallers.get(key)?.length ?? 0) > 0 ? 'non-warp' : null
   for (const caller of graph.callersByProcedure.get(key) ?? [])
   {
-    const callerState = procedureEntryWarpState(caller, graph)
-    state = state === null ? callerState : mergeWarpStates(state, callerState)
+    budget.work()
+
+    const callerState = procedureEntryWarpState(caller, graph, budget)
+    state =
+      state === null ? callerState : mergeWarpStates(state, callerState, budget)
   }
   return state ?? 'non-warp'
 }
 
-function topologyIssues(procedure: IndexedProcedure): ProcedureClosureIssue[]
+function topologyIssues(
+  procedure: IndexedProcedure,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
+): ProcedureClosureIssue[]
 {
+  budget.work()
+
   const issues: ProcedureClosureIssue[] = []
   if (procedure.runtimeDefinition === null)
   {
@@ -926,13 +1249,18 @@ interface WalkContext
 
 function primaryBranch(
   indexed: IndexedBlock,
-  inputName: string
+  inputName: string,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): BlockRef | null
 {
+  budget.work()
+
   return (
-    indexed.inputChildren.find(
-      (child) => child.inputName === inputName && child.slot === 'primary'
-    )?.block ?? null
+    indexed.inputChildren.find((child) =>
+    {
+      budget.work()
+      return child.inputName === inputName && child.slot === 'primary'
+    })?.block ?? null
   )
 }
 
@@ -943,162 +1271,207 @@ function walkSequence(
   graph: ProcedureCallGraph,
   activeProcedures: Set<string>,
   result: MutableProcedureExecution,
-  context: WalkContext
+  context: WalkContext,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): WarpState
 {
-  let current = start
-  let state = context.state
-  const seen = new Set<string>()
-  while (current)
+  budget.work()
+  budget.enter()
+  try
   {
-    const key = blockKey(current)
-    if (seen.has(key))
+    let current = start
+    let state = context.state
+    const seen = new Set<string>()
+    while (current)
     {
-      result.issues.push({
-        ref: current,
-        detail: 'block successor cycle prevents a complete closure',
-      })
-      break
-    }
-    seen.add(key)
-    const indexed = index.semantic.blockByKey.get(key)
-    if (!indexed)
-    {
-      result.issues.push({
-        ref: current,
-        detail: 'reachable block is missing from the semantic index',
-      })
-      break
-    }
+      budget.work()
 
-    result.blocks.push({
-      ref: current,
-      warpState: state,
-      uncertaintyReason:
-        state === 'mixed'
-          ? (context.uncertaintyReason ?? 'mixed-warp-callers')
-          : context.uncertaintyReason,
-      loopKeys: context.loopKeys,
-    })
+      const key = blockKey(current)
+      if (seen.has(key))
+      {
+        result.issues.push({
+          ref: current,
+          detail: 'block successor cycle prevents a complete closure',
+        })
+        break
+      }
+      seen.add(key)
+      const indexed = index.semantic.blockByKey.get(key)
+      if (!indexed)
+      {
+        result.issues.push({
+          ref: current,
+          detail: 'reachable block is missing from the semantic index',
+        })
+        break
+      }
 
-    if (indexed.opcode === 'procedures_call')
-    {
-      const raw = rawBlock(json, current)
-      const proccode = raw?.mutation?.proccode
-      const callee = calledProcedure(json, index, current)
-      if (typeof proccode !== 'string' || !callee)
+      budget.occurrence(current, indexed.opcode)
+      result.blocks.push({
+        ref: current,
+        warpState: state,
+        uncertaintyReason:
+          state === 'mixed'
+            ? (context.uncertaintyReason ?? 'mixed-warp-callers')
+            : context.uncertaintyReason,
+        loopKeys: context.loopKeys,
+      })
+
+      if (indexed.opcode === 'procedures_call')
       {
-        result.issues.push({
-          ref: current,
-          detail: 'procedure call mutation cannot be resolved',
-        })
-      }
-      else if (callee.runtimeDefinition === null)
-      {
-        result.issues.push({
-          ref: current,
-          detail:
-            callee.definitions.length > 0
-              ? `procedure call ${proccode} has malformed definition topology`
-              : `procedure call ${proccode} has no definition`,
-        })
-      }
-      else if (callee.warpEncoding === 'malformed')
-      {
-        result.issues.push({
-          ref: current,
-          detail: `procedure call ${proccode} has malformed warp metadata`,
-        })
-      }
-      else if (callee.runtimeDefinition !== null)
-      {
-        const calleeKey = procedureKey(callee.target, callee.proccode)
-        if (activeProcedures.has(calleeKey))
+        const raw = rawBlock(json, current, budget)
+        const proccode = raw?.mutation?.proccode
+        const callee = calledProcedure(json, index, current, budget)
+        if (typeof proccode !== 'string' || !callee)
         {
           result.issues.push({
             ref: current,
-            detail: `recursive procedure call ${proccode} prevents a complete closure`,
+            detail: 'procedure call mutation cannot be resolved',
           })
         }
-        else
+        else if (callee.runtimeDefinition === null)
         {
-          const calleeState = callee.warp === true ? 'warp' : state
-          walkProcedure(json, index, callee, graph, activeProcedures, result, {
-            state: calleeState,
-            parentState: state,
-            uncertaintyReason:
-              calleeState === 'mixed'
-                ? 'mixed-warp-callers'
-                : context.uncertaintyReason,
-            loopKeys: context.loopKeys,
-            warpLoopDepth: 0,
+          result.issues.push({
+            ref: current,
+            detail:
+              callee.definitions.length > 0
+                ? `procedure call ${proccode} has malformed definition topology`
+                : `procedure call ${proccode} has no definition`,
           })
+        }
+        else if (callee.warpEncoding === 'malformed')
+        {
+          result.issues.push({
+            ref: current,
+            detail: `procedure call ${proccode} has malformed warp metadata`,
+          })
+        }
+        else if (callee.runtimeDefinition !== null)
+        {
+          const calleeKey = procedureKey(callee.target, callee.proccode)
+          if (activeProcedures.has(calleeKey))
+          {
+            result.issues.push({
+              ref: current,
+              detail: `recursive procedure call ${proccode} prevents a complete closure`,
+            })
+          }
+          else
+          {
+            const calleeState = callee.warp === true ? 'warp' : state
+            walkProcedure(
+              json,
+              index,
+              callee,
+              graph,
+              activeProcedures,
+              result,
+              {
+                state: calleeState,
+                parentState: state,
+                uncertaintyReason:
+                  calleeState === 'mixed'
+                    ? 'mixed-warp-callers'
+                    : context.uncertaintyReason,
+                loopKeys: context.loopKeys,
+                warpLoopDepth: 0,
+              },
+              budget
+            )
+          }
         }
       }
-    }
 
-    if (indexed.opcode && LOOP_ENTRIES.has(indexed.opcode))
-    {
-      const branch = primaryBranch(indexed, 'SUBSTACK')
-      const loopKey = blockKey(current)
-      walkSequence(json, index, branch, graph, activeProcedures, result, {
-        state,
-        parentState: state,
-        uncertaintyReason: context.uncertaintyReason,
-        loopKeys: [...context.loopKeys, loopKey],
-        warpLoopDepth: context.warpLoopDepth + 1,
-      })
-      if (indexed.opcode === 'control_forever') break
-    }
-    else if (
-      indexed.opcode === 'control_if' ||
-      indexed.opcode === 'control_if_else'
-    )
-    {
-      const branches = [
-        primaryBranch(indexed, 'SUBSTACK'),
-        primaryBranch(indexed, 'SUBSTACK2'),
-      ]
-      const exitStates: WarpState[] =
-        indexed.opcode === 'control_if' ? [state] : []
-      for (const branch of branches)
+      if (indexed.opcode && LOOP_ENTRIES.has(indexed.opcode))
       {
-        if (branch === null)
-        {
-          if (indexed.opcode === 'control_if_else') exitStates.push(state)
-          continue
-        }
-        exitStates.push(
-          walkSequence(json, index, branch, graph, activeProcedures, result, {
+        const branch = primaryBranch(indexed, 'SUBSTACK', budget)
+        const loopKey = blockKey(current)
+        walkSequence(
+          json,
+          index,
+          branch,
+          graph,
+          activeProcedures,
+          result,
+          {
             state,
-            parentState: context.parentState,
-            uncertaintyReason: 'unsupported-feature',
-            loopKeys: context.loopKeys,
-            warpLoopDepth: context.warpLoopDepth,
-          })
+            parentState: state,
+            uncertaintyReason: context.uncertaintyReason,
+            loopKeys: [...budget.iterable(context.loopKeys), loopKey],
+            warpLoopDepth: context.warpLoopDepth + 1,
+          },
+          budget
         )
+        if (indexed.opcode === 'control_forever') break
       }
-      if (exitStates.length > 0) state = exitStates.reduce(mergeWarpStates)
-    }
+      else if (
+        indexed.opcode === 'control_if' ||
+        indexed.opcode === 'control_if_else'
+      )
+      {
+        const branches = [
+          primaryBranch(indexed, 'SUBSTACK', budget),
+          primaryBranch(indexed, 'SUBSTACK2', budget),
+        ]
+        const exitStates: WarpState[] =
+          indexed.opcode === 'control_if' ? [state] : []
+        for (const branch of branches)
+        {
+          budget.work()
 
-    const boundary = evaluateBoundary(json, index, current, state)
-    const promise =
-      indexed.opcode !== null &&
-      warpBreakerFor(indexed.opcode)?.mechanism === 'promise'
-    if (
-      promise &&
-      boundary?.state !== 'not-triggered' &&
-      context.warpLoopDepth === 0
-    )
-    {
-      state =
-        boundary?.state === 'triggered'
-          ? context.parentState
-          : mergeWarpStates(state, context.parentState)
+          if (branch === null)
+          {
+            if (indexed.opcode === 'control_if_else') exitStates.push(state)
+            continue
+          }
+          exitStates.push(
+            walkSequence(
+              json,
+              index,
+              branch,
+              graph,
+              activeProcedures,
+              result,
+              {
+                state,
+                parentState: context.parentState,
+                uncertaintyReason: 'unsupported-feature',
+                loopKeys: context.loopKeys,
+                warpLoopDepth: context.warpLoopDepth,
+              },
+              budget
+            )
+          )
+        }
+        if (exitStates.length > 0)
+          state = exitStates.reduce((left, right) =>
+            mergeWarpStates(left, right, budget)
+          )
+      }
+
+      const boundary = evaluateBoundary(json, index, current, state, budget)
+      const promise =
+        indexed.opcode !== null &&
+        warpBreakerFor(indexed.opcode)?.mechanism === 'promise'
+      if (
+        promise &&
+        boundary?.state !== 'not-triggered' &&
+        context.warpLoopDepth === 0
+      )
+      {
+        state =
+          boundary?.state === 'triggered'
+            ? context.parentState
+            : mergeWarpStates(state, context.parentState, budget)
+      }
+      current = indexed.successor
     }
-    current = indexed.successor
+    return state
   }
-  return state
+  finally
+  {
+    budget.leave()
+  }
 }
 
 function walkProcedure(
@@ -1108,12 +1481,15 @@ function walkProcedure(
   graph: ProcedureCallGraph,
   activeProcedures: Set<string>,
   result: MutableProcedureExecution,
-  context: WalkContext
+  context: WalkContext,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): void
 {
+  budget.work()
+
   const key = procedureKey(procedure.target, procedure.proccode)
   if (activeProcedures.has(key)) return
-  result.issues.push(...topologyIssues(procedure))
+  budget.append(result.issues, topologyIssues(procedure, budget))
   const definition = procedure.runtimeDefinition
   if (!definition) return
   const indexedDefinition = index.semantic.blockByKey.get(blockKey(definition))
@@ -1126,16 +1502,23 @@ function walkProcedure(
     return
   }
   activeProcedures.add(key)
-  walkSequence(
-    json,
-    index,
-    indexedDefinition.successor,
-    graph,
-    activeProcedures,
-    result,
-    context
-  )
-  activeProcedures.delete(key)
+  try
+  {
+    walkSequence(
+      json,
+      index,
+      indexedDefinition.successor,
+      graph,
+      activeProcedures,
+      result,
+      context,
+      budget
+    )
+  }
+  finally
+  {
+    activeProcedures.delete(key)
+  }
 }
 
 export function procedureExecution(
@@ -1143,18 +1526,31 @@ export function procedureExecution(
   index: ProjectIndex,
   procedure: IndexedProcedure,
   graph: ProcedureCallGraph,
-  parentState: WarpState = procedureParentWarpState(procedure, graph)
+  parentState?: WarpState,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): ProcedureExecution
 {
+  budget.work()
+
   const result: MutableProcedureExecution = { blocks: [], issues: [] }
-  const state = procedureEntryWarpState(procedure, graph)
-  walkProcedure(json, index, procedure, graph, new Set(), result, {
-    state,
-    parentState,
-    uncertaintyReason: state === 'mixed' ? 'mixed-warp-callers' : null,
-    loopKeys: [],
-    warpLoopDepth: 0,
-  })
+  const state = procedureEntryWarpState(procedure, graph, budget)
+  walkProcedure(
+    json,
+    index,
+    procedure,
+    graph,
+    new Set(),
+    result,
+    {
+      state,
+      parentState:
+        parentState ?? procedureParentWarpState(procedure, graph, budget),
+      uncertaintyReason: state === 'mixed' ? 'mixed-warp-callers' : null,
+      loopKeys: [],
+      warpLoopDepth: 0,
+    },
+    budget
+  )
   return result
 }
 
@@ -1162,9 +1558,12 @@ export function scriptExecution(
   json: ProjectJson,
   index: ProjectIndex,
   script: IndexedScript,
-  graph: ProcedureCallGraph
+  graph: ProcedureCallGraph,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): ProcedureExecution
 {
+  budget.work()
+
   const result: MutableProcedureExecution = { blocks: [], issues: [] }
   const top = index.semantic.blockByKey.get(blockKey(script.top))
   if (!top)
@@ -1179,13 +1578,22 @@ export function scriptExecution(
     script.hat !== null || top.opcode === 'procedures_definition'
       ? top.successor
       : script.top
-  walkSequence(json, index, start, graph, new Set(), result, {
-    state: 'non-warp',
-    parentState: 'non-warp',
-    uncertaintyReason: null,
-    loopKeys: [],
-    warpLoopDepth: 0,
-  })
+  walkSequence(
+    json,
+    index,
+    start,
+    graph,
+    new Set(),
+    result,
+    {
+      state: 'non-warp',
+      parentState: 'non-warp',
+      uncertaintyReason: null,
+      loopKeys: [],
+      warpLoopDepth: 0,
+    },
+    budget
+  )
   return result
 }
 
@@ -1215,17 +1623,23 @@ function boundarySummary(
   reason: ExecutionBoundarySummary['reason'],
   definiteWrites: ReadonlySet<string> = new Set(),
   possibleWrites: ReadonlySet<string> = new Set(),
-  completion: ProcedureReturnState = 'returns'
+  completion: ProcedureReturnState = 'returns',
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): ExecutionBoundarySummary
 {
+  budget.work()
+
   return { state, completion, reason, definiteWrites, possibleWrites }
 }
 
 function mergeSequentialBoundaryState(
   current: ExecutionBoundarySummary['state'],
-  next: ExecutionBoundarySummary['state']
+  next: ExecutionBoundarySummary['state'],
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): ExecutionBoundarySummary['state']
 {
+  budget.work()
+
   if (current === 'dirty') return 'dirty'
   if (current === 'indeterminate') return 'indeterminate'
   return next
@@ -1233,26 +1647,44 @@ function mergeSequentialBoundaryState(
 
 function addPossibleWrites(
   destination: Set<string>,
-  summary: ExecutionBoundarySummary
+  summary: ExecutionBoundarySummary,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): void
 {
-  for (const key of summary.definiteWrites) destination.add(key)
-  for (const key of summary.possibleWrites) destination.add(key)
+  budget.work()
+
+  for (const key of summary.definiteWrites)
+  {
+    budget.work()
+    destination.add(key)
+  }
+  for (const key of summary.possibleWrites)
+  {
+    budget.work()
+    destination.add(key)
+  }
 }
 
 function mergeSequentialWrites(
   definiteWrites: Set<string>,
   possibleWrites: Set<string>,
-  summary: ExecutionBoundarySummary
+  summary: ExecutionBoundarySummary,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): void
 {
+  budget.work()
+
   for (const key of summary.definiteWrites)
   {
+    budget.work()
+
     definiteWrites.add(key)
     possibleWrites.delete(key)
   }
   for (const key of summary.possibleWrites)
   {
+    budget.work()
+
     if (!definiteWrites.has(key)) possibleWrites.add(key)
   }
 }
@@ -1266,28 +1698,24 @@ function procedureBoundarySummary(
   cache: ProcedureBoundarySummaryCache,
   writerKeysByBlock: ReadonlyMap<string, readonly string[]>,
   state: WarpState,
-  parentState: WarpState
+  parentState: WarpState,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): ExecutionBoundarySummary
 {
+  budget.work()
+
   if (activeProcedures.has(procedure))
     return boundarySummary(
       'indeterminate',
       'unsupported-feature',
       new Set(),
       new Set(),
-      'indeterminate'
+      'indeterminate',
+      budget
     )
   const cacheKey = `${state}:${parentState}`
   const cached = cache.get(procedure)?.get(cacheKey)
   if (cached) return cached
-  if (topologyIssues(procedure).length > 0)
-    return boundarySummary(
-      'indeterminate',
-      'unresolved-closure',
-      new Set(),
-      new Set(),
-      'indeterminate'
-    )
   const definition = procedure.runtimeDefinition
   const indexedDefinition = definition
     ? index.semantic.blockByKey.get(blockKey(definition))
@@ -1298,22 +1726,31 @@ function procedureBoundarySummary(
       'unresolved-closure',
       new Set(),
       new Set(),
-      'indeterminate'
+      'indeterminate',
+      budget
     )
 
   activeProcedures.add(procedure)
-  const summary = walkBoundarySummary(
-    json,
-    index,
-    indexedDefinition.successor,
-    null,
-    graph,
-    activeProcedures,
-    cache,
-    writerKeysByBlock,
-    { state, parentState }
-  )
-  activeProcedures.delete(procedure)
+  let summary: ExecutionBoundarySummary
+  try
+  {
+    summary = walkBoundarySummary(
+      json,
+      index,
+      indexedDefinition.successor,
+      null,
+      graph,
+      activeProcedures,
+      cache,
+      writerKeysByBlock,
+      { state, parentState },
+      budget
+    )
+  }
+  finally
+  {
+    activeProcedures.delete(procedure)
+  }
   const byState = cache.get(procedure) ?? new Map()
   byState.set(cacheKey, summary)
   cache.set(procedure, byState)
@@ -1329,254 +1766,342 @@ function walkBoundarySummary(
   activeProcedures: Set<IndexedProcedure>,
   cache: ProcedureBoundarySummaryCache,
   writerKeysByBlock: ReadonlyMap<string, readonly string[]>,
-  context: SummaryWalkContext
+  context: SummaryWalkContext,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): ExecutionBoundarySummary
 {
-  let current = start
-  let state: ExecutionBoundarySummary['state'] = 'clean'
-  let possibleReason: ExecutionBoundarySummary['reason'] = null
-  let completionIndeterminate = false
-  const definiteWrites = new Set<string>()
-  const possibleWrites = new Set<string>()
-  const seen = new Set<string>()
-  const stopKey = stop ? blockKey(stop) : null
-  while (current)
+  budget.work()
+  budget.enter()
+  try
   {
-    const key = blockKey(current)
-    if (key === stopKey)
-      return boundarySummary(
-        state === 'clean' && possibleReason ? 'indeterminate' : state,
-        state === 'dirty' ? null : possibleReason,
-        definiteWrites,
-        possibleWrites,
-        completionIndeterminate ? 'indeterminate' : 'returns'
-      )
-    if (seen.has(key))
-      return boundarySummary(
-        'indeterminate',
-        'unresolved-closure',
-        definiteWrites,
-        possibleWrites,
-        'indeterminate'
-      )
-    seen.add(key)
-    const indexed = index.semantic.blockByKey.get(key)
-    if (!indexed)
-      return boundarySummary(
-        'indeterminate',
-        'unresolved-closure',
-        definiteWrites,
-        possibleWrites,
-        'indeterminate'
-      )
-
-    for (const writerKey of writerKeysByBlock.get(key) ?? [])
+    let current = start
+    let state: ExecutionBoundarySummary['state'] = 'clean'
+    let possibleReason: ExecutionBoundarySummary['reason'] = null
+    let completionIndeterminate = false
+    const definiteWrites = new Set<string>()
+    const possibleWrites = new Set<string>()
+    const seen = new Set<string>()
+    const stopKey = stop ? blockKey(stop) : null
+    while (current)
     {
-      definiteWrites.add(writerKey)
-      possibleWrites.delete(writerKey)
-    }
+      budget.work()
 
-    if (indexed.opcode === 'procedures_call')
-    {
-      const callee = calledProcedure(json, index, current)
-      if (!callee)
-      {
-        possibleReason = 'unresolved-closure'
-        completionIndeterminate = true
-      }
-      else
-      {
-        const calleeState = callee.warp === true ? 'warp' : context.state
-        const nested = procedureBoundarySummary(
-          json,
-          index,
-          callee,
-          graph,
-          activeProcedures,
-          cache,
-          writerKeysByBlock,
-          calleeState,
-          context.state
+      const key = blockKey(current)
+      if (key === stopKey)
+        return boundarySummary(
+          state === 'clean' && possibleReason ? 'indeterminate' : state,
+          state === 'dirty' ? null : possibleReason,
+          definiteWrites,
+          possibleWrites,
+          completionIndeterminate ? 'indeterminate' : 'returns',
+          budget
         )
-        state = mergeSequentialBoundaryState(state, nested.state)
-        mergeSequentialWrites(definiteWrites, possibleWrites, nested)
-        if (nested.completion === 'nonreturning')
+      if (seen.has(key))
+        return boundarySummary(
+          'indeterminate',
+          'unresolved-closure',
+          definiteWrites,
+          possibleWrites,
+          'indeterminate',
+          budget
+        )
+      seen.add(key)
+      const indexed = index.semantic.blockByKey.get(key)
+      if (!indexed)
+        return boundarySummary(
+          'indeterminate',
+          'unresolved-closure',
+          definiteWrites,
+          possibleWrites,
+          'indeterminate',
+          budget
+        )
+
+      for (const writerKey of writerKeysByBlock.get(key) ?? [])
+      {
+        budget.work()
+
+        definiteWrites.add(writerKey)
+        possibleWrites.delete(writerKey)
+      }
+
+      if (indexed.opcode === 'procedures_call')
+      {
+        const callee = calledProcedure(json, index, current, budget)
+        if (!callee)
+        {
+          possibleReason = 'unresolved-closure'
+          completionIndeterminate = true
+        }
+        else
+        {
+          const calleeState = callee.warp === true ? 'warp' : context.state
+          const nested = procedureBoundarySummary(
+            json,
+            index,
+            callee,
+            graph,
+            activeProcedures,
+            cache,
+            writerKeysByBlock,
+            calleeState,
+            context.state,
+            budget
+          )
+          state = mergeSequentialBoundaryState(state, nested.state, budget)
+          mergeSequentialWrites(definiteWrites, possibleWrites, nested, budget)
+          if (nested.completion === 'nonreturning')
+            return boundarySummary(
+              state,
+              state === 'dirty' ? null : nested.reason,
+              definiteWrites,
+              possibleWrites,
+              'nonreturning',
+              budget
+            )
+          if (nested.completion === 'indeterminate')
+            completionIndeterminate = true
+          if (nested.state === 'indeterminate')
+            possibleReason ??= nested.reason ?? 'unsupported-feature'
+        }
+      }
+
+      if (indexed.opcode && LOOP_ENTRIES.has(indexed.opcode))
+      {
+        state = mergeSequentialBoundaryState(state, 'dirty', budget)
+        const body = primaryBranch(indexed, 'SUBSTACK', budget)
+        if (body)
+        {
+          const nested = walkBoundarySummary(
+            json,
+            index,
+            body,
+            null,
+            graph,
+            activeProcedures,
+            cache,
+            writerKeysByBlock,
+            context,
+            budget
+          )
+          addPossibleWrites(possibleWrites, nested, budget)
+          for (const key of definiteWrites)
+          {
+            budget.work()
+            possibleWrites.delete(key)
+          }
+        }
+        if (indexed.opcode === 'control_forever')
           return boundarySummary(
             state,
-            state === 'dirty' ? null : nested.reason,
+            state === 'dirty' ? null : possibleReason,
             definiteWrites,
             possibleWrites,
-            'nonreturning'
+            'nonreturning',
+            budget
           )
-        if (nested.completion === 'indeterminate')
+        if (
+          (indexed.opcode === 'control_repeat_until' &&
+            literalBooleanCondition(json, current, budget) === false) ||
+          (indexed.opcode === 'control_while' &&
+            literalBooleanCondition(json, current, budget) === true)
+        )
+          return boundarySummary(
+            state,
+            state === 'dirty' ? null : possibleReason,
+            definiteWrites,
+            possibleWrites,
+            'nonreturning',
+            budget
+          )
+      }
+      else if (
+        indexed.opcode === 'control_if' ||
+        indexed.opcode === 'control_if_else'
+      )
+      {
+        const branchRefs = [
+          primaryBranch(indexed, 'SUBSTACK', budget),
+          primaryBranch(indexed, 'SUBSTACK2', budget),
+        ]
+        if (indexed.opcode === 'control_if') branchRefs[1] = null
+        const branches = budget.scan(branchRefs, (budgetValues) =>
+          budgetValues.map((branch) =>
+          {
+            budget.work()
+
+            return branch === null
+              ? boundarySummary(
+                  'clean',
+                  null,
+                  undefined,
+                  undefined,
+                  undefined,
+                  budget
+                )
+              : walkBoundarySummary(
+                  json,
+                  index,
+                  branch,
+                  null,
+                  graph,
+                  activeProcedures,
+                  cache,
+                  writerKeysByBlock,
+                  context,
+                  budget
+                )
+          })
+        )
+        const branchState = branches.every((entry) =>
+          {
+          budget.work()
+          return entry.state === 'dirty'
+        })
+          ? 'dirty'
+          : branches.every((entry) =>
+            {
+                budget.work()
+                return entry.state === 'clean'
+              })
+            ? 'clean'
+            : 'indeterminate'
+        state = mergeSequentialBoundaryState(state, branchState, budget)
+        if (branchState === 'indeterminate')
+          possibleReason ??=
+            branches.find((entry) =>
+            {
+              budget.work()
+              return entry.reason
+            })?.reason ?? 'unsupported-feature'
+
+        const branchCompletions = budget.scan(branches, (budgetValues) =>
+          budgetValues.map((entry) =>
+          {
+            budget.work()
+            return entry.completion
+          })
+        )
+        if (
+          branchCompletions.every((entry) =>
+          {
+            budget.work()
+            return entry === 'nonreturning'
+          })
+        )
+          return boundarySummary(
+            state,
+            state === 'dirty' ? null : possibleReason,
+            definiteWrites,
+            possibleWrites,
+            'nonreturning',
+            budget
+          )
+        if (
+          branchCompletions.some((entry) =>
+          {
+            budget.work()
+            return entry !== 'returns'
+          })
+        )
           completionIndeterminate = true
-        if (nested.state === 'indeterminate')
-          possibleReason ??= nested.reason ?? 'unsupported-feature'
-      }
-    }
 
-    if (indexed.opcode && LOOP_ENTRIES.has(indexed.opcode))
-    {
-      state = mergeSequentialBoundaryState(state, 'dirty')
-      const body = primaryBranch(indexed, 'SUBSTACK')
-      if (body)
-      {
-        const nested = walkBoundarySummary(
-          json,
-          index,
-          body,
-          null,
-          graph,
-          activeProcedures,
-          cache,
-          writerKeysByBlock,
-          context
-        )
-        addPossibleWrites(possibleWrites, nested)
-        for (const key of definiteWrites) possibleWrites.delete(key)
-      }
-      if (indexed.opcode === 'control_forever')
-        return boundarySummary(
-          state,
-          state === 'dirty' ? null : possibleReason,
-          definiteWrites,
-          possibleWrites,
-          'nonreturning'
-        )
-      if (
-        (indexed.opcode === 'control_repeat_until' &&
-          literalBooleanCondition(json, current) === false) ||
-        (indexed.opcode === 'control_while' &&
-          literalBooleanCondition(json, current) === true)
-      )
-        return boundarySummary(
-          state,
-          state === 'dirty' ? null : possibleReason,
-          definiteWrites,
-          possibleWrites,
-          'nonreturning'
-        )
-    }
-    else if (
-      indexed.opcode === 'control_if' ||
-      indexed.opcode === 'control_if_else'
-    )
-    {
-      const branchRefs = [
-        primaryBranch(indexed, 'SUBSTACK'),
-        primaryBranch(indexed, 'SUBSTACK2'),
-      ]
-      if (indexed.opcode === 'control_if') branchRefs[1] = null
-      const branches = branchRefs.map((branch) =>
-      {
-        return branch === null
-          ? boundarySummary('clean', null)
-          : walkBoundarySummary(
-              json,
-              index,
-              branch,
-              null,
-              graph,
-              activeProcedures,
-              cache,
-              writerKeysByBlock,
-              context
-            )
-      })
-      const branchState = branches.every((entry) => entry.state === 'dirty')
-        ? 'dirty'
-        : branches.every((entry) => entry.state === 'clean')
-          ? 'clean'
-          : 'indeterminate'
-      state = mergeSequentialBoundaryState(state, branchState)
-      if (branchState === 'indeterminate')
-        possibleReason ??=
-          branches.find((entry) => entry.reason)?.reason ??
-          'unsupported-feature'
-
-      const branchCompletions = branches.map((entry) => entry.completion)
-      if (branchCompletions.every((entry) => entry === 'nonreturning'))
-        return boundarySummary(
-          state,
-          state === 'dirty' ? null : possibleReason,
-          definiteWrites,
-          possibleWrites,
-          'nonreturning'
-        )
-      if (branchCompletions.some((entry) => entry !== 'returns'))
-        completionIndeterminate = true
-
-      const branchWriteKeys = new Set<string>()
-      for (const branch of branches) addPossibleWrites(branchWriteKeys, branch)
-      for (const writerKey of branchWriteKeys)
-      {
-        if (branches.every((branch) => branch.definiteWrites.has(writerKey)))
+        const branchWriteKeys = new Set<string>()
+        for (const branch of branches)
         {
-          definiteWrites.add(writerKey)
-          possibleWrites.delete(writerKey)
+          budget.work()
+          addPossibleWrites(branchWriteKeys, branch, budget)
         }
-        else if (!definiteWrites.has(writerKey)) possibleWrites.add(writerKey)
-      }
-    }
+        for (const writerKey of branchWriteKeys)
+        {
+          budget.work()
 
-    if (indexed.opcode === 'control_stop')
-    {
-      const block = rawBlock(json, current)
-      const option = block
-        ? scratchRecordValue(block.fields, 'STOP_OPTION')
-        : undefined
+          if (
+            branches.every((branch) =>
+            {
+              budget.work()
+              return branch.definiteWrites.has(writerKey)
+            })
+          )
+          {
+            definiteWrites.add(writerKey)
+            possibleWrites.delete(writerKey)
+          }
+          else if (!definiteWrites.has(writerKey))
+            possibleWrites.add(writerKey)
+        }
+      }
+
+      if (indexed.opcode === 'control_stop')
+      {
+        const block = rawBlock(json, current, budget)
+        const option = block
+          ? scratchRecordValue(block.fields, 'STOP_OPTION')
+          : undefined
+        if (
+          option === undefined ||
+          String(option[0]).toLowerCase() !== 'other scripts in sprite'
+        )
+          return boundarySummary(
+            state,
+            state === 'dirty' ? null : possibleReason,
+            definiteWrites,
+            possibleWrites,
+            'nonreturning',
+            budget
+          )
+      }
+
+      const boundary = evaluateBoundary(
+        json,
+        index,
+        current,
+        context.state,
+        budget
+      )
+      if (boundary?.state === 'triggered')
+        state = mergeSequentialBoundaryState(state, 'dirty', budget)
+      else if (boundary?.state === 'indeterminate')
+      {
+        state = mergeSequentialBoundaryState(state, 'indeterminate', budget)
+        possibleReason ??= 'unsupported-feature'
+      }
       if (
-        option === undefined ||
-        String(option[0]).toLowerCase() !== 'other scripts in sprite'
+        indexed.opcode === 'control_wait_until' &&
+        literalBooleanCondition(json, current, budget) === false
       )
         return boundarySummary(
           state,
           state === 'dirty' ? null : possibleReason,
           definiteWrites,
           possibleWrites,
-          'nonreturning'
+          'nonreturning',
+          budget
         )
+      current = indexed.successor
     }
-
-    const boundary = evaluateBoundary(json, index, current, context.state)
-    if (boundary?.state === 'triggered')
-      state = mergeSequentialBoundaryState(state, 'dirty')
-    else if (boundary?.state === 'indeterminate')
-    {
-      state = mergeSequentialBoundaryState(state, 'indeterminate')
-      possibleReason ??=
-        boundary.indeterminateReason === 'unresolved-receivers'
-          ? 'unsupported-feature'
-          : (boundary.indeterminateReason ?? 'unsupported-feature')
-    }
-    if (
-      indexed.opcode === 'control_wait_until' &&
-      literalBooleanCondition(json, current) === false
-    )
+    if (stopKey !== null)
       return boundarySummary(
-        state,
-        state === 'dirty' ? null : possibleReason,
+        'indeterminate',
+        'unresolved-closure',
         definiteWrites,
         possibleWrites,
-        'nonreturning'
+        'indeterminate',
+        budget
       )
-    current = indexed.successor
-  }
-  if (stopKey !== null)
     return boundarySummary(
-      'indeterminate',
-      'unresolved-closure',
+      state === 'clean' && possibleReason ? 'indeterminate' : state,
+      state === 'dirty' ? null : possibleReason,
       definiteWrites,
       possibleWrites,
-      'indeterminate'
+      completionIndeterminate ? 'indeterminate' : 'returns',
+      budget
     )
-  return boundarySummary(
-    state === 'clean' && possibleReason ? 'indeterminate' : state,
-    state === 'dirty' ? null : possibleReason,
-    definiteWrites,
-    possibleWrites,
-    completionIndeterminate ? 'indeterminate' : 'returns'
-  )
+  }
+  finally
+  {
+    budget.leave()
+  }
 }
 
 export function evaluateExecutionWindow(
@@ -1587,11 +2112,21 @@ export function evaluateExecutionWindow(
   graph: ProcedureCallGraph,
   state: WarpState,
   cache: ProcedureBoundarySummaryCache = new Map(),
-  writerKeysByBlock: ReadonlyMap<string, readonly string[]> = new Map()
+  writerKeysByBlock: ReadonlyMap<string, readonly string[]> = new Map(),
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): ExecutionBoundarySummary
 {
+  budget.work()
+
   if (state === 'mixed')
-    return boundarySummary('indeterminate', 'mixed-warp-callers')
+    return boundarySummary(
+      'indeterminate',
+      'mixed-warp-callers',
+      undefined,
+      undefined,
+      undefined,
+      budget
+    )
   return walkBoundarySummary(
     json,
     index,
@@ -1601,7 +2136,8 @@ export function evaluateExecutionWindow(
     new Set(),
     cache,
     writerKeysByBlock,
-    { state, parentState: state }
+    { state, parentState: state },
+    budget
   )
 }
 
@@ -1619,9 +2155,12 @@ function walkProcedurePrefix(
   index: ProjectIndex,
   procedure: IndexedProcedure,
   activeProcedures: Set<string>,
-  warpState: WarpState
+  warpState: WarpState,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): PrefixWalkResult
 {
+  budget.work()
+
   const key = procedureKey(procedure.target, procedure.proccode)
   if (activeProcedures.has(key))
   {
@@ -1659,24 +2198,21 @@ function walkProcedurePrefix(
   }
 
   activeProcedures.add(key)
-  const result = walkPrefix(
-    json,
-    index,
-    script,
-    activeProcedures,
-    procedure.warp === true ? 'warp' : warpState
-  )
-  activeProcedures.delete(key)
-  if (topologyIssues(procedure).length > 0)
+  try
   {
-    return {
-      blockIds: [],
-      possibleBlockIds: [...result.blockIds, ...result.possibleBlockIds],
-      terminated: result.terminated,
-      indeterminateReason: 'unresolved-closure',
-    }
+    return walkPrefix(
+      json,
+      index,
+      script,
+      activeProcedures,
+      procedure.warp === true ? 'warp' : warpState,
+      budget
+    )
   }
-  return result
+  finally
+  {
+    activeProcedures.delete(key)
+  }
 }
 
 function walkPrefix(
@@ -1684,105 +2220,120 @@ function walkPrefix(
   index: ProjectIndex,
   script: IndexedScript,
   activeProcedures: Set<string>,
-  warpState: WarpState
+  warpState: WarpState,
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): PrefixWalkResult
 {
-  const top = index.semantic.blockByKey.get(blockKey(script.top))
-  let current =
-    script.hat || top?.opcode === 'procedures_definition'
-      ? (top?.successor ?? null)
-      : script.top
-  const blockIds: string[] = []
-  const possibleBlockIds: string[] = []
-  const seenBlocks = new Set<string>()
-  let definite = true
-  let indeterminateReason: PrefixWalkResult['indeterminateReason'] = null
-
-  while (current)
+  budget.work()
+  budget.enter()
+  try
   {
-    const key = blockKey(current)
-    if (seenBlocks.has(key))
-    {
-      indeterminateReason ??= 'unresolved-closure'
-      break
-    }
-    seenBlocks.add(key)
-    const indexed = index.semantic.blockByKey.get(key)
-    if (!indexed)
-    {
-      indeterminateReason ??= 'unresolved-closure'
-      break
-    }
-    ;(definite ? blockIds : possibleBlockIds).push(current.blockId)
+    const top = index.semantic.blockByKey.get(blockKey(script.top))
+    let current =
+      script.hat || top?.opcode === 'procedures_definition'
+        ? (top?.successor ?? null)
+        : script.top
+    const blockIds: string[] = []
+    const possibleBlockIds: string[] = []
+    const seenBlocks = new Set<string>()
+    let definite = true
+    let indeterminateReason: PrefixWalkResult['indeterminateReason'] = null
 
-    if (indexed.opcode === 'procedures_call')
+    while (current)
     {
-      const callee = calledProcedure(json, index, current)
-      if (callee)
+      budget.work()
+
+      const key = blockKey(current)
+      if (seenBlocks.has(key))
       {
-        const nested = walkProcedurePrefix(
-          json,
-          index,
-          callee,
-          activeProcedures,
-          warpState
-        )
-        if (definite)
+        indeterminateReason ??= 'unresolved-closure'
+        break
+      }
+      seenBlocks.add(key)
+      const indexed = index.semantic.blockByKey.get(key)
+      if (!indexed)
+      {
+        indeterminateReason ??= 'unresolved-closure'
+        break
+      }
+      budget.occurrence(current, indexed.opcode)
+      ;(definite ? blockIds : possibleBlockIds).push(current.blockId)
+
+      if (indexed.opcode === 'procedures_call')
+      {
+        const callee = calledProcedure(json, index, current, budget)
+        if (callee)
         {
-          blockIds.push(...nested.blockIds)
-          possibleBlockIds.push(...nested.possibleBlockIds)
+          const nested = walkProcedurePrefix(
+            json,
+            index,
+            callee,
+            activeProcedures,
+            warpState,
+            budget
+          )
+          if (definite)
+          {
+            budget.append(blockIds, nested.blockIds)
+            budget.append(possibleBlockIds, nested.possibleBlockIds)
+          }
+          else
+          {
+            budget.append(possibleBlockIds, nested.blockIds)
+            budget.append(possibleBlockIds, nested.possibleBlockIds)
+          }
+          if (nested.indeterminateReason)
+          {
+            indeterminateReason ??= nested.indeterminateReason
+            definite = false
+          }
+          if (nested.terminated)
+          {
+            return {
+              blockIds,
+              possibleBlockIds,
+              terminated: true,
+              indeterminateReason,
+            }
+          }
         }
         else
         {
-          possibleBlockIds.push(...nested.blockIds, ...nested.possibleBlockIds)
-        }
-        if (nested.indeterminateReason)
-        {
-          indeterminateReason ??= nested.indeterminateReason
+          indeterminateReason ??= 'unresolved-closure'
           definite = false
         }
-        if (nested.terminated)
-        {
-          return {
-            blockIds,
-            possibleBlockIds,
-            terminated: true,
-            indeterminateReason,
-          }
+      }
+      const boundary = evaluateBoundary(json, index, current, warpState, budget)
+      if (
+        boundary?.state === 'triggered' ||
+        LOOP_ENTRIES.has(indexed.opcode ?? '')
+      )
+      {
+        return {
+          blockIds,
+          possibleBlockIds,
+          terminated: true,
+          indeterminateReason,
         }
       }
-      else
+      if (boundary?.state === 'indeterminate')
       {
-        indeterminateReason ??= 'unresolved-closure'
+        indeterminateReason ??=
+          boundary.indeterminateReason ?? 'unsupported-feature'
         definite = false
       }
+      current = indexed.successor
     }
-    const boundary = evaluateBoundary(json, index, current, warpState)
-    if (
-      boundary?.state === 'triggered' ||
-      LOOP_ENTRIES.has(indexed.opcode ?? '')
-    )
-    {
-      return {
-        blockIds,
-        possibleBlockIds,
-        terminated: true,
-        indeterminateReason,
-      }
+    return {
+      blockIds,
+      possibleBlockIds,
+      terminated: false,
+      indeterminateReason,
     }
-    if (boundary?.state === 'indeterminate')
-    {
-      indeterminateReason ??=
-        boundary.indeterminateReason ?? 'unsupported-feature'
-      definite = false
-    }
-    current = indexed.successor
   }
-  return {
-    blockIds,
-    possibleBlockIds,
-    terminated: false,
-    indeterminateReason,
+  finally
+  {
+    budget.leave()
   }
 }
 
@@ -1790,8 +2341,11 @@ export function prefixWalk(
   json: ProjectJson,
   index: ProjectIndex,
   script: IndexedScript,
-  seenProcedures: Set<string> = new Set()
+  seenProcedures: Set<string> = new Set(),
+  budget: FragilityAnalysisBudgetV1 = new FragilityAnalysisBudgetV1()
 ): PrefixWalkResult
 {
-  return walkPrefix(json, index, script, seenProcedures, 'non-warp')
+  budget.work()
+
+  return walkPrefix(json, index, script, seenProcedures, 'non-warp', budget)
 }

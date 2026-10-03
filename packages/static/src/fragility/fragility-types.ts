@@ -1,6 +1,8 @@
 // packages/static/src/fragility/fragility-types.ts
 // shared result types for fragility analysis
 
+import type { FragilityBudgetEvidenceV1 } from './analysis-budget.js'
+
 export type FragilitySignatureId =
   | 'fragility.warp-break'
   | 'fragility.startup-write-race'
@@ -58,6 +60,8 @@ export interface FragilityBoundaryIdentity
 
 export interface FragilityAnalysis
 {
+  completion: 'complete' | 'incomplete'
+  budget: FragilityBudgetEvidenceV1
   findings: FragilityFinding[]
   advisories: FragilityFinding[]
   omitted: {

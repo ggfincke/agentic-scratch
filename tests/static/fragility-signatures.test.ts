@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { buildClicker, targetKey } from '@scratch-agent/ir'
+import { targetKey } from '@scratch-agent/ir'
 import {
   createScratchRecord,
   defineScratchRecordValue,
@@ -13,137 +13,30 @@ import {
   type BlockField,
   type BlockInput,
   type ProjectJson,
-  type Target,
   type VariableEntry,
 } from '@scratch-agent/sb3'
 import {
   analyzeFragility,
   buildProcedureCallGraph,
   procedureExecution,
+  FRAGILITY_ANALYSIS_POLICY_V1,
+  FRAGILITY_ANALYSIS_POLICY_SHA256_V1,
   type FragilityAnalysis,
 } from '@scratch-agent/static'
 import { buildIndex } from '@scratch-agent/validate'
 
 import {
   advisoryPositiveProject,
+  call,
+  mutableProject,
+  procedure,
+  put,
+  stack,
   startupPositiveProject,
+  type StackSpec,
   warpPositiveProject,
+  sharedProcedureDagProject,
 } from './fragility-positive-fixtures.js'
-
-interface StackSpec
-{
-  id: string
-  opcode: string
-  extra?: Partial<Block>
-}
-
-function mutableProject(): ProjectJson
-{
-  const json = buildClicker().toProjectJson()
-  for (const target of json.targets)
-  {
-    target.blocks = createScratchRecord<BlockEntry>(
-      Object.entries(target.blocks)
-    )
-    target.variables = createScratchRecord<VariableEntry>(
-      Object.entries(target.variables)
-    )
-  }
-  return json
-}
-
-function put(target: Target, id: string, block: Block): void
-{
-  defineScratchRecordValue<BlockEntry>(target.blocks, id, block)
-}
-
-function stack(target: Target, specs: readonly StackSpec[]): void
-{
-  for (let position = 0; position < specs.length; position++)
-  {
-    const spec = specs[position]!
-    const prior = specs[position - 1]
-    const next = specs[position + 1]
-    put(target, spec.id, {
-      opcode: spec.opcode,
-      inputs: createScratchRecord<BlockInput>(),
-      fields: createScratchRecord<BlockField>(),
-      shadow: false,
-      topLevel: position === 0,
-      ...(position === 0 ? { x: 0, y: 100 } : {}),
-      ...spec.extra,
-      next: next?.id ?? null,
-      parent: prior?.id ?? null,
-    })
-  }
-}
-
-function mutation(proccode: string, warp?: boolean | string)
-{
-  return {
-    tagName: 'mutation',
-    children: [],
-    proccode,
-    argumentids: '[]',
-    argumentnames: '[]',
-    argumentdefaults: '[]',
-    ...(warp === undefined ? {} : { warp }),
-  }
-}
-
-function procedure(
-  target: Target,
-  prefix: string,
-  proccode: string,
-  warp: boolean | string | undefined,
-  body: readonly StackSpec[]
-): void
-{
-  const definitionId = `${prefix}-definition`
-  const prototypeId = `${prefix}-prototype`
-  put(target, definitionId, {
-    opcode: 'procedures_definition',
-    next: body[0]?.id ?? null,
-    parent: null,
-    inputs: createScratchRecord<BlockInput>([
-      ['custom_block', [1, prototypeId]],
-    ]),
-    fields: createScratchRecord<BlockField>(),
-    shadow: false,
-    topLevel: true,
-    x: 300,
-    y: 100,
-  })
-  put(target, prototypeId, {
-    opcode: 'procedures_prototype',
-    next: null,
-    parent: definitionId,
-    inputs: createScratchRecord<BlockInput>(),
-    fields: createScratchRecord<BlockField>(),
-    shadow: true,
-    topLevel: false,
-    mutation: mutation(proccode, warp),
-  })
-  for (let position = 0; position < body.length; position++)
-  {
-    const spec = body[position]!
-    put(target, spec.id, {
-      opcode: spec.opcode,
-      inputs: createScratchRecord<BlockInput>(),
-      fields: createScratchRecord<BlockField>(),
-      shadow: false,
-      topLevel: false,
-      ...spec.extra,
-      next: body[position + 1]?.id ?? null,
-      parent: position === 0 ? definitionId : body[position - 1]!.id,
-    })
-  }
-}
-
-function call(proccode: string): Partial<Block>
-{
-  return { mutation: mutation(proccode) }
-}
 
 function analysisOf(json: ProjectJson): FragilityAnalysis
 {
@@ -1602,6 +1495,103 @@ test('T3 recursive procedure closure terminates without duplicate pairs', () =>
       `${finding.topBlockId ?? ''}:${finding.evidence[0]?.blockId ?? ''}`
   )
   assert.equal(new Set(pairs).size, pairs.length)
+
+  const small = sharedProcedureDagProject(8)
+  const index = buildIndex(small)
+  const root = index.semantic.procedures.find(
+    (entry) => entry.proccode === 'z budget 0'
+  )!
+  const expanded = procedureExecution(
+    small,
+    index,
+    root,
+    buildProcedureCallGraph(small, index)
+  )
+  assert.equal(expanded.blocks.length, 3 * 2 ** 8 - 2)
+  const ordinary = analysisOf(small)
+  assert.equal(ordinary.completion, 'complete')
+  assert.ok(findingForEvidence(ordinary, 'a-budget-wait'))
+  assert.equal(
+    ordinary.budget.policySha256,
+    FRAGILITY_ANALYSIS_POLICY_SHA256_V1
+  )
+  const bounded = analysisOf(sharedProcedureDagProject(16))
+  assert.equal(bounded.completion, 'incomplete')
+  assert.equal(bounded.budget.exhaustedBy, 'expanded-occurrences')
+  assert.equal(
+    bounded.budget.usage.expandedOccurrences,
+    FRAGILITY_ANALYSIS_POLICY_V1.maximumExpandedOccurrences
+  )
+  assert.ok(
+    bounded.budget.partialExecution.some(
+      (entry) => entry.blockId === 'a-budget-wait'
+    )
+  )
+  assert.ok(bounded.budget.partialExecution.length <= 32)
+  assert.deepEqual(analysisOf(sharedProcedureDagProject(16)), bounded)
+  const deep = analysisOf(sharedProcedureDagProject(129, 1))
+  assert.equal(deep.completion, 'incomplete')
+  assert.equal(deep.budget.exhaustedBy, 'depth')
+  assert.equal(
+    deep.budget.usage.depth,
+    FRAGILITY_ANALYSIS_POLICY_V1.maximumDepth
+  )
+  const broad = mutableProject()
+  const sprite = broad.targets.find((target) => !target.isStage)!
+  const calls: StackSpec[] = []
+  for (let position = 0; position < 1500; position++)
+  {
+    procedure(sprite, `work-${position}`, `work ${position}`, false, [])
+    calls.push({
+      id: `work-call-${position}`,
+      opcode: 'procedures_call',
+      extra: call(`work ${position}`),
+    })
+  }
+  procedure(sprite, 'work-root', 'work root', true, calls)
+  const exhaustedWork = analysisOf(broad)
+  assert.equal(exhaustedWork.completion, 'incomplete')
+  assert.equal(exhaustedWork.budget.exhaustedBy, 'work-units')
+  const wideInputs: FragilityAnalysis[] = []
+  for (const inputCount of [130000, 210000])
+  {
+    const wide = advisoryPositiveProject(true)
+    const wideSprite = wide.targets.find((target) => !target.isStage)!
+    const inputs = createScratchRecord<BlockInput>()
+    for (let position = 0; position < inputCount; position++)
+      defineScratchRecordValue(inputs, `fan${position}`, [2, 'fanout-leaf'])
+    ;(wideSprite.blocks['probe-reporter'] as Block).inputs = inputs
+    put(wideSprite, 'fanout-leaf', {
+      opcode: 'operator_equals',
+      next: null,
+      parent: 'probe-reporter',
+      inputs: createScratchRecord<BlockInput>(),
+      fields: createScratchRecord<BlockField>(),
+      shadow: false,
+      topLevel: false,
+    })
+    const result = analysisOf(wide)
+    assert.equal(
+      result.completion,
+      inputCount === 130000 ? 'complete' : 'incomplete'
+    )
+    if (result.completion === 'incomplete')
+      assert.equal(result.budget.exhaustedBy, 'work-units')
+    wideInputs.push(result)
+  }
+  for (const result of [
+    ordinary,
+    bounded,
+    deep,
+    exhaustedWork,
+    ...wideInputs,
+  ])
+  {
+    assert.ok(result.budget.usage.expandedOccurrences <= 65536)
+    assert.ok(result.budget.usage.depth <= 128)
+    assert.ok(result.budget.usage.workUnits <= 1048576)
+  }
+  assert.deepEqual(bounded.boundaryModel, ordinary.boundaryModel)
 })
 
 test('T3 preserves mixed warp after a Promise in one if-else arm', () =>

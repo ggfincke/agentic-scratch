@@ -7,6 +7,7 @@ import { test } from 'node:test'
 import {
   buildCollector,
   buildStateGame,
+  blankProject,
   cloneProjectForRepair,
   deleteStatement,
   type BlockRef,
@@ -779,6 +780,75 @@ test('localizer ranks R1-R5 code with stable provenance & bounded context', () =
       (block) => block.block.blockId === case5.intendedBlock!.blockId
     )
   )
+
+  const scoped = blankProject()
+  const stageNamedSprite = scoped.addSprite('Stage')
+  const scopeDeclarations = [scoped.stage!, stageNamedSprite].map((target) =>
+  {
+    const variableId = target.addVariable('score', 0)
+    const listId = target.addList('items')
+    target.addScript([
+      { opcode: 'event_whenflagclicked' },
+      {
+        opcode: 'data_setvariableto',
+        fields: { VARIABLE: ['score', variableId] },
+        inputs: { VALUE: 1 },
+      },
+      {
+        opcode: 'data_addtolist',
+        fields: { LIST: ['items', listId] },
+        inputs: { ITEM: 'first' },
+      },
+    ])
+    return { variableId, listId }
+  })
+  for (const explicitSprite of [true, false])
+  {
+    for (const kind of ['var', 'list'] as const)
+    {
+      const probe: Probe = {
+        on: kind,
+        name: kind === 'var' ? 'score' : 'items',
+        ...(explicitSprite ? { sprite: 'Stage' } : {}),
+      }
+      const matcher: Matcher = { kind: 'equals', value: 0 }
+      const spec = repairSpec('scoped-declaration', {
+        name: 'stage & a sprite named Stage keep distinct declaration scopes',
+        scenario: {
+          steps: [{ do: 'snapshot', label: 'scoped' }],
+        },
+        asserts: [{ at: 'scoped', probe, match: matcher }],
+      })
+      const report = localizeFailures({
+        project: scoped,
+        baselineArtifactSha256: HASH,
+        failures: [assertion(spec.id, 'scoped', probe, matcher)],
+        tests: [spec],
+      })
+      const writers = report.candidates.filter((candidate) =>
+        candidate.reasons.some((reason) => reason.code === 'declaration-writer')
+      )
+      assert.ok(writers.length > 0)
+      const declaration = scopeDeclarations[explicitSprite ? 1 : 0]!
+      assert.ok(
+        writers.every(
+          (candidate) =>
+            candidate.script.target.isStage === !explicitSprite &&
+            candidate.reasons.some(
+              (reason) =>
+                reason.code === 'declaration-writer' &&
+                reason.declaration?.id ===
+                  (kind === 'var' ? declaration.variableId : declaration.listId)
+            )
+        )
+      )
+      assert.ok(
+        report.unresolved.every(
+          (entry) => entry.reasonCode !== 'probe-declaration-unresolved'
+        )
+      )
+    }
+  }
 
   const reversed = localizeFailures({
     project: case3.project,
