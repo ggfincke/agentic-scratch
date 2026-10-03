@@ -468,7 +468,6 @@ async function main(): Promise<void>
           repairCase: definition.repairCase,
           artifactRoot: casesRoot,
           sessionId,
-          recordVideo: false,
         },
         agent
       )

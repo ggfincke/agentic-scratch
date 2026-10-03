@@ -13,10 +13,12 @@ import {
 import {
   browserRuntimeIdentity,
   collectVersions,
+  deriveDiagnosticVideoFromScreenshots,
   runBrowserScenario,
   runScenario,
   RUNTIME_ID as VM_RUNTIME_ID,
   type BrowserTrace,
+  type DiagnosticVideoRef,
   type RunIssue,
   type Scenario,
   type VmTrace,
@@ -604,7 +606,8 @@ function blockedRuntime(report: ProjectCheckReport): ProjectCheckStageName[]
 
 function sanitizeBrowserTrace(
   trace: BrowserTrace,
-  screenshotPaths: string[]
+  screenshotPaths: string[],
+  diagnosticVideo: DiagnosticVideoRef | null
 ): BrowserTrace
 {
   return {
@@ -613,7 +616,7 @@ function sanitizeBrowserTrace(
       ...screenshot,
       path: screenshotPaths[index] ?? 'browser/screenshots/unknown.png',
     })),
-    video: null,
+    diagnosticVideo,
   }
 }
 
@@ -1147,6 +1150,13 @@ export async function runProjectCheck(
           'browserSmoke'
         )
       }
+      if (issue && !browser.diagnosticVideo)
+      {
+        browser.diagnosticVideo = await deriveDiagnosticVideoFromScreenshots(
+          screenshotDir,
+          browser.screenshots
+        )
+      }
       report.stages.browserSmoke = {
         status: issue ? 'failed' : 'passed',
         required: true,
@@ -1156,7 +1166,30 @@ export async function runProjectCheck(
         notRunReason: null,
       }
       if (issue) report.issues.push(issue)
-      const safeTrace = sanitizeBrowserTrace(browser, screenshotPaths)
+      let retainedDiagnosticVideo: DiagnosticVideoRef | null = null
+      if (browser.diagnosticVideo)
+      {
+        const relativePath = `browser/screenshots/${browser.diagnosticVideo.relativePath}`
+        writeArtifact(report, () =>
+        {
+          const ref = store.writeBytes(
+            relativePath,
+            'browser-diagnostic-video',
+            'video/webm',
+            readFileSync(store.absolutePath(relativePath))
+          )
+          retainedDiagnosticVideo = {
+            relativePath: ref.path,
+            sha256: ref.sha256,
+            byteLength: ref.byteLength,
+          }
+        })
+      }
+      const safeTrace = sanitizeBrowserTrace(
+        browser,
+        screenshotPaths,
+        retainedDiagnosticVideo
+      )
       writeArtifact(report, () =>
         store.writeJson('browser/trace.json', 'browser-trace', safeTrace)
       )

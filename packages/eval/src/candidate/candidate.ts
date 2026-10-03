@@ -1367,7 +1367,7 @@ async function evaluateTests(
         asserts: [],
         visual: [],
         screenshots: [],
-        video: null,
+        diagnosticVideo: null,
         model: null,
         issues: [{ lane: 'vm', issue }],
         errors: runIssueMessages([issue]),

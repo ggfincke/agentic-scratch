@@ -837,29 +837,6 @@ async function retainMedia(
       bytes,
     })
   }
-  if (trace.video)
-  {
-    const bytes = readFileSync(trace.video)
-    const payloadSha256 = sha256(bytes)
-    if (sink !== undefined)
-      await sink.retain({
-        evaluationId: request.evaluationId,
-        lane: cell.lane,
-        scenarioId: cell.scenarioId,
-        side: cell.side,
-        evidenceKind: 'video',
-        mediaType: 'video/webm',
-        payloadSha256,
-        bytes,
-      })
-    retained.push({
-      evidenceKind: 'video',
-      mediaType: 'video/webm',
-      payloadSha256,
-      byteLength: bytes.byteLength,
-      bytes,
-    })
-  }
   for (const frame of trace.observations.media?.frames ?? [])
   {
     if (!trace.mediaRoot) continue

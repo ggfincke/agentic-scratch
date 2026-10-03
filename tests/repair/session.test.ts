@@ -101,7 +101,6 @@ test('controller retains failed candidates and promotes only a full-suite pass',
       repairCase: benchmark.repairCase,
       artifactRoot: root,
       sessionId: 'promotion-safety',
-      recordVideo: false,
     },
     agent
   )
@@ -709,7 +708,6 @@ test('canonical scripted agent repairs R1-R5 through the real pipeline', async (
         repairCase: benchmark.repairCase,
         artifactRoot: root,
         sessionId,
-        recordVideo: false,
       },
       agent
     )

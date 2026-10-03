@@ -230,7 +230,7 @@ test('executable admission refuses unsupported models before packing while inspe
       [refused.snapshots, refused.asserts, refused.visual, refused.screenshots],
       [[], [], [], []]
     )
-    assert.equal(refused.video, null)
+    assert.equal(refused.diagnosticVideo, null)
     assert.deepEqual(
       refused.issues.map(({ issue }) => [issue.code, issue.responsibility]),
       [['model.evaluation.unsupported', 'unsupported']]

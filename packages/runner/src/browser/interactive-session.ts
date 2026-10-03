@@ -5,7 +5,11 @@ import { performance } from 'node:perf_hooks'
 
 import { browserFailureIssue, type BrowserRunStage } from './browser-issues.js'
 import { RUNNER_TICK_MS } from './browser-config.js'
-import { openRenderedPageHost, type RenderedPageHost } from './browser-host.js'
+import {
+  openRenderedPageHost,
+  RENDERED_PAGE_CLOSE_TIMEOUT_MS,
+  type RenderedPageHost,
+} from './browser-host.js'
 import { errorMessage } from '../error-message.js'
 import type { RuntimeDescriptorV1 } from '../lineage/runtime-identity.js'
 import {
@@ -86,6 +90,7 @@ export const DRIVE_OBSERVE_SESSION_ISSUE_CODES = Object.freeze({
     'runner.drive-observe.render-instrumentation-drift',
   tickInvariant: 'runner.drive-observe.tick-invariant',
   drawInvariant: 'runner.drive-observe.draw-invariant',
+  cancelled: 'runner.drive-observe.cancelled',
   callbackFailed: 'runner.drive-observe.callback-failed',
 } as const)
 
@@ -100,6 +105,7 @@ export interface InteractiveBrowserSessionOptionsV1
   readonly seed: number
   readonly fixedDateMs: number
   readonly limits?: Partial<DriveObserveSessionLimitsV1>
+  readonly signal?: AbortSignal
 }
 
 export type DriveObserveCommandV1 =
@@ -315,11 +321,6 @@ interface TrustedCommandIdentity
   readonly expectedTick: number
 }
 
-interface ParsedCommand
-{
-  readonly normalized: DriveObserveNormalizedCommandV1
-}
-
 const ZERO_OBSERVATION_TOTALS: RuntimeObservationBudgetTotalsV1 = Object.freeze(
   {
     scalarSlots: 0,
@@ -371,6 +372,18 @@ function runtimeIssue(error: unknown): RunIssue
     responsibility: 'infrastructure',
     message: boundedMessage(error),
   })
+}
+
+function cancellationIssue(signal: AbortSignal): RunIssue
+{
+  if (isRunIssueLike(signal.reason)) return signal.reason
+  return sessionIssue(
+    DRIVE_OBSERVE_SESSION_ISSUE_CODES.cancelled,
+    signal.reason === undefined
+      ? 'interactive browser session was cancelled'
+      : boundedMessage(signal.reason),
+    'infrastructure'
+  )
 }
 
 function isRunIssueLike(error: unknown): error is RunIssue
@@ -504,14 +517,16 @@ function normalizedCoordinate(
   return Object.is(value, -0) ? 0 : value
 }
 
-function parseCommand(identity: TrustedCommandIdentity): ParsedCommand | null
+function parseCommand(
+  identity: TrustedCommandIdentity
+): DriveObserveNormalizedCommandV1 | null
 {
   const record = identity.record
   const command = record.command
   const base = ['requestId', 'sequence', 'expectedTick', 'command'] as const
   if (command === 'greenFlag' || command === 'close')
   {
-    return sameKeys(record, base) ? { normalized: { command } } : null
+    return sameKeys(record, base) ? { command } : null
   }
   if (command === 'keyDown' || command === 'keyUp')
   {
@@ -522,7 +537,7 @@ function parseCommand(identity: TrustedCommandIdentity): ParsedCommand | null
       return null
     const key = canonicalInputKey(record.key)
     if (key === null || !boundedString(key, MAX_KEY_BYTES, false)) return null
-    return { normalized: { command, key } }
+    return { command, key }
   }
   if (
     command === 'mouseMove' ||
@@ -547,8 +562,8 @@ function parseCommand(identity: TrustedCommandIdentity): ParsedCommand | null
     )
     if (x === null || y === null) return null
     return command === 'mouseMove'
-      ? { normalized: { command, x, y } }
-      : { normalized: { command, x, y, button: 'left' } }
+      ? { command, x, y }
+      : { command, x, y, button: 'left' }
   }
   if (command === 'advance')
   {
@@ -558,9 +573,7 @@ function parseCommand(identity: TrustedCommandIdentity): ParsedCommand | null
       (record.ticks as number) <= 0
     )
       return null
-    return {
-      normalized: { command, ticks: record.ticks as number },
-    }
+    return { command, ticks: record.ticks as number }
   }
   if (command === 'observe')
   {
@@ -572,10 +585,8 @@ function parseCommand(identity: TrustedCommandIdentity): ParsedCommand | null
     )
       return null
     return {
-      normalized: {
-        command,
-        label: typeof record.label === 'string' ? record.label : null,
-      },
+      command,
+      label: typeof record.label === 'string' ? record.label : null,
     }
   }
   return null
@@ -623,6 +634,7 @@ function validOptions(
     options.seed <= 0xffffffff &&
     Number.isSafeInteger(options.fixedDateMs) &&
     !Number.isNaN(new Date(options.fixedDateMs).valueOf()) &&
+    (options.signal === undefined || options.signal instanceof AbortSignal) &&
     limits !== null
   )
 }
@@ -649,6 +661,68 @@ function sleep(durationMs: number): Promise<void>
   })
 }
 
+async function settlesWithin(
+  promise: Promise<void>,
+  durationMs: number
+): Promise<boolean>
+{
+  let timer: NodeJS.Timeout | undefined
+  try
+  {
+    return await Promise.race([
+      promise.then(() => true),
+      new Promise<false>((resolve) =>
+      {
+        timer = setTimeout(() => resolve(false), durationMs)
+      }),
+    ])
+  }
+  finally
+  {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+async function awaitAbortable<T>(
+  factory: () => Promise<T>,
+  signal: AbortSignal | undefined
+): Promise<T>
+{
+  if (signal?.aborted) throw cancellationIssue(signal)
+  const operation = factory()
+  if (!signal) return await operation
+
+  return await new Promise<T>((resolve, reject) =>
+  {
+    let settled = false
+    const onAbort = (): void =>
+    {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', onAbort)
+      reject(cancellationIssue(signal))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) onAbort()
+    void operation.then(
+      (value) =>
+      {
+        if (settled) return
+        settled = true
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (error) =>
+      {
+        if (settled) return
+        settled = true
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      }
+    )
+  })
+}
+
 class InteractiveBrowserSession implements DriveObserveSessionV1
 {
   readonly ready: DriveObserveSessionReadyV1
@@ -657,6 +731,7 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
   readonly #startedAt: number
   readonly #limits: DriveObserveSessionLimitsV1
   readonly #pacing: DriveObservePacingV1
+  readonly #closeHost: () => Promise<void>
   readonly #keys = new Set<string>()
   readonly #requestIds = new Set<string>()
   readonly #records: DriveObserveCommandRecordV1[] = []
@@ -675,12 +750,12 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
   #observationTotals = ZERO_OBSERVATION_TOTALS
   #inFlight = false
   #inFlightCompletion: Promise<void> | null = null
+  #releaseHeldInputPromise: Promise<void> | null = null
   #terminalIssue: RunIssue | null = null
   #terminalReason = 'callback-returned'
   #runtimePositionConfirmed = true
   #droppedIssues = 0
   #durationTimer: NodeJS.Timeout | null = null
-  #durationPending = false
   #resolveTerminal!: (issue: RunIssue) => void
 
   constructor(input: {
@@ -688,6 +763,7 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
     readonly options: InteractiveBrowserSessionOptionsV1
     readonly limits: DriveObserveSessionLimitsV1
     readonly drawEpoch: number
+    readonly closeHost: () => Promise<void>
     // duration clock starts at ready (post begin), not before browser launch
     readonly startedAt: number
   })
@@ -696,6 +772,7 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
     this.#startedAt = input.startedAt
     this.#limits = input.limits
     this.#pacing = input.options.pacing
+    this.#closeHost = input.closeHost
     this.#drawEpoch = input.drawEpoch
     this.terminal = new Promise((resolve) =>
     {
@@ -717,20 +794,14 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
     })
     this.#durationTimer = setTimeout(() =>
     {
-      // defer latch while a command mutates so duration stays a boundary gate
-      if (this.#inFlight)
-      {
-        this.#durationPending = true
-        return
-      }
-      this.latchTerminal(
-        sessionIssue(
-          DRIVE_OBSERVE_SESSION_ISSUE_CODES.durationExceeded,
-          `session exceeded ${this.#limits.durationMs} ms`,
-          'infrastructure'
-        ),
-        'duration-exceeded'
+      const issue = sessionIssue(
+        DRIVE_OBSERVE_SESSION_ISSUE_CODES.durationExceeded,
+        `session exceeded ${this.#limits.durationMs} ms`,
+        'infrastructure'
       )
+      if (this.#inFlight) this.#runtimePositionConfirmed = false
+      this.latchTerminal(issue, 'duration-exceeded')
+      if (this.#inFlight) void this.#closeHost()
     }, input.limits.durationMs)
     this.#durationTimer.unref()
   }
@@ -744,6 +815,7 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
   {
     if (this.#inFlight) this.#runtimePositionConfirmed = false
     this.latchTerminal(issue, reason)
+    if (this.#inFlight) void this.#closeHost()
   }
 
   #heldInput(): DriveObserveHeldInputV1
@@ -907,10 +979,27 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
     })
   }
 
+  async #evaluate<T>(factory: () => Promise<T>): Promise<T>
+  {
+    if (this.#terminalIssue) throw this.#terminalIssue
+    const evaluation = factory().then(
+      (value) => ({ kind: 'value' as const, value }),
+      (error) => ({ kind: 'error' as const, error })
+    )
+    const outcome = await Promise.race([
+      evaluation,
+      this.terminal.then((issue) => ({ kind: 'terminal' as const, issue })),
+    ])
+    if (outcome.kind === 'terminal') throw outcome.issue
+    if (outcome.kind === 'error') throw outcome.error
+    if (this.#terminalIssue) throw this.#terminalIssue
+    return outcome.value
+  }
+
   async #inspectDrawEpoch(): Promise<number>
   {
-    const inspected = await this.#host.page.evaluate(() =>
-      window.__spike!.inspectDriveObserve()
+    const inspected = await this.#evaluate(() =>
+      this.#host.page.evaluate(() => window.__spike!.inspectDriveObserve())
     )
     this.#acceptDrawEpoch(inspected.drawEpoch)
     return inspected.drawEpoch
@@ -982,21 +1071,6 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
     )
   }
 
-  #applyPendingDuration(): void
-  {
-    if (!this.#durationPending || this.#inFlight) return
-    this.#durationPending = false
-    if (this.#terminalIssue) return
-    this.latchTerminal(
-      sessionIssue(
-        DRIVE_OBSERVE_SESSION_ISSUE_CODES.durationExceeded,
-        `session exceeded ${this.#limits.durationMs} ms`,
-        'infrastructure'
-      ),
-      'duration-exceeded'
-    )
-  }
-
   async execute(input: unknown): Promise<DriveObserveCommandOutcomeV1>
   {
     if (this.#state !== 'ready' && this.#state !== 'active')
@@ -1035,7 +1109,6 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
       complete()
       if (this.#inFlightCompletion === completion)
         this.#inFlightCompletion = null
-      this.#applyPendingDuration()
     }
   }
 
@@ -1138,7 +1211,7 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
     {
       return this.#failure(
         identity,
-        parsed.normalized,
+        parsed,
         durationIssue,
         'duration-exceeded',
         commandStartedAt,
@@ -1152,7 +1225,7 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
     {
       return await this.#executeParsed({
         identity,
-        command: parsed.normalized,
+        command: parsed,
         commandStartedAt,
         tickBefore,
         drawEpochBefore,
@@ -1165,7 +1238,7 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
       const issue = this.#terminalIssue ?? this.#issueFromError(error)
       return this.#failure(
         identity,
-        parsed.normalized,
+        parsed,
         issue,
         this.#terminalReason === 'callback-returned'
           ? 'runtime-failed'
@@ -1206,7 +1279,9 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
           input.heldInputBefore
         )
       }
-      await this.#host.page.evaluate(() => window.__spike!.greenFlag())
+      await this.#evaluate(() =>
+        this.#host.page.evaluate(() => window.__spike!.greenFlag())
+      )
       await this.#verifyNoDraw(input.drawEpochBefore)
       this.#greenFlagStarted = true
       return this.#accepted(
@@ -1222,22 +1297,20 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
       const changed = down !== alreadyDown
       if (changed)
       {
-        await this.#host.page.evaluate(
-          (value: { key: string; down: boolean }) =>
-          {
-            if (value.down) window.__spike!.pressKey(value.key)
-            else window.__spike!.releaseKey(value.key)
-          },
-          { key: command.key, down }
+        await this.#evaluate(() =>
+          this.#host.page.evaluate(
+            (value: { key: string; down: boolean }) =>
+            {
+              if (value.down) window.__spike!.pressKey(value.key)
+              else window.__spike!.releaseKey(value.key)
+            },
+            { key: command.key, down }
+          )
         )
-      }
-      // host tracking updates only after draw verify so failure keeps changed=false
-      await this.#verifyNoDraw(input.drawEpochBefore)
-      if (changed)
-      {
         if (down) this.#keys.add(command.key)
         else this.#keys.delete(command.key)
       }
+      await this.#verifyNoDraw(input.drawEpochBefore)
       return this.#accepted(
         input,
         changed,
@@ -1274,29 +1347,28 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
           x: command.x,
           y: command.y,
         }
-        await this.#host.page.evaluate(
-          (value: {
-            command: 'move' | 'down' | 'up'
-            x: number
-            y: number
-          }) =>
-          {
-            if (value.command === 'down')
-              window.__spike!.mouseDown(value.x, value.y)
-            else if (value.command === 'up')
-              window.__spike!.mouseUp(value.x, value.y)
-            else window.__spike!.moveMouse(value.x, value.y)
-          },
-          movement
+        await this.#evaluate(() =>
+          this.#host.page.evaluate(
+            (value: {
+              command: 'move' | 'down' | 'up'
+              x: number
+              y: number
+            }) =>
+            {
+              if (value.command === 'down')
+                window.__spike!.mouseDown(value.x, value.y)
+              else if (value.command === 'up')
+                window.__spike!.mouseUp(value.x, value.y)
+              else window.__spike!.moveMouse(value.x, value.y)
+            },
+            movement
+          )
         )
-      }
-      await this.#verifyNoDraw(input.drawEpochBefore)
-      if (changed)
-      {
         this.#mouseX = command.x
         this.#mouseY = command.y
         this.#mouseLeftDown = targetDown
       }
+      await this.#verifyNoDraw(input.drawEpochBefore)
       return this.#accepted(
         input,
         changed,
@@ -1355,25 +1427,27 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
           input.heldInputBefore
         )
       }
-      const read = await this.#host.page.evaluate(
-        (value: {
-          tick: number
-          sequence: number
-          label: string | null
-          heldInput: DriveObserveHeldInputV1
-        }) =>
-          window.__spike!.readDriveObserveState({
-            tick: value.tick,
-            commandSequence: value.sequence,
-            label: value.label,
-            heldInput: value.heldInput,
-          }),
-        {
-          tick: this.#tick,
-          sequence: input.identity.sequence,
-          label: command.label,
-          heldInput: this.#heldInput(),
-        }
+      const read = await this.#evaluate(() =>
+        this.#host.page.evaluate(
+          (value: {
+            tick: number
+            sequence: number
+            label: string | null
+            heldInput: DriveObserveHeldInputV1
+          }) =>
+            window.__spike!.readDriveObserveState({
+              tick: value.tick,
+              commandSequence: value.sequence,
+              label: value.label,
+              heldInput: value.heldInput,
+            }),
+          {
+            tick: this.#tick,
+            sequence: input.identity.sequence,
+            label: command.label,
+            heldInput: this.#heldInput(),
+          }
+        )
       )
       this.#acceptDrawEpoch(read.drawEpoch)
       this.#drawEpoch = read.drawEpoch
@@ -1538,9 +1612,11 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
   {
     if (this.#pacing === 'instant')
     {
-      const advanced = await this.#host.page.evaluate(
-        (count) => window.__spike!.advanceDriveObserve(count),
-        ticks
+      const advanced = await this.#evaluate(() =>
+        this.#host.page.evaluate(
+          (count) => window.__spike!.advanceDriveObserve(count),
+          ticks
+        )
       )
       if (advanced.ticksAdvanced !== ticks)
       {
@@ -1576,8 +1652,8 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
       const durationIssue = this.#checkDuration()
       if (durationIssue) throw durationIssue
       if (this.#terminalIssue) throw this.#terminalIssue
-      const advanced = await this.#host.page.evaluate(() =>
-        window.__spike!.advanceDriveObserve(1)
+      const advanced = await this.#evaluate(() =>
+        this.#host.page.evaluate(() => window.__spike!.advanceDriveObserve(1))
       )
       if (advanced.ticksAdvanced !== 1)
       {
@@ -1595,41 +1671,181 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
     return ticks
   }
 
-  async releaseHeldInput(): Promise<void>
+  async #runCleanupStep(
+    step: () => Promise<void>,
+    deadline: number
+  ): Promise<boolean>
   {
-    for (const key of [...this.#keys].sort())
+    const remainingMs = deadline - performance.now()
+    if (remainingMs <= 0) return false
+    let timer: NodeJS.Timeout | undefined
+    try
+    {
+      const completion = step().then(
+        () => ({ kind: 'completed' as const }),
+        (error) => ({ kind: 'failed' as const, error })
+      )
+      const outcome = await Promise.race([
+        completion,
+        new Promise<{ readonly kind: 'timed-out' }>((resolve) =>
+        {
+          timer = setTimeout(
+            () => resolve({ kind: 'timed-out' as const }),
+            remainingMs
+          )
+        }),
+      ])
+      if (outcome.kind === 'failed') throw outcome.error
+      return outcome.kind === 'completed'
+    }
+    finally
+    {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  async #verifyCleanupNoDraw(
+    drawEpochBefore: number,
+    active: () => boolean
+  ): Promise<void>
+  {
+    const inspected = await this.#host.page.evaluate(() =>
+      window.__spike!.inspectDriveObserve()
+    )
+    if (!active()) return
+    this.#acceptDrawEpoch(inspected.drawEpoch)
+    this.#drawEpoch = inspected.drawEpoch
+    if (inspected.drawEpoch !== drawEpochBefore)
+    {
+      throw sessionIssue(
+        DRIVE_OBSERVE_SESSION_ISSUE_CODES.drawInvariant,
+        `command changed draw epoch from ${drawEpochBefore} to ${inspected.drawEpoch}`,
+        'infrastructure'
+      )
+    }
+  }
+
+  #recordCleanupAction(
+    command: DriveObserveCleanupActionV1['command'],
+    heldInputBefore: DriveObserveHeldInputV1,
+    drawEpochBefore: number,
+    issue: RunIssue | null
+  ): void
+  {
+    this.#cleanupActions.push(
+      Object.freeze({
+        command: Object.freeze(command),
+        heldInputBefore,
+        heldInputAfter: this.#heldInput(),
+        drawEpochBefore,
+        drawEpochAfter: this.#drawEpoch,
+        issue,
+      })
+    )
+  }
+
+  #failCleanup(error: unknown): RunIssue
+  {
+    this.#runtimePositionConfirmed = false
+    const issue = cleanupIssue(error)
+    this.latchTerminal(issue, 'cleanup-failed')
+    poisonRunnerExecution(issue)
+    return issue
+  }
+
+  #recordRemainingCleanupActions(
+    keys: readonly string[],
+    mouseWasHeld: boolean,
+    issue: RunIssue
+  ): void
+  {
+    for (const key of keys)
+    {
+      const before = this.#heldInput()
+      this.#recordCleanupAction(
+        { command: 'keyUp', key },
+        before,
+        this.#drawEpoch,
+        issue
+      )
+    }
+    if (!mouseWasHeld || !this.#mouseLeftDown) return
+    const before = this.#heldInput()
+    this.#recordCleanupAction(
+      {
+        command: 'mouseUp',
+        x: this.#mouseX,
+        y: this.#mouseY,
+        button: 'left',
+      },
+      before,
+      this.#drawEpoch,
+      issue
+    )
+  }
+
+  releaseHeldInput(): Promise<void>
+  {
+    this.#releaseHeldInputPromise ??= this.#releaseHeldInput()
+    return this.#releaseHeldInputPromise
+  }
+
+  async #releaseHeldInput(): Promise<void>
+  {
+    const deadline = performance.now() + RENDERED_PAGE_CLOSE_TIMEOUT_MS
+    const keys = [...this.#keys].sort()
+    const mouseWasHeld = this.#mouseLeftDown
+    for (const [index, key] of keys.entries())
     {
       const before = this.#heldInput()
       const drawBefore = this.#drawEpoch
       let issue: RunIssue | null = null
+      let active = true
       try
       {
-        await this.#host.page.evaluate(
-          (value) => window.__spike!.releaseKey(value),
-          key
-        )
-        await this.#verifyNoDraw(drawBefore)
-        this.#keys.delete(key)
+        const completed = await this.#runCleanupStep(async () =>
+        {
+          await this.#host.page.evaluate(
+            (value) => window.__spike!.releaseKey(value),
+            key
+          )
+          if (!active) return
+          this.#keys.delete(key)
+          await this.#verifyCleanupNoDraw(drawBefore, () => active)
+        }, deadline)
+        if (!completed)
+        {
+          active = false
+          issue = this.#failCleanup(
+            new Error(
+              `held-input cleanup exceeded ${RENDERED_PAGE_CLOSE_TIMEOUT_MS} ms`
+            )
+          )
+          void this.#closeHost()
+          this.#recordCleanupAction(
+            { command: 'keyUp', key },
+            before,
+            drawBefore,
+            issue
+          )
+          this.#recordRemainingCleanupActions(
+            keys.slice(index + 1),
+            mouseWasHeld,
+            issue
+          )
+          return
+        }
       }
       catch (error)
       {
-        this.#runtimePositionConfirmed = false
-        issue = cleanupIssue(error)
-        this.latchTerminal(issue, 'cleanup-failed')
-        poisonRunnerExecution(issue)
+        active = false
+        issue = this.#failCleanup(error)
       }
-      this.#cleanupActions.push(
-        Object.freeze({
-          command: Object.freeze({
-            command: 'keyUp' as const,
-            key,
-          }),
-          heldInputBefore: before,
-          heldInputAfter: this.#heldInput(),
-          drawEpochBefore: drawBefore,
-          drawEpochAfter: this.#drawEpoch,
-          issue,
-        })
+      this.#recordCleanupAction(
+        { command: 'keyUp', key },
+        before,
+        drawBefore,
+        issue
       )
     }
 
@@ -1637,37 +1853,46 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
     const before = this.#heldInput()
     const drawBefore = this.#drawEpoch
     let issue: RunIssue | null = null
+    let active = true
     try
     {
-      await this.#host.page.evaluate(
-        (value: { x: number; y: number }) =>
-          window.__spike!.mouseUp(value.x, value.y),
-        { x: this.#mouseX, y: this.#mouseY }
-      )
-      await this.#verifyNoDraw(drawBefore)
-      this.#mouseLeftDown = false
+      const completed = await this.#runCleanupStep(async () =>
+      {
+        await this.#host.page.evaluate(
+          (value: { x: number; y: number }) =>
+            window.__spike!.mouseUp(value.x, value.y),
+          { x: this.#mouseX, y: this.#mouseY }
+        )
+        if (!active) return
+        this.#mouseLeftDown = false
+        await this.#verifyCleanupNoDraw(drawBefore, () => active)
+      }, deadline)
+      if (!completed)
+      {
+        active = false
+        issue = this.#failCleanup(
+          new Error(
+            `held-input cleanup exceeded ${RENDERED_PAGE_CLOSE_TIMEOUT_MS} ms`
+          )
+        )
+        void this.#closeHost()
+      }
     }
     catch (error)
     {
-      this.#runtimePositionConfirmed = false
-      issue = cleanupIssue(error)
-      this.latchTerminal(issue, 'cleanup-failed')
-      poisonRunnerExecution(issue)
+      active = false
+      issue = this.#failCleanup(error)
     }
-    this.#cleanupActions.push(
-      Object.freeze({
-        command: Object.freeze({
-          command: 'mouseUp' as const,
-          x: this.#mouseX,
-          y: this.#mouseY,
-          button: 'left' as const,
-        }),
-        heldInputBefore: before,
-        heldInputAfter: this.#heldInput(),
-        drawEpochBefore: drawBefore,
-        drawEpochAfter: this.#drawEpoch,
-        issue,
-      })
+    this.#recordCleanupAction(
+      {
+        command: 'mouseUp',
+        x: this.#mouseX,
+        y: this.#mouseY,
+        button: 'left',
+      },
+      before,
+      drawBefore,
+      issue
     )
   }
 
@@ -1678,14 +1903,22 @@ class InteractiveBrowserSession implements DriveObserveSessionV1
       clearTimeout(this.#durationTimer)
       this.#durationTimer = null
     }
-    this.#durationPending = false
     if (this.#state === 'ready' || this.#state === 'active')
     {
       this.#state = 'closing'
       this.#terminalReason = 'callback-returned'
     }
     const completion = this.#inFlightCompletion
-    if (completion) await completion
+    if (!completion) return
+    await this.#closeHost()
+    if (await settlesWithin(completion, RENDERED_PAGE_CLOSE_TIMEOUT_MS)) return
+    const issue = cleanupIssue(
+      new Error(
+        `in-flight browser command did not settle within ${RENDERED_PAGE_CLOSE_TIMEOUT_MS} ms after close`
+      )
+    )
+    this.latchTerminal(issue, 'cleanup-failed')
+    poisonRunnerExecution(issue)
   }
 
   finishCleanup(cleanupFailures: readonly RunIssue[]): void
@@ -1799,11 +2032,32 @@ export async function withInteractiveBrowserSession<T>(
       let openingIssue: RunIssue | null = null
       const cleanupFailures: RunIssue[] = []
       let closingHost = false
+      let closePromise: Promise<void> | null = null
+      const closeHost = (): Promise<void> =>
+      {
+        if (!host) return Promise.resolve()
+        closingHost = true
+        closePromise ??= host.close()
+        return closePromise
+      }
       const latch = (issue: RunIssue, reason: string): void =>
       {
         if (session) session.latchExternalIssue(issue, reason)
         else openingIssue ??= issue
       }
+      const onAbort = (): void =>
+      {
+        if (!options.signal) return
+        const issue = cancellationIssue(options.signal)
+        latch(
+          issue,
+          issue.code === DRIVE_OBSERVE_SESSION_ISSUE_CODES.durationExceeded
+            ? 'duration-exceeded'
+            : 'cancelled'
+        )
+      }
+      options.signal?.addEventListener('abort', onAbort, { once: true })
+      if (options.signal?.aborted) onAbort()
 
       try
       {
@@ -1840,6 +2094,7 @@ export async function withInteractiveBrowserSession<T>(
           {
             cleanupFailures.push(cleanupIssue(error))
           },
+          signal: options.signal,
         })
         host.page.on('crash', () =>
           latch(runtimeIssue('browser page crashed'), 'page-crashed')
@@ -1883,20 +2138,32 @@ export async function withInteractiveBrowserSession<T>(
 
         if (openingIssue) throw openingIssue
         stage = 'project-load'
-        await host.page.evaluate(
-          (projectPath) => window.__spike!.load(projectPath, null),
-          host.projectPath
+        await awaitAbortable(
+          () =>
+            host!.page.evaluate(
+              (projectPath) => window.__spike!.load(projectPath, null),
+              host!.projectPath
+            ),
+          options.signal
         )
         if (openingIssue) throw openingIssue
         stage = 'setup'
-        await host.page.evaluate(
-          (determinism: { seed: number; fixedDateMs: number }) =>
-            window.__spike!.prep(determinism),
-          { seed: options.seed, fixedDateMs: options.fixedDateMs }
+        await awaitAbortable(
+          () =>
+            host!.page.evaluate(
+              (determinism: { seed: number; fixedDateMs: number }) =>
+                window.__spike!.prep(determinism),
+              { seed: options.seed, fixedDateMs: options.fixedDateMs }
+            ),
+          options.signal
         )
-        const begun = await host.page.evaluate(
-          (caps) => window.__spike!.beginDriveObserve(caps),
-          DEFAULT_RUNTIME_OBSERVATION_CAPS
+        const begun = await awaitAbortable(
+          () =>
+            host!.page.evaluate(
+              (caps) => window.__spike!.beginDriveObserve(caps),
+              DEFAULT_RUNTIME_OBSERVATION_CAPS
+            ),
+          options.signal
         )
         if (openingIssue) throw openingIssue
         stage = 'runtime'
@@ -1905,30 +2172,62 @@ export async function withInteractiveBrowserSession<T>(
           options,
           limits,
           drawEpoch: begun.drawEpoch,
+          closeHost,
           startedAt: performance.now(),
         })
 
-        let callbackOutcome: InteractiveBrowserSessionOutcomeV1<T>['callback']
-        try
-        {
-          const value = await callback(session)
-          callbackOutcome = { status: 'completed', value }
-        }
-        catch (error)
-        {
-          const issue = sessionIssue(
-            DRIVE_OBSERVE_SESSION_ISSUE_CODES.callbackFailed,
-            boundedMessage(error),
-            'infrastructure'
+        let callbackActive = true
+        const callbackSettlement = Promise.resolve()
+          .then(() => callback(session!))
+          .then<
+            InteractiveBrowserSessionOutcomeV1<T>['callback'],
+            InteractiveBrowserSessionOutcomeV1<T>['callback']
+          >(
+            (value) => ({ status: 'completed', value }),
+            (error) =>
+            {
+              const issue = sessionIssue(
+                DRIVE_OBSERVE_SESSION_ISSUE_CODES.callbackFailed,
+                boundedMessage(error),
+                'infrastructure'
+              )
+              if (callbackActive)
+                session!.latchExternalIssue(issue, 'callback-failed')
+              return { status: 'failed', issue }
+            }
           )
-          session.latchExternalIssue(issue, 'callback-failed')
-          callbackOutcome = { status: 'failed', issue }
+        const callbackEvent = await Promise.race([
+          callbackSettlement.then((outcome) => ({
+            kind: 'callback' as const,
+            outcome,
+          })),
+          session.terminal.then((issue) => ({
+            kind: 'terminal' as const,
+            issue,
+          })),
+        ])
+        let callbackOutcome: InteractiveBrowserSessionOutcomeV1<T>['callback']
+        if (callbackEvent.kind === 'callback')
+          callbackOutcome = callbackEvent.outcome
+        else if (
+          await settlesWithin(
+            callbackSettlement.then(() => undefined),
+            RENDERED_PAGE_CLOSE_TIMEOUT_MS
+          )
+        )
+          callbackOutcome = await callbackSettlement
+        else
+        {
+          callbackActive = false
+          callbackOutcome = {
+            status: 'failed',
+            issue: callbackEvent.issue,
+          }
         }
 
         await session.beginCallbackCleanup()
         await session.releaseHeldInput()
-        closingHost = true
-        await host.close()
+        await closeHost()
         session.finishCleanup(cleanupFailures)
         return {
           callback: callbackOutcome,
@@ -1945,7 +2244,7 @@ export async function withInteractiveBrowserSession<T>(
           await session.beginCallbackCleanup()
           await session.releaseHeldInput()
         }
-        if (host) await host.close()
+        await closeHost()
         if (cleanupFailures[0]) poisonRunnerExecution(cleanupFailures[0])
         if (session)
         {
@@ -1965,6 +2264,10 @@ export async function withInteractiveBrowserSession<T>(
           },
           report: openingReport(issue, console, openedAt, cleanupFailures),
         }
+      }
+      finally
+      {
+        options.signal?.removeEventListener('abort', onAbort)
       }
     })
   }

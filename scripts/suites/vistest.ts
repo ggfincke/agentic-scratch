@@ -30,7 +30,7 @@ async function main(): Promise<void>
               ` (at "${a.at}" -> ${a.location.target})`
           )
         }
-        const vid = t.video ? ', 1 video' : ''
+        const vid = t.diagnosticVideo ? ', 1 diagnostic video' : ''
         console.log(
           `        artifacts: ${t.screenshots.length} screenshots${vid}`
         )

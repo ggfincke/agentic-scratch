@@ -95,7 +95,6 @@ interface RepairTestExecutionSettings
 interface RepairBrowserSettings
 {
   enabled: boolean
-  recordVideo: boolean
   executable: string | null
   networkAllowed: boolean
   allowedOrigins: string[]
@@ -305,10 +304,7 @@ function evaluatedTestProjection(
         tick: screenshot.tick,
         path: normalizePath(screenshot.path),
       })),
-      video:
-        test.result.video === null
-          ? null
-          : normalizePath(test.result.video),
+      diagnosticVideo: test.result.diagnosticVideo,
       model: test.result.model,
       issues: test.result.issues,
       errors: test.result.errors,

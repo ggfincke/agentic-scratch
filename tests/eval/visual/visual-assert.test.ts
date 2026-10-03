@@ -2,13 +2,13 @@
 // visual assertion DSL end-to-end: probes evaluate against the browser lane & localize failures
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { buildMovement } from '@scratch-agent/ir'
-import type { Scenario } from '@scratch-agent/runner'
+import { runBrowserScenario, type Scenario } from '@scratch-agent/runner'
 
 import type { Assertion } from '@scratch-agent/eval'
 import { runTest, type TestCase } from '@scratch-agent/eval'
@@ -83,7 +83,6 @@ test('visual probes pass against the browser lane', async () =>
   }
   const result = await runTest(tc, {
     artifactDir: artifactDir('vis-pass-'),
-    recordVideo: false,
   })
   assert.ok(
     result.ok,
@@ -117,7 +116,7 @@ test('a failing visual probe localizes to the sprite', async () =>
       },
     ],
   }
-  const result = await runTest(tc, { recordVideo: false })
+  const result = await runTest(tc)
   assert.equal(result.ok, false, 'wrong position fails')
   const failed = result.visual.find((a) => !a.ok)
   assert.ok(failed, 'a visual assert failed')
@@ -128,43 +127,52 @@ test('a failing visual probe localizes to the sprite', async () =>
   )
 })
 
-test('video is kept on failure & discarded on pass', async () =>
+test('diagnostic video is derived from PNGs on failure only', async () =>
 {
-  const passing: TestCase = {
-    name: 'video: passing run',
-    project: buildMovement(),
+  // a clean run never pays for diagnostics
+  const pass = await runBrowserScenario(
+    await buildMovement().toSb3(),
     scenario,
-    asserts: [],
-    visual: [
-      {
-        at: 'start',
-        probe: { on: 'notBlank' },
-        match: { kind: 'equals', value: true },
-      },
-    ],
-  }
-  const pass = await runTest(passing)
+    {
+      screenshotDir: artifactDir('diag-pass-'),
+    }
+  )
   assert.ok(pass.ok, `expected pass; errors=${pass.errors.join('; ')}`)
-  assert.equal(pass.video, null, 'a passing run discards its video')
+  assert.equal(
+    pass.diagnosticVideo,
+    null,
+    'a passing run produces no diagnostic video'
+  )
 
-  const failing: TestCase = {
-    name: 'video: failing run',
-    project: buildMovement(),
-    scenario,
-    asserts: [],
-    visual: [
-      {
-        at: 'start',
-        probe: { on: 'spriteRect', sprite: 'Mover', field: 'cx' },
-        match: { kind: 'closeTo', value: 999, eps: 1 },
-      },
+  // exceeding maxTicks fails the lane after the start snapshot was captured
+  const capped: Scenario = {
+    maxTicks: 10,
+    steps: [
+      { do: 'greenFlag' },
+      { do: 'wait', ticks: 1 },
+      { do: 'snapshot', label: 'start' },
+      { do: 'wait', ticks: 50 },
     ],
   }
-  const fail = await runTest(failing)
-  assert.equal(fail.ok, false, 'wrong assert fails')
-  assert.ok(fail.video, 'a failing run keeps its video')
-  assert.ok(existsSync(fail.video), `video file exists: ${fail.video}`)
-  assert.ok(statSync(fail.video).size > 0, 'video is non-empty')
+  const screenshotDir = artifactDir('diag-fail-')
+  const fail = await runBrowserScenario(await buildMovement().toSb3(), capped, {
+    screenshotDir,
+  })
+  assert.equal(fail.ok, false, 'the tick overrun fails the lane')
+  assert.ok(fail.diagnosticVideo, 'a failing lane derives a diagnostic video')
+  assert.equal(
+    fail.diagnosticVideo.relativePath,
+    'derived/diagnostics.webm',
+    'the diagnostic video sits beside the retained screenshots'
+  )
+  assert.match(
+    fail.diagnosticVideo.sha256,
+    /^[0-9a-f]{64}$/,
+    'the diagnostic video carries its content identity'
+  )
+  const derivedPath = join(screenshotDir, fail.diagnosticVideo.relativePath)
+  assert.ok(existsSync(derivedPath), `video file exists: ${derivedPath}`)
+  assert.ok(fail.diagnosticVideo.byteLength > 0, 'video is non-empty')
 })
 
 // the collector fixture: the browser lane detects a touch the headless vm lane cannot
@@ -172,7 +180,6 @@ test('collector: browser lane detects the render-dependent collision', async () 
 {
   const result = await runTest(collectorCase, {
     artifactDir: artifactDir('collector-'),
-    recordVideo: false,
   })
   assert.ok(
     result.ok,

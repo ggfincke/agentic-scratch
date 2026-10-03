@@ -239,7 +239,8 @@ export function installNetworkPolicy(
     {
       throw new AggregateError(
         [error, restoreError],
-        'network policy installation and rollback failed'
+        'network policy installation and rollback failed',
+        { cause: restoreError }
       )
     }
     throw error

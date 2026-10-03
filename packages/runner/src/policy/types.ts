@@ -235,6 +235,15 @@ export interface ScreenshotRef
   path: string
 }
 
+// failure-only diagnostic video derived from captured PNGs; not authoritative evidence
+export interface DiagnosticVideoRef
+{
+  // relative to the media root, or to the screenshot dir when no media root exists
+  relativePath: string
+  sha256: string
+  byteLength: number
+}
+
 // the browser lane's trace: the same snapshot shape as the VM lane plus visual artifacts
 export interface BrowserTrace
 {
@@ -246,8 +255,8 @@ export interface BrowserTrace
   snapshots: VmStateSnapshot[]
   finalSnapshot: VmStateSnapshot | null
   screenshots: ScreenshotRef[]
-  // path to the recorded run video, or null if not recorded; keep/discard is the caller's call
-  video: string | null
+  // present only when the run failed & PNG sources existed; diagnostics, not evidence
+  diagnosticVideo: DiagnosticVideoRef | null
   errors: string[]
   issues: RunIssue[]
   consoleLog: string[]

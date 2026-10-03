@@ -7,7 +7,9 @@ import { isAbsolute, join, resolve } from 'node:path'
 
 import {
   DEFAULT_DRIVE_OBSERVE_SESSION_LIMITS_V1,
+  DRIVE_OBSERVE_SESSION_ISSUE_CODES,
   MAX_DRIVE_OBSERVE_SESSION_LIMITS_V1,
+  createRunIssue,
   newRunId,
   withInteractiveBrowserSession,
   type DriveObserveCommandRecordV1,
@@ -60,6 +62,7 @@ import {
 
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60_000
 const MAX_IDLE_TIMEOUT_MS = 15 * 60_000
+const RUNNER_TERMINAL_GRACE_MS = 100
 const MAX_JSON_REPORT_BYTES = 16 * 1024 * 1024
 let forceExitAfterEvidence = false
 
@@ -95,12 +98,6 @@ type InputFrame =
       readonly message: string
       readonly bytes: Buffer
     }
-
-interface ObservationRetention
-{
-  readonly artifact: DriveObserveArtifactIdentityV1
-  readonly bytes: Uint8Array
-}
 
 interface ForensicCommand
 {
@@ -154,6 +151,7 @@ interface ProtocolStopLatch
   readonly signal: AbortSignal
   readonly promise: Promise<ProtocolStop>
   readonly current: () => ProtocolStop | null
+  watchSession(session: DriveObserveSessionV1): void
   dispose(): void
 }
 
@@ -378,8 +376,13 @@ async function writeOutput(
   if (process.stdout.write(`${line}\n`)) return null
   return await new Promise<ProtocolStop | null>((resolveWrite) =>
   {
+    let finished = false
+    let terminalGraceTimer: NodeJS.Timeout | undefined
     const finish = (result: ProtocolStop | null): void =>
     {
+      if (finished) return
+      finished = true
+      if (terminalGraceTimer) clearTimeout(terminalGraceTimer)
       process.stdout.off('drain', onDrain)
       process.stdout.off('error', onError)
       stop.signal.removeEventListener('abort', onAbort)
@@ -394,17 +397,31 @@ async function writeOutput(
     const onAbort = (): void =>
     {
       forceExitAfterEvidence = true
-      process.stdout.destroy()
-      finish(
-        stop.current() ?? {
+      const result =
+        stop.current() ??
+        ({
           outerReason: 'output-interrupted',
           sessionIssue: null,
-        }
-      )
+        } satisfies ProtocolStop)
+      finish(result)
+      process.stdout.destroy()
+    }
+    const onStop = (stopped: ProtocolStop): void =>
+    {
+      if (finished || stopped.outerReason !== 'runner-terminal') return
+      terminalGraceTimer ??= setTimeout(() =>
+      {
+        forceExitAfterEvidence = true
+        finish(stopped)
+        process.stdout.destroy()
+      }, RUNNER_TERMINAL_GRACE_MS)
     }
     process.stdout.once('drain', onDrain)
     process.stdout.once('error', onError)
     stop.signal.addEventListener('abort', onAbort, { once: true })
+    void stop.promise.then(onStop)
+    const currentStop = stop.current()
+    if (currentStop) onStop(currentStop)
     if (stop.signal.aborted) onAbort()
   })
 }
@@ -487,7 +504,6 @@ function signalLatch(): SignalLatch
 
 function protocolStopLatch(input: {
   readonly signal: SignalLatch
-  readonly session: DriveObserveSessionV1
   readonly absoluteDeadlineMs: number
 }): ProtocolStopLatch
 {
@@ -503,14 +519,27 @@ function protocolStopLatch(input: {
     if (stopped !== null) return
     stopped = next
     resolveStop(next)
-    controller.abort()
+    if (next.outerReason !== 'runner-terminal')
+      controller.abort(
+        next.sessionIssue ??
+          createRunIssue({
+            code:
+              next.outerReason === 'absolute-timeout'
+                ? DRIVE_OBSERVE_SESSION_ISSUE_CODES.durationExceeded
+                : DRIVE_OBSERVE_SESSION_ISSUE_CODES.cancelled,
+            kind: 'internal',
+            responsibility: 'infrastructure',
+            message:
+              next.outerReason === 'absolute-timeout'
+                ? 'interactive browser session reached its absolute deadline'
+                : `interactive browser session stopped after ${next.outerReason}`,
+          })
+      )
   }
   void input.signal.promise.then((signal) =>
     stop({ outerReason: signal, sessionIssue: null })
   )
-  void input.session.terminal.then((issue) =>
-    stop({ outerReason: 'runner-terminal', sessionIssue: issue })
-  )
+  let watchedSession = false
   const timer = setTimeout(
     () =>
       stop({
@@ -524,6 +553,14 @@ function protocolStopLatch(input: {
     signal: controller.signal,
     promise,
     current: () => stopped,
+    watchSession(session: DriveObserveSessionV1): void
+    {
+      if (watchedSession) return
+      watchedSession = true
+      void session.terminal.then((issue) =>
+        stop({ outerReason: 'runner-terminal', sessionIssue: issue })
+      )
+    },
     dispose(): void
     {
       clearTimeout(timer)
@@ -595,18 +632,18 @@ function observationSummary(
 
 function responseResult(
   record: DriveObserveCommandRecordV1,
-  retained: ObservationRetention | null,
+  retained: DriveObserveArtifactIdentityV1 | null,
   inline: boolean
 ): unknown
 {
   if (record.result?.kind !== 'observation' || retained === null)
     return record.result
-  if (!inline) return observationSummary(retained.artifact, record)
+  if (!inline) return observationSummary(retained, record)
   return {
     kind: 'observation',
     label: record.result.label,
     capture: record.result.capture,
-    artifact: retained.artifact,
+    artifact: retained,
   }
 }
 
@@ -656,16 +693,13 @@ async function retainObservation(
   layout: RunLayout,
   record: DriveObserveCommandRecordV1,
   index: number
-): Promise<ObservationRetention | null>
+): Promise<DriveObserveArtifactIdentityV1 | null>
 {
   const value = observationArtifact(record)
   if (value === null) return null
   const relativePath = `observations/observation-${String(index).padStart(4, '0')}.json`
   const bytes = canonicalJsonArtifactBytes(value)
-  return {
-    artifact: writeArtifact(layout, relativePath, bytes),
-    bytes,
-  }
+  return writeArtifact(layout, relativePath, bytes)
 }
 
 async function emitTransportIssue(input: {
@@ -723,17 +757,13 @@ async function runProtocol(input: {
   readonly session: DriveObserveSessionV1
   readonly sessionId: string
   readonly sourceIdentity: DriveObserveArtifactIdentityV1
-  readonly signal: SignalLatch
-  readonly absoluteDeadlineMs: number
+  readonly stop: ProtocolStopLatch
 }): Promise<ProtocolResult>
 {
   const ready = input.session.ready
   const iterator = inputFrames()[Symbol.asyncIterator]()
-  const stop = protocolStopLatch({
-    signal: input.signal,
-    session: input.session,
-    absoluteDeadlineMs: input.absoluteDeadlineMs,
-  })
+  const stop = input.stop
+  stop.watchSession(input.session)
   const aliases = new DriveObserveRequestAliases()
   const records: DriveObserveNormalizedRecordV1[] = []
   const observations: DriveObserveArtifactIdentityV1[] = []
@@ -891,7 +921,39 @@ async function runProtocol(input: {
       }
 
       const receivedAt = new Date().toISOString()
-      const outcome = await input.session.execute(parsed)
+      const execution = input.session.execute(parsed)
+      const commandEvent = await Promise.race([
+        execution.then((outcome) => ({
+          kind: 'command' as const,
+          outcome,
+        })),
+        stop.promise.then((stopped) => ({
+          kind: 'stop' as const,
+          stopped,
+        })),
+      ])
+      if (
+        commandEvent.kind === 'stop' &&
+        commandEvent.stopped.outerReason !== 'runner-terminal'
+      )
+        return finishStop(commandEvent.stopped)
+      let outcome: Awaited<ReturnType<DriveObserveSessionV1['execute']>>
+      if (commandEvent.kind === 'command') outcome = commandEvent.outcome
+      else
+      {
+        const grace = waitForIdle(RUNNER_TERMINAL_GRACE_MS)
+        const terminalCommand = await Promise.race([
+          execution.then((settledOutcome) => ({
+            kind: 'command' as const,
+            outcome: settledOutcome,
+          })),
+          grace.promise.then(() => ({ kind: 'grace' as const })),
+        ])
+        grace.cancel()
+        if (terminalCommand.kind === 'grace')
+          return finishStop(commandEvent.stopped)
+        outcome = terminalCommand.outcome
+      }
       if (outcome.kind === 'terminalIssue')
       {
         lastTick = outcome.tick
@@ -911,12 +973,12 @@ async function runProtocol(input: {
         record,
         observations.length
       )
-      if (retained) observations.push(retained.artifact)
+      if (retained) observations.push(retained)
       const normalized = normalizeCommandRecord({
         rawInput: parsed,
         expectedTick: expectedTick(parsed, record.tickBefore),
         record,
-        observation: retained?.artifact ?? null,
+        observation: retained,
         aliases,
       })
       records.push(normalized)
@@ -928,8 +990,8 @@ async function runProtocol(input: {
         receivedAt,
         pacing: input.options.pacing,
         rawInput: parsed,
-        record: forensicRecord(record, retained?.artifact ?? null),
-        observation: retained?.artifact ?? null,
+        record: forensicRecord(record, retained),
+        observation: retained,
         stableSha256: normalized.stableSha256,
       })
 
@@ -960,7 +1022,6 @@ async function runProtocol(input: {
   }
   finally
   {
-    stop.dispose()
     if (!inputEnded)
     {
       process.stdin.destroy()
@@ -1076,6 +1137,7 @@ async function main(): Promise<void>
   const signal = signalLatch()
   const id = sessionId()
   const absoluteDeadlineMs = Date.now() + options.sessionTimeoutMs
+  const stop = protocolStopLatch({ signal, absoluteDeadlineMs })
   let protocolResult: ProtocolResult | null = null
   try
   {
@@ -1092,6 +1154,7 @@ async function main(): Promise<void>
           observations: options.maxObservations,
           durationMs: options.sessionTimeoutMs,
         },
+        signal: stop.signal,
       },
       async (session) =>
       {
@@ -1101,8 +1164,7 @@ async function main(): Promise<void>
           session,
           sessionId: id,
           sourceIdentity: retainedSource,
-          signal,
-          absoluteDeadlineMs,
+          stop,
         })
         return protocolResult
       }
@@ -1348,6 +1410,7 @@ async function main(): Promise<void>
   }
   finally
   {
+    stop.dispose()
     signal.dispose()
   }
 }

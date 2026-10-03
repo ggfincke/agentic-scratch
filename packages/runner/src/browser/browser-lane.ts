@@ -11,7 +11,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
-import { type Browser, type Locator, type Page } from 'playwright'
+import { chromium, type Browser, type Locator, type Page } from 'playwright'
 import { PNG } from 'pngjs'
 
 import {
@@ -21,6 +21,7 @@ import {
 } from './browser-issues.js'
 import {
   OFFICIAL_BROWSER_LINEAGE_IDENTITY,
+  RENDERED_BROWSER_GL_ARGS,
   TURBOWARP_LINEAGE_IDENTITY,
 } from './browser-config.js'
 import {
@@ -97,6 +98,7 @@ import { STAGE_HEIGHT, STAGE_WIDTH } from '../scenario/stage.js'
 import type {
   BrowserLaneResult,
   BrowserTrace,
+  DiagnosticVideoRef,
   RunScenario,
   Scenario,
   ScreenshotRef,
@@ -115,8 +117,6 @@ export interface BrowserScenarioOptions
 {
   // directory to write per-snapshot stage screenshots into
   screenshotDir: string
-  // when set, record a run video into this dir; the caller keeps or discards it
-  videoDir?: string
   // authoritative Multimodal media root; required when the observation plan is temporal
   mediaDir?: string
   observationPlan?: ObservationPlanV1
@@ -130,8 +130,11 @@ export interface BrowserScenarioOptions
   runtimeObservation?: RuntimeObservationCellOptionsV1
 }
 
-// real-time hold per snapshot so the recorder captures a distinct frame (video runs only)
-const VIDEO_HOLD_MS = 150
+// per-image hold for failure diagnostics so the recorder captures distinct frames (~6 fps)
+const DIAGNOSTIC_FRAME_HOLD_MS = 150
+
+// hard cap for a derived failure-diagnostic video; larger outputs are skipped
+const DIAGNOSTIC_MAX_BYTES = 25 * 1024 * 1024
 
 // legacy single-screenshot option shape kept for the spike report
 interface BrowserLaneOptions
@@ -242,19 +245,22 @@ function observationError(
   )
 }
 
-async function createDerivedVideo(
-  browser: Browser,
-  mediaRoot: string,
-  frames: readonly MediaFrameRefV1[],
-  plan: ObservationPlanV1
-): Promise<DerivedVideoRefV1>
+// one source frame for a derived recording: raw bytes or a filesystem path plus its hold time
+interface DerivedVideoSource
 {
-  const temporal = plan.temporal
-  if (!temporal || frames.length === 0)
-    throw observationError(
-      RUN_ISSUE_CODES.observationCaptureFailed,
-      'cannot derive a video without authoritative temporal frames'
-    )
+  bytes?: Uint8Array
+  path?: string
+  holdMs: number
+}
+
+// record PNG sources into a webm via a throwaway recording context; the only wall-clock use left
+async function deriveVideoFromPngs(
+  browser: Browser,
+  sources: readonly DerivedVideoSource[]
+): Promise<Buffer>
+{
+  if (sources.length === 0)
+    throw new Error('cannot derive a video without source frames')
   const recordingDir = mkdtempSync(
     join(tmpdir(), 'agentic-scratch-multimodal-video-')
   )
@@ -275,10 +281,9 @@ async function createDerivedVideo(
         `img{display:block;width:${STAGE_WIDTH}px;height:${STAGE_HEIGHT}px}</style>` +
         '<img id="frame">'
     )
-    const holdMs = 1000 / temporal.playbackFps
-    for (const frame of frames)
+    for (const source of sources)
     {
-      const bytes = readFileSync(join(mediaRoot, frame.relativePath))
+      const bytes = source.bytes ?? readFileSync(source.path!)
       const src = `data:image/png;base64,${bytes.toString('base64')}`
       await page.evaluate(
         async (input: { src: string; holdMs: number }) =>
@@ -289,43 +294,152 @@ async function createDerivedVideo(
           await new Promise<void>((done) => requestAnimationFrame(() => done()))
           await new Promise<void>((done) => setTimeout(done, input.holdMs))
         },
-        { src, holdMs }
+        { src, holdMs: source.holdMs }
       )
     }
     await context.close()
     context = undefined
     if (!video)
-      throw observationError(
-        RUN_ISSUE_CODES.observationCaptureFailed,
-        'Playwright did not create the derived video recorder'
-      )
+      throw new Error('Playwright did not create the derived video recorder')
     const sourcePath = await video.path()
-    const bytes = readFileSync(sourcePath)
-    if (bytes.byteLength > temporal.maxBytes)
-      throw observationError(
-        RUN_ISSUE_CODES.observationBudgetExceeded,
-        `derived video uses ${bytes.byteLength} bytes, exceeding ${temporal.maxBytes}`
-      )
-    const relativePath = 'derived/temporal.webm'
-    const identity = writeMediaFileExclusive(mediaRoot, relativePath, bytes)
-    return {
-      id: 'derived-temporal-video',
-      relativePath,
-      mimeType: 'video/webm',
-      width: STAGE_WIDTH,
-      height: STAGE_HEIGHT,
-      durationMs: Math.round((frames.length * 1000) / temporal.playbackFps),
-      playbackFps: temporal.playbackFps,
-      bytes: identity.byteLength,
-      sha256: identity.sha256,
-      authoritative: false,
-      sourceFrameIds: frames.map((frame) => frame.id),
-    }
+    return readFileSync(sourcePath)
   }
   finally
   {
     if (context) await context.close().catch(() => undefined)
     rmSync(recordingDir, { recursive: true, force: true })
+  }
+}
+
+async function createDerivedVideo(
+  browser: Browser,
+  mediaRoot: string,
+  frames: readonly MediaFrameRefV1[],
+  plan: ObservationPlanV1
+): Promise<DerivedVideoRefV1>
+{
+  const temporal = plan.temporal
+  if (!temporal || frames.length === 0)
+    throw observationError(
+      RUN_ISSUE_CODES.observationCaptureFailed,
+      'cannot derive a video without authoritative temporal frames'
+    )
+  const holdMs = 1000 / temporal.playbackFps
+  const bytes = await deriveVideoFromPngs(
+    browser,
+    frames.map((frame) => ({
+      path: join(mediaRoot, frame.relativePath),
+      holdMs,
+    }))
+  )
+  if (bytes.byteLength > temporal.maxBytes)
+    throw observationError(
+      RUN_ISSUE_CODES.observationBudgetExceeded,
+      `derived video uses ${bytes.byteLength} bytes, exceeding ${temporal.maxBytes}`
+    )
+  const relativePath = 'derived/temporal.webm'
+  const identity = writeMediaFileExclusive(mediaRoot, relativePath, bytes)
+  return {
+    id: 'derived-temporal-video',
+    relativePath,
+    mimeType: 'video/webm',
+    width: STAGE_WIDTH,
+    height: STAGE_HEIGHT,
+    durationMs: Math.round((frames.length * 1000) / temporal.playbackFps),
+    playbackFps: temporal.playbackFps,
+    bytes: identity.byteLength,
+    sha256: identity.sha256,
+    authoritative: false,
+    sourceFrameIds: frames.map((frame) => frame.id),
+  }
+}
+
+// failure-only diagnostic video assembled from labeled snapshots then temporal frames by tick;
+// best-effort: never part of MediaManifestV1, never evidence, never affects the lane result
+async function createDiagnosticVideo(
+  browser: Browser,
+  root: string,
+  screenshots: readonly ScreenshotRef[],
+  frames: readonly MediaFrameRefV1[],
+  mediaRoot: string | null
+): Promise<DiagnosticVideoRef | null>
+{
+  const entries = [
+    ...screenshots.map((screenshot) => ({
+      tick: screenshot.tick,
+      path: screenshot.path,
+    })),
+    ...(mediaRoot
+      ? frames.map((frame) => ({
+          tick: frame.tick,
+          path: join(mediaRoot, frame.relativePath),
+        }))
+      : []),
+  ].sort((a, b) => a.tick - b.tick)
+  if (entries.length === 0) return null
+  const bytes = await deriveVideoFromPngs(
+    browser,
+    entries.map((entry) => ({
+      path: entry.path,
+      holdMs: DIAGNOSTIC_FRAME_HOLD_MS,
+    }))
+  )
+  if (bytes.byteLength > DIAGNOSTIC_MAX_BYTES) return null
+  const identity = writeMediaFileExclusive(
+    root,
+    'derived/diagnostics.webm',
+    bytes
+  )
+  return {
+    relativePath: identity.path,
+    sha256: identity.sha256,
+    byteLength: identity.byteLength,
+  }
+}
+
+// derive a diagnostic after a higher-level evaluator has classified the run as failed
+export async function deriveDiagnosticVideoFromScreenshots(
+  root: string,
+  screenshots: readonly ScreenshotRef[]
+): Promise<DiagnosticVideoRef | null>
+{
+  if (screenshots.length === 0) return null
+  try
+  {
+    return await withRunnerExecution(async () =>
+    {
+      let browser: Browser | undefined
+      try
+      {
+        browser = await chromium.launch({
+          headless: true,
+          args: [...RENDERED_BROWSER_GL_ARGS],
+        })
+        return await createDiagnosticVideo(browser, root, screenshots, [], null)
+      }
+      catch
+      {
+        return null
+      }
+      finally
+      {
+        if (browser)
+        {
+          try
+          {
+            await browser.close()
+          }
+          catch
+          {
+            // a failed cleanup only loses a best-effort diagnostic
+          }
+        }
+      }
+    })
+  }
+  catch
+  {
+    return null
   }
 }
 
@@ -357,8 +471,6 @@ class BrowserEngine implements ScenarioEngine, IdentityBoundScenarioEngine
     private readonly maxTicks: number,
     private readonly observationPlan: ObservationPlanV1,
     private readonly mediaRoot: string | null,
-    // >0 holds real time after each snapshot so the video recorder captures the frame
-    private readonly videoHoldMs: number,
     private readonly runtimeObservation?: RuntimeObservationCellOptionsV1
   )
   {
@@ -600,8 +712,6 @@ class BrowserEngine implements ScenarioEngine, IdentityBoundScenarioEngine
           ...this.frames[frameIndex]!,
           snapshotLabel: label,
         }
-      // hold real time so this frame lands in the recording (frame-exact stepping is instant)
-      if (this.videoHoldMs > 0) await this.page.waitForTimeout(this.videoHoldMs)
     }
     catch (error)
     {
@@ -956,7 +1066,7 @@ async function runBrowserScenarioScoped(
   let consoleFailureStage: BrowserRunStage | undefined
   let host: RenderedPageHost | undefined
   let engine: BrowserEngine | undefined
-  let video: ReturnType<Page['video']> | null = null
+  let diagnosticVideo: DiagnosticVideoRef | null = null
   let stage: BrowserRunStage = 'launch'
   let lineage: RuntimeLineageAdapterResultV1 | null = null
   let identityBoundDrive: IdentityBoundDriveResultV1 | null = null
@@ -991,17 +1101,12 @@ async function runBrowserScenarioScoped(
       sb3,
       lineageManifest: options.lineageManifest,
       headless: true,
-      videoDir: options.videoDir,
       allowNetwork: options.allowNetwork,
       allowedOrigins: options.allowedOrigins,
       onBrowserLaunched(descriptor): void
       {
         // record version only; stage stays launch until the host is fully ready
         runtimeDescriptor = descriptor
-      },
-      onVideo(value): void
-      {
-        video = value
       },
       // only uncaught page errors fail the run; console output is retained
       onPageError(error): void
@@ -1030,7 +1135,6 @@ async function runBrowserScenarioScoped(
       },
     })
     const page = host.page
-    video = host.video
 
     mkdirSync(options.screenshotDir, { recursive: true })
     stage = 'project-load'
@@ -1064,7 +1168,6 @@ async function runBrowserScenarioScoped(
         : (scenario.maxTicks ?? DEFAULT_MAX_TICKS),
       observationPlan,
       mediaRoot,
-      options.videoDir ? VIDEO_HOLD_MS : 0,
       options.runtimeObservation
     )
     await engine.startObservations()
@@ -1111,28 +1214,34 @@ async function runBrowserScenarioScoped(
       }
       issues.push(...engine.observationIssues)
     }
+    // failure-only diagnostics: replicate the post-teardown issue pushes exactly, then derive
+    const consoleHasFailure = console
+      .summary()
+      .categories.some((category) => category.disposition === 'failure')
+    const loweringIncomplete =
+      identityBoundDrive !== null && identityBoundDrive.status !== 'complete'
+    if (
+      host &&
+      engine &&
+      (issues.length > 0 || consoleHasFailure || loweringIncomplete)
+    )
+    {
+      try
+      {
+        diagnosticVideo = await createDiagnosticVideo(
+          host.browser,
+          mediaRoot ?? options.screenshotDir,
+          engine.screenshots,
+          engine.frames,
+          mediaRoot
+        )
+      }
+      catch
+      {
+        // a failed derivation only loses a debug artifact; the lane result is already set
+      }
+    }
     if (host) await host.close()
-  }
-
-  // video path is only resolvable once the context has closed
-  let videoPath: string | null = null
-  if (video)
-  {
-    try
-    {
-      videoPath = await video.path()
-    }
-    catch (error)
-    {
-      videoPath = null
-      issues.push(
-        toRunIssue(error, {
-          code: RUN_ISSUE_CODES.browserCleanupFailed,
-          kind: 'internal',
-          responsibility: 'infrastructure',
-        })
-      )
-    }
   }
 
   if (blockedUrls.length > 0)
@@ -1193,7 +1302,7 @@ async function runBrowserScenarioScoped(
     snapshots: engine ? engine.snapshots : [],
     finalSnapshot: engine?.finalSnapshot ?? null,
     screenshots: engine ? engine.screenshots : [],
-    video: videoPath,
+    diagnosticVideo,
     errors: runIssueMessages(issues),
     issues,
     consoleLog: console.entries,
@@ -1245,7 +1354,7 @@ async function runRenderedBrowserScenario(
       snapshots: [],
       finalSnapshot: null,
       screenshots: [],
-      video: null,
+      diagnosticVideo: null,
       errors: runIssueMessages(issues),
       issues,
       consoleLog: [],

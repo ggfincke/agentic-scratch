@@ -12,6 +12,10 @@ export * from './report/versions.js'
 export * from './report/report.js'
 export * from './vm/vm-lane.js'
 export * from './browser/browser-lane.js'
+export {
+  renderedRuntimeDescriptorBeforeLaunch,
+  profileRuntimeDescriptorBeforeLaunchV1,
+} from './browser/browser-host.js'
 export * from './browser/interactive-session.js'
 export * from './policy/determinism.js'
 export * from './scenario/input.js'
@@ -33,3 +37,15 @@ export * from './scenario/identity-bound-scenario.js'
 export * from './scenario/identity-bound-vm.js'
 export * from './observation/png-decode.js'
 export * from './policy/execution-coordinator.js'
+export * from './development/service.js'
+export * from './development/execution-profile.js'
+export {
+  bindProfileRuntimeDescriptorV1,
+  bindProfileRuntimeDescriptorV2,
+} from './development/profile-identity.js'
+export * from './development/profile-browser-types.js'
+export * from './development/profile-browser-engine.js'
+export * from './development/profile-scenario.js'
+export * from './development/profile-evidence-types.js'
+export * from './development/selected-state.js'
+export * from './development/input-policy.js'

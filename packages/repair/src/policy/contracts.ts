@@ -298,7 +298,6 @@ export interface StartRepairInput
   sessionId?: string
   createdAt?: string
   sourceRevision?: string
-  recordVideo?: boolean
   multimodalEvaluator?: RepairMultimodalEvaluator
 }
 
