@@ -73,6 +73,7 @@ export type {
 
 export * from './replay/replay-run.js'
 export * from './authority/extension-metadata.js'
+export * from './authoring/workspace-service.js'
 
 export {
   editCanonicalSha256V1,

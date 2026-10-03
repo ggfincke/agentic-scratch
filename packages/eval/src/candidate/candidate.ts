@@ -411,7 +411,7 @@ function validateScenarioDefinition(test: RepairTestSpec): string[]
   return problems
 }
 
-function validateAssertions(
+export function validateScenarioAssertionsV1(
   assertions: unknown,
   scenario: unknown,
   lane: 'vm' | 'browser'
@@ -825,8 +825,8 @@ function validateTestDefinition(test: RepairTestSpec): string[]
       : 0
   const problems = [
     ...validateScenarioDefinition(test),
-    ...validateAssertions(assertions, test.scenario, 'vm'),
-    ...validateAssertions(visual, test.scenario, 'browser'),
+    ...validateScenarioAssertionsV1(assertions, test.scenario, 'vm'),
+    ...validateScenarioAssertionsV1(visual, test.scenario, 'browser'),
     ...validateModels(test),
   ]
   if (!isSerializable(test.scenario))

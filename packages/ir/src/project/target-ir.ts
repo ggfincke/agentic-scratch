@@ -1,7 +1,13 @@
 // packages/ir/src/project/target-ir.ts
 // typed editing view over one raw target (stage or sprite); mutates the underlying JSON
 
-import type { Asset, Costume, ScalarVal, Target } from '@scratch-agent/sb3'
+import type {
+  Asset,
+  Costume,
+  ScalarVal,
+  Sound,
+  Target,
+} from '@scratch-agent/sb3'
 
 import { buildScript, type BlockSpec } from './build.js'
 import { scriptsOf, type Script } from './scripts.js'
@@ -83,6 +89,12 @@ export class TargetIR
   {
     this.raw.costumes.push(costume)
     if (bytes && costume.md5ext) this.sink({ path: costume.md5ext, bytes })
+  }
+
+  addSound(sound: Sound, bytes?: Uint8Array): void
+  {
+    this.raw.sounds.push(sound)
+    if (bytes && sound.md5ext) this.sink({ path: sound.md5ext, bytes })
   }
 
   // add a script (a stacked chain of blocks) to this target; returns the top block id
