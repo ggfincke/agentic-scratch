@@ -19,7 +19,7 @@ import test from 'node:test'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-import { buildFixtureSb3 } from '@scratch-agent/sb3'
+import { buildFixtureSb3, packSb3, unpackSb3 } from '@scratch-agent/sb3'
 
 import {
   MAX_MCP_PROJECT_ENVELOPE_BYTES,
@@ -497,4 +497,57 @@ test('project MCP opens, paginates, runs, reports, and rejects policy bypasses',
   )
   assert.deepEqual(readFileSync(inputPath), sourceBytes)
   assert.equal(sha256(readFileSync(inputPath)), sourceSha256)
+})
+
+test('project open keeps ordinary inspection separate from edit admission', async (t) =>
+{
+  const root = mkdtempSync(join(tmpdir(), 'project-mcp-policy-'))
+  const inputRoot = join(root, 'input')
+  const outputRoot = join(root, 'output')
+  const artifactRoot = join(root, 'artifacts')
+  for (const path of [inputRoot, outputRoot, artifactRoot])
+  {
+    mkdirSync(path)
+  }
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+
+  const fixture = await buildFixtureSb3()
+  const unpacked = await unpackSb3(fixture.sb3)
+  const duplicateTargetsJson =
+    `{"targets":${JSON.stringify(fixture.project.targets)},` +
+    unpacked.projectJsonText.slice(1)
+  const bytes = await packSb3(duplicateTargetsJson, unpacked.assets)
+  const inputPath = join(inputRoot, 'ordinary-only-project.sb3')
+  writeFileSync(inputPath, bytes)
+
+  const registry = new ProjectSessionRegistry({
+    inputRoot,
+    outputRoot,
+    artifactRoot,
+  })
+  const opened = await registry.open(inputPath)
+  assert.equal(opened.state, 'ready')
+  assert.equal(opened.canRun, true)
+  assert.deepEqual(opened.issues, [])
+
+  const inspected = registry.inspect(
+    opened.sessionId,
+    { kind: 'targets' },
+    undefined,
+    undefined
+  )
+  assert.equal(inspected.page.total, 2)
+  let leased = false
+  await assert.rejects(
+    () =>
+      registry.withEditSourceLeaseV1(opened.sessionId, async () =>
+      {
+        leased = true
+      }),
+    (error: unknown) =>
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'mcp.edit-source-not-editable'
+  )
+  assert.equal(leased, false)
 })

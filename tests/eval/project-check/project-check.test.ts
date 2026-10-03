@@ -7,10 +7,35 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { buildFixtureSb3 } from '@scratch-agent/sb3'
+import { buildClicker } from '@scratch-agent/ir'
+import { admitSb3, buildFixtureSb3 } from '@scratch-agent/sb3'
 
-import { PROJECT_CHECK_ISSUE_CODES } from '@scratch-agent/eval'
-import { runProjectCheck } from '@scratch-agent/eval'
+import {
+  PROJECT_CHECK_ISSUE_CODES,
+  inspectSelectedProject,
+  inspectSelectedProjectFromAdmittedSb3,
+  runProjectCheck,
+} from '@scratch-agent/eval'
+
+test('selected project inspection is exact when reusing archive admission', async () =>
+{
+  const fixture = await buildFixtureSb3()
+  const admission = await admitSb3(fixture.sb3)
+  const fresh = await inspectSelectedProject(fixture.sb3)
+  const reused = await inspectSelectedProjectFromAdmittedSb3(
+    fixture.sb3,
+    admission
+  )
+
+  assert.deepEqual(reused, fresh)
+
+  const altered = Uint8Array.from(fixture.sb3)
+  altered[altered.byteLength - 1]! ^= 1
+  await assert.rejects(
+    () => inspectSelectedProjectFromAdmittedSb3(altered, admission),
+    /admitted archive identity does not match project bytes/u
+  )
+})
 
 test('project check composes all gates & retains earlier evidence on a late failure', async () =>
 {
@@ -97,4 +122,32 @@ test('project check composes all gates & retains earlier evidence on a late fail
   {
     rmSync(temp, { recursive: true, force: true })
   }
+})
+
+test('selected project inspection rejects a packaged block cycle', async () =>
+{
+  const project = buildClicker()
+  const sprite = project.json.targets.find((target) => !target.isStage)
+  assert.ok(sprite)
+  const hatPair = Object.entries(sprite.blocks).find(
+    ([, entry]) =>
+      !Array.isArray(entry) &&
+      entry.topLevel === true &&
+      entry.opcode.startsWith('event_')
+  )
+  assert.ok(hatPair)
+  const [hatId, hat] = hatPair
+  assert.ok(!Array.isArray(hat))
+  hat.next = hatId
+
+  const inspection = await inspectSelectedProject(await project.toSb3())
+  assert.equal(inspection.stages.schema, 'passed')
+  assert.ok(inspection.graph)
+  const cycles = inspection.graph.diagnostics.filter(
+    (diagnostic) => diagnostic.code === 'block-cycle'
+  )
+  assert.equal(cycles.length, 1)
+  assert.equal(cycles[0]!.severity, 'error')
+  assert.equal(inspection.stages.graph, 'failed')
+  assert.equal(inspection.canRun, false)
 })

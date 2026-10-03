@@ -29,6 +29,7 @@ import {
   ProjectScenarioError,
   inspectSemanticEditArtifact,
   inspectSelectedProject,
+  inspectSelectedProjectFromAdmittedSb3,
   parseProjectScenario,
   runProjectCheckScenario,
   type ParsedProjectScenario,
@@ -546,10 +547,16 @@ export class ProjectSessionRegistry
             publicationClaim
           )
         : readSelectedInput(this.paths, inputPath)
-      const inspection = await inspectSelectedProject(selected.bytes)
       const editSourceAssessment = await inspectSemanticEditArtifact(
         selected.bytes
       )
+      const inspection =
+        editSourceAssessment.admission === null
+          ? await inspectSelectedProject(selected.bytes)
+          : await inspectSelectedProjectFromAdmittedSb3(
+              selected.bytes,
+              editSourceAssessment.admission.archive
+            )
       if (
         inspection.input.sha256 !== null &&
         inspection.input.sha256 !== selected.sha256

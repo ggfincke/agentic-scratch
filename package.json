@@ -73,7 +73,9 @@
     "pretest": "npm run build",
     "test": "node --import tsx --test \"tests/**/*.test.ts\" \"eslint-rules/**/*.test.js\"",
     "clean": "rm -rf runs .tmp packages/*/dist packages/*/*.tsbuildinfo *.tsbuildinfo",
-    "authoring-catalog-check": "tsx scripts/gates/reconcile-authoring-catalog.ts"
+    "authoring-catalog-check": "tsx scripts/gates/reconcile-authoring-catalog.ts",
+    "prelitterbox": "npm run build",
+    "litterbox": "tsx scripts/tools/litterbox-check.ts"
   },
   "prettier": {
     "plugins": [
