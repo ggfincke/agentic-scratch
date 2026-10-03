@@ -25,6 +25,10 @@ request -> IR + patch engine -> deterministic .sb3 builder
 Cheap oracles run first; the expensive ones (browser render, video/VLM) run only
 when a cheaper lane cannot answer.
 
+The [authoring and development guide](docs/authoring-development.md) covers the
+complete standard palette, source manifests, media preparation, both runtime
+profiles, human playtesting, marked replay, and the comparison viewer.
+
 ## What it does
 
 - **Author & edit** — open an admitted `.sb3` (or a blank template) into an
