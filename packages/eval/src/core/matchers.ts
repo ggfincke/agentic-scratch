@@ -2,6 +2,7 @@
 // tiny assertion matchers w/ Scratch-faithful value coercion
 
 import type { ScalarValue } from '@scratch-agent/runner'
+import { compareScratchValuesV1 } from '@scratch-agent/runner'
 
 export type Matcher =
   | { kind: 'equals'; value: ScalarValue }
@@ -12,7 +13,7 @@ export type Matcher =
 
 const DEFAULT_EPS = 1e-6
 
-// a value is numeric in Scratch terms if it casts to a finite number & is not blank
+// numeric-only matchers keep their finite-number admission policy
 function asNumber(v: unknown): number | null
 {
   if (typeof v === 'boolean') return v ? 1 : 0
@@ -21,13 +22,10 @@ function asNumber(v: unknown): number | null
   return Number.isFinite(n) ? n : null
 }
 
-// Scratch `=`: compare numerically when both sides are numeric, else case-insensitive strings
+// equality uses the same pinned cast policy as the model oracle
 export function scratchEquals(a: unknown, b: unknown): boolean
 {
-  const na = asNumber(a)
-  const nb = asNumber(b)
-  if (na !== null && nb !== null) return na === nb
-  return String(a).toLowerCase() === String(b).toLowerCase()
+  return compareScratchValuesV1(a, b) === 0
 }
 
 export function matches(matcher: Matcher, observed: unknown): boolean

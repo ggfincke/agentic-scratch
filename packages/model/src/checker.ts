@@ -6,9 +6,13 @@ import type {
   TickObserver,
   VmStateSnapshot,
 } from '@scratch-agent/runner'
+import { createRunIssue, RunnerIssueError } from '@scratch-agent/runner'
 
+import { assertExecutableModelsV1 } from './admission.js'
 import { ModelInstance, type ContextFactory } from './machine.js'
 import type { Model, ModelResult, ModelRunResult } from './types.js'
+
+export const MODEL_END_TRANSITION_LIMIT_V1 = 10000
 
 interface ModelCheckerOptions
 {
@@ -35,6 +39,7 @@ export class ModelChecker implements TickObserver
 {
   private readonly programInstances: ModelInstance[]
   private readonly endInstances: ModelInstance[]
+  private readonly exhausted = new Set<ModelInstance>()
   private prev: VmStateSnapshot | null = null
   private tick = 0
   private programEndTick: number | null = null
@@ -42,10 +47,15 @@ export class ModelChecker implements TickObserver
   private readonly touching?: (spriteA: string, spriteB: string) => boolean
 
   constructor(
-    models: { programModels: Model[]; endModels?: Model[] },
+    models: {
+      programModels: Model[]
+      endModels?: Model[]
+      userModels?: Model[]
+    },
     opts: ModelCheckerOptions = {}
   )
   {
+    assertExecutableModelsV1(models)
     this.programInstances = models.programModels.map(
       (m) => new ModelInstance(m, true)
     )
@@ -87,12 +97,28 @@ export class ModelChecker implements TickObserver
     // end models assert against the frozen final state; drive each to a fixed point
     for (const inst of this.endInstances)
     {
-      let guard = 0
-      while (!inst.stopped && guard++ < 10000)
+      let transitions = 0
+      while (!inst.stopped)
       {
-        const before = inst.currentNodeId
-        inst.step(makeCtx)
-        if (inst.currentNodeId === before) break
+        let transitioned = false
+        inst.step(makeCtx, () =>
+        {
+          if (transitions >= MODEL_END_TRANSITION_LIMIT_V1)
+          {
+            this.exhausted.add(inst)
+            throw new RunnerIssueError(
+              createRunIssue({
+                code: 'model.evaluation.limit-exceeded',
+                kind: 'tick-budget',
+                responsibility: 'unsupported',
+                message: `model "${inst.model.id}" at node "${inst.currentNodeId}" exceeds the end-evaluation bound of ${MODEL_END_TRANSITION_LIMIT_V1} transitions`,
+              })
+            )
+          }
+          transitions++
+          transitioned = true
+        })
+        if (!transitioned) break
       }
     }
   }
@@ -118,7 +144,7 @@ export class ModelChecker implements TickObserver
     return {
       modelId: inst.model.id,
       usage: inst.model.usage,
-      ok: inst.failures.length === 0,
+      ok: inst.failures.length === 0 && !this.exhausted.has(inst),
       finalNode: inst.currentNodeId,
       reachedStop: inst.reachedStop(),
       coverage: inst.coverage(),

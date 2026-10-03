@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import type { ProjectIR } from '@scratch-agent/ir'
 import {
   ModelChecker,
+  MODEL_EVALUATION_UNSUPPORTED_CODE_V1,
   type LoadedModels,
   type ModelRunResult,
 } from '@scratch-agent/model'
@@ -20,6 +21,7 @@ import type {
 import {
   createRunIssue,
   RUN_ISSUE_CODES,
+  isRunnerIssueError,
   runBrowserScenario,
   runIssueMessages,
   runScenario,
@@ -90,22 +92,48 @@ function safeName(name: string): string
   return `${slug}-${h.toString(36)}`
 }
 
+function failedTestResult(name: string, issue: RunIssue): TestResult
+{
+  return {
+    name,
+    ok: false,
+    runtime: 'not-started',
+    snapshots: [],
+    asserts: [],
+    visual: [],
+    screenshots: [],
+    video: null,
+    model: null,
+    issues: [{ lane: 'vm', issue }],
+    errors: runIssueMessages([issue]),
+  }
+}
+
 export async function runTest(
   tc: TestCase,
   options: RunOptions = {}
 ): Promise<TestResult>
 {
-  const sb3 = options.artifactBytes ?? (await tc.project.toSb3())
   // a model rides the same vm run as the asserts: one pass drives both oracles
-  const checker = tc.model
-    ? new ModelChecker(
-        {
-          programModels: tc.model.programModels,
-          endModels: tc.model.endModels,
-        },
-        { seed: tc.scenario.seed }
-      )
-    : undefined
+  let checker: ModelChecker | undefined
+  try
+  {
+    checker = tc.model
+      ? new ModelChecker(tc.model, { seed: tc.scenario.seed })
+      : undefined
+  }
+  catch (error)
+  {
+    if (
+      !isRunnerIssueError(error) ||
+      error.issue.code !== MODEL_EVALUATION_UNSUPPORTED_CODE_V1
+    )
+    {
+      throw error
+    }
+    return failedTestResult(tc.name, error.issue)
+  }
+  const sb3 = options.artifactBytes ?? (await tc.project.toSb3())
   const trace = await runScenario(sb3, tc.scenario, { observer: checker })
   const asserts = trace.issues.length === 0 ? evaluate(trace, tc.asserts) : []
   const model = checker ? checker.results() : null

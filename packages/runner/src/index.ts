@@ -3,6 +3,7 @@
 
 export * from './policy/types.js'
 export * from './policy/issues.js'
+export * from './policy/scratch-comparison.js'
 export * from './policy/runtime-log.js'
 export * from './vm/vm-api.js'
 export * from './vm/vm-load.js'

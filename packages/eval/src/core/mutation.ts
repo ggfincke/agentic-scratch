@@ -1,8 +1,8 @@
 // packages/eval/src/core/mutation.ts
-// run a base test case against every IR mutant; a mutant is killed when the suite now fails
+// run every IR mutant w/ evidence bound to that mutant's project
 
 import {
-  mutants,
+  iterateMutants,
   scoreMutants,
   type MutationRecord,
   type MutationReport,
@@ -18,17 +18,21 @@ interface MutationRunResult
   invalid: MutationRecord[]
 }
 
-// the base case must pass on the un-mutated project; each valid mutant re-runs the same case &
-// counts as killed iff the case fails -> the suite's oracles (asserts + model) caught the change
+// each valid mutant re-runs the same case; non-project failures abort authoritative scoring
 export async function runMutationForCase(
   base: TestCase,
   options: RunOptions = {}
 ): Promise<MutationRunResult>
 {
-  const all = mutants(base.project)
+  if (options.artifactBytes !== undefined)
+  {
+    throw new Error(
+      'mutation runs cannot use artifactBytes; each mutant must execute its bound project'
+    )
+  }
   const outcomes = []
   const invalid: MutationRecord[] = []
-  for (const m of all)
+  for (const m of iterateMutants(base.project))
   {
     // a stillborn mutant that fails graph validation tests nothing behavioral; exclude it
     if (validateProject(m.project).counts.error > 0)
@@ -37,6 +41,16 @@ export async function runMutationForCase(
       continue
     }
     const r = await runTest({ ...base, project: m.project }, options)
+    const nonProjectIssue = r.issues.find(
+      ({ issue }) => issue.responsibility !== 'project'
+    )
+    if (nonProjectIssue)
+    {
+      const { lane, issue } = nonProjectIssue
+      throw new Error(
+        `mutation run aborted at ${m.record.id}: ${lane} issue ${issue.code} is ${issue.responsibility}-owned: ${issue.message}`
+      )
+    }
     outcomes.push({ record: m.record, killed: !r.ok })
   }
   return { report: scoreMutants(outcomes), invalid }

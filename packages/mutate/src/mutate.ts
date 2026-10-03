@@ -21,32 +21,43 @@ interface Mutant
   project: ProjectIR
 }
 
-// deep-clone the base project, apply one mutation site, return the mutant project + its record
+// bind one graph snapshot now, then materialize only the next requested mutant
+export function iterateMutants(base: ProjectIR): IterableIterator<Mutant>
+{
+  const snapshot = structuredClone(base.json)
+  const sites = enumerateSites(snapshot.targets)
+  const assets = base.assets.slice()
+  return (function* ()
+  {
+    for (const [i, site] of sites.entries())
+    {
+      const json = structuredClone(snapshot)
+      const target = json.targets[site.targetIndex]
+      if (!target || target.name !== site.targetName)
+      {
+        throw new Error(
+          `mutants: target ${site.targetIndex} "${site.targetName}" vanished in clone`
+        )
+      }
+      site.apply(target)
+      const record: MutationRecord = {
+        id: `m${i}-${site.operator}`,
+        operator: site.operator,
+        sprite: site.targetName,
+        blockId: site.blockId,
+        opcode: site.opcode,
+        description: site.describe,
+      }
+      // immutable asset bytes stay shared; each mutant owns its asset-list membership
+      yield { record, project: ProjectIR.fromProjectJson(json, assets.slice()) }
+    }
+  })()
+}
+
+// retain the eager array surface for callers that need all candidates at once
 export function mutants(base: ProjectIR): Mutant[]
 {
-  const sites = enumerateSites(base.json.targets)
-  return sites.map((site, i) =>
-  {
-    const json = structuredClone(base.json)
-    const target = json.targets[site.targetIndex]
-    if (!target || target.name !== site.targetName)
-    {
-      throw new Error(
-        `mutants: target ${site.targetIndex} "${site.targetName}" vanished in clone`
-      )
-    }
-    site.apply(target)
-    const record: MutationRecord = {
-      id: `m${i}-${site.operator}`,
-      operator: site.operator,
-      sprite: site.targetName,
-      blockId: site.blockId,
-      opcode: site.opcode,
-      description: site.describe,
-    }
-    // assets are immutable bytes; share them across mutants rather than re-clone
-    return { record, project: ProjectIR.fromProjectJson(json, base.assets) }
-  })
+  return [...iterateMutants(base)]
 }
 
 interface MutationOutcome

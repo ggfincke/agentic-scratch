@@ -2,6 +2,7 @@
 // the check catalog: evaluate a {name,negated,args[]} check against one tick's CheckContext
 
 import type { ScalarValue } from '@scratch-agent/runner'
+import { compareScratchValuesV1 } from '@scratch-agent/runner'
 
 import { MS_PER_TICK, type Check, type CheckContext } from './types.js'
 
@@ -66,19 +67,6 @@ function num(v: unknown): number
   return Number.isNaN(n) ? 0 : n
 }
 
-// Scratch-faithful three-way compare: numeric when both parse, else case-insensitive string
-function scratchCompare(a: unknown, b: unknown): number
-{
-  const na = Number(a)
-  const nb = Number(b)
-  const aNum = a !== '' && a !== null && !Number.isNaN(na)
-  const bNum = b !== '' && b !== null && !Number.isNaN(nb)
-  if (aNum && bNum) return na < nb ? -1 : na > nb ? 1 : 0
-  const sa = String(a).toLowerCase()
-  const sb = String(b).toLowerCase()
-  return sa < sb ? -1 : sa > sb ? 1 : 0
-}
-
 // canonical scratch key name so 'right' / 'ArrowRight' / 'right arrow' all match
 const KEY_CANON: Record<string, string> = {
   right: 'right arrow',
@@ -106,7 +94,7 @@ function canonKey(key: string): string
 
 function applyCompareOp(a: unknown, b: unknown, op: string): boolean
 {
-  const c = scratchCompare(a, b)
+  const c = compareScratchValuesV1(a, b)
   switch (op)
   {
     case '=':
@@ -144,9 +132,9 @@ function applyChangeOp(
       return num(newV) < num(oldV)
     case '=':
     case '==':
-      return scratchCompare(newV, oldV) === 0
+      return compareScratchValuesV1(newV, oldV) === 0
     case '!=':
-      return scratchCompare(newV, oldV) !== 0
+      return compareScratchValuesV1(newV, oldV) !== 0
     case '+=':
       return num(newV) - num(oldV) === num(delta)
     case '-=':
@@ -269,7 +257,7 @@ function rawCheck(check: Check, ctx: CheckContext): boolean
     {
       const t = ctx.state.targets[String(arg(check, 0))]
       if (!t || !t.bubble) return false
-      return scratchCompare(t.bubble.text, arg(check, 1)) === 0
+      return compareScratchValuesV1(t.bubble.text, arg(check, 1)) === 0
     }
     case 'Key':
       return ctx.keysDown.some(

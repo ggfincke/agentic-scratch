@@ -2,15 +2,25 @@
 // check-catalog evaluation & model-JSON loading/validation
 
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, resolve } from 'node:path'
 import { test } from 'node:test'
 
-import type { VmSpriteState, VmStateSnapshot } from '@scratch-agent/runner'
+import type {
+  ScalarValue,
+  VmSpriteState,
+  VmStateSnapshot,
+} from '@scratch-agent/runner'
+import {
+  compareScratchValuesV1,
+  SCRATCH_COMPARISON_POLICY_V1,
+  scratchComparisonPolicySha256V1,
+} from '@scratch-agent/runner'
 
 import { evaluateCheck } from '@scratch-agent/model'
-import {
-  loadModelsFromText,
-  parseModels,
-} from '@scratch-agent/model'
+import { loadModelsFromText, parseModels } from '@scratch-agent/model'
 import type { Check, CheckContext } from '@scratch-agent/model'
 
 function sprite(
@@ -81,6 +91,58 @@ const check = (name: string, args: Check['args'], negated = false): Check => ({
 
 test('VarComp reads globals & sprite-locals with scratch-faithful ops', () =>
 {
+  const require = createRequire(import.meta.url)
+  const runtimeRoot = resolve(
+    dirname(require.resolve('@scratch/scratch-vm')),
+    '../..'
+  )
+  const castPath = resolve(
+    runtimeRoot,
+    SCRATCH_COMPARISON_POLICY_V1.runtimeSource
+  )
+  const cast = require(castPath) as {
+    compare(left: unknown, right: unknown): number
+  }
+  const runtime = JSON.parse(
+    readFileSync(resolve(runtimeRoot, 'package.json'), 'utf8')
+  ) as { version: string }
+  assert.equal(runtime.version, SCRATCH_COMPARISON_POLICY_V1.runtimeVersion)
+  assert.equal(
+    createHash('sha256').update(readFileSync(castPath)).digest('hex'),
+    SCRATCH_COMPARISON_POLICY_V1.runtimeSourceSha256
+  )
+  assert.equal(
+    createHash('sha256')
+      .update(JSON.stringify(SCRATCH_COMPARISON_POLICY_V1))
+      .digest('hex'),
+    scratchComparisonPolicySha256V1()
+  )
+  const comparisons: readonly [ScalarValue, Check['args'][number], boolean][] =
+    [
+      [' \t\n', 0, false],
+      ['', 0, false],
+      [' 05 ', 5, true],
+      ['HELLO', 'hello', true],
+      [false, 0, true],
+      ['Infinity', 'Infinity', true],
+      ['-Infinity', '-Infinity', true],
+      ['Infinity', '-Infinity', false],
+    ]
+  for (const [value, other, equal] of comparisons)
+  {
+    assert.equal(
+      compareScratchValuesV1(value, other),
+      cast.compare(value, other)
+    )
+    const comparison = ctx({ state: snap({ variables: { value } }) })
+    assert.equal(
+      evaluateCheck(
+        check('VarComp', ['Stage', 'value', '=', other]),
+        comparison
+      ),
+      equal
+    )
+  }
   const state = snap({
     variables: { score: 10 },
     targets: { Cat: sprite('Cat', { variables: { hp: 3 } }) },
@@ -140,6 +202,16 @@ test('VarChange compares against the previous tick', () =>
   assert.equal(
     evaluateCheck(check('VarChange', ['Stage', 'score', '+']), ctx({ state })),
     false
+  )
+  assert.equal(
+    evaluateCheck(
+      check('VarChange', ['Stage', 'score', '!=']),
+      ctx({
+        state: snap({ variables: { score: 0 } }),
+        prev: snap({ variables: { score: ' \t' } }),
+      })
+    ),
+    true
   )
 })
 
@@ -335,6 +407,61 @@ test('loadModels rejects unsupported checks & impure conditions', () =>
       ])
     )
   )
+})
+
+test('loadModels rejects duplicate and unresolved identities', () =>
+{
+  const base = {
+    id: 'm',
+    usage: 'program',
+    startNodeId: 'a',
+    nodes: [{ id: 'a' }, { id: 'b' }],
+    edges: [{ id: 'e', from: 'a', to: 'b' }],
+  }
+  const cases = [
+    {
+      name: 'duplicate model id across roles',
+      models: [base, { ...base, usage: 'end' }],
+      error: /duplicate model id "m"/u,
+    },
+    {
+      name: 'duplicate node id',
+      models: [
+        {
+          ...base,
+          nodes: [{ id: 'a' }, { id: 'a' }, { id: 'b' }],
+        },
+      ],
+      error: /model "m": duplicate node id "a"/u,
+    },
+    {
+      name: 'duplicate edge id',
+      models: [
+        {
+          ...base,
+          edges: [
+            { id: 'e', from: 'a', to: 'b' },
+            { id: 'e', from: 'b', to: 'a' },
+          ],
+        },
+      ],
+      error: /model "m": duplicate edge id "e"/u,
+    },
+    {
+      name: 'unknown stop-all node',
+      models: [{ ...base, stopAllNodeIds: ['ghost'] }],
+      error: /model "m": stopAllNodeId "ghost" is not a declared node/u,
+    },
+  ]
+
+  for (const c of cases)
+  {
+    assert.throws(
+      () => loadModelsFromText(JSON.stringify(c.models)),
+      c.error,
+      c.name
+    )
+  }
 })
 
 test('parseModels rejects a malformed model file', () =>
