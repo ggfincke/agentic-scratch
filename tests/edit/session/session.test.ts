@@ -17,6 +17,9 @@ import {
   applyTargetOperationV1,
   assertCreatedTargetsAreCostumedV1,
   blockInputFingerprintV1,
+  blockFieldFingerprintV1,
+  inputShadowFingerprintV1,
+  planGraphClosureV1,
   buildSemanticReferenceIndex,
   commentMapStateV1,
   commentSetSha256V1,
@@ -44,15 +47,17 @@ import {
   declarationCreationContentFingerprintV1,
   scriptBlockCreationContentFingerprintForResultV1,
   procedureCreationContentFingerprintForResultV1,
+  canonicalProcedureSignatureV1,
+  standardProcedureSignatureSha256V2,
   optionalCollectionContainerStateV1,
   parameterEntityEvidenceSetV1,
   parseSemanticChangeContractV1,
+  parseContractDefinitionV1,
   procedureCallSitesV1,
   procedureEntityEvidenceSetV1,
   prospectiveProcedureCollisionSetSha256V1,
   prospectiveProcedureCollisionSetV1,
   resolveProcedureRecordV1,
-  scenarioPolicyValueSemanticSha256V1,
   semanticHashV1,
   scriptEntityEvidenceSetV1,
   targetBoundedLocationProjectionV1,
@@ -68,7 +73,6 @@ import {
   type EditCheckpointRequestV1,
   type EditCloseRequestV1,
   type EditRollbackRequestV1,
-  type EditScenarioPolicyV1,
   type EditUndoRequestV1,
   type ScriptBlockCreationBindingDescriptorV1,
   type ProcedureCreationBindingDescriptorV1,
@@ -95,9 +99,11 @@ import { sha256Hex } from '@scratch-agent/sb3/crypto-node'
 
 import { EditChangeContractRegistryV1, type BoundChangeContractV1 } from '../../../packages/edit/src/contracts/change-contracts.js'
 import { combineAssetMaterializationUsageDeltasV1, EMPTY_ASSET_MATERIALIZATION_USAGE_DELTA_V1, SessionAssetStoreV1, type AdmittedEditAssetResolverV1, type AssetMaterializationUsageDeltaV1 } from '../../../packages/edit/src/assets/asset-admission.js'
+import { editSemanticAuthorityBindingV1, retainedEditSemanticAuthorityV1 } from '../../../packages/edit/src/authority/semantic-authority.js'
+import { deriveStandardExtensionMetadataV2, assertStandardExtensionRemovalV2 } from '../../../packages/edit/src/authority/extension-metadata.js'
 import { editCanonicalBytesV1, editCanonicalSha256V1 } from '../../../packages/edit/src/support/canonical.js'
 import { composeCumulativeProjectDeltaAttributionV1, editOperationOccurrenceIdV1 } from '../../../packages/edit/src/lineage/cumulative-attribution.js'
-import { CommentProductionOperationDispatcherV1, DeclarationProductionOperationDispatcherV1, ScriptWorkspaceProductionOperationDispatcherV1, exactBlockRef, productionCommentPlanningFactSetSha256V1, productionDeclarationPlanningFactSetSha256V1, productionScriptWorkspacePlanningFactSetSha256V1 } from '../../../packages/edit/src/dispatch/target-dispatchers.js'
+import { CommentProductionOperationDispatcherV1, DeclarationProductionOperationDispatcherV1, ScriptWorkspaceProductionOperationDispatcherV1, exactBlockRef, exactScriptRef, productionCommentPlanningFactSetSha256V1, productionDeclarationPlanningFactSetSha256V1, productionScriptWorkspacePlanningFactSetSha256V1 } from '../../../packages/edit/src/dispatch/target-dispatchers.js'
 import { scriptBlockProductionOperationDispatchersV1, productionScriptBlockPlanningFactSetSha256V1 } from '../../../packages/edit/src/dispatch/script-block-dispatchers.js'
 import { procedureProductionOperationDispatchersV1, productionProcedurePlanningFactSetSha256V1 } from '../../../packages/edit/src/dispatch/procedure-dispatchers.js'
 import { exactMediaRefV1, mediaTargetProductionOperationDispatchersV1, productionMediaTargetPlanningFactSetSha256V1, productionMediaTargetSpritePlanningFactSetSha256V1 } from '../../../packages/edit/src/dispatch/media-target-dispatchers.js'
@@ -120,68 +126,23 @@ import { createEditArtifactStoreHostAdapter } from '../../../packages/eval/src/a
 import {
   HOST_DEFAULT_LIMITS,
   HOST_HARD_LIMITS,
+  attachRetainedPolicyFixturesV1,
   expectedHeadRequest,
   planningHead,
   unchangedTargetCorrespondence,
+  type MutableRetainedPolicyContract,
 } from '../../helpers/edit-host.js'
 import { pngChunk as pngChunk } from '../../helpers/png.js'
+import { exactCommentRefV1, exactDeclarationRefV1 } from '../../../packages/edit/src/dispatch/dispatcher-primitives.js'
+import { exactTargetRef } from '../../../packages/edit/src/dispatch/target-dispatchers.js'
+import type { Block, VariableEntry } from '@scratch-agent/sb3'
+import type { ContractEntityBindingV1, ContractEntityRefV1, SemanticInputValueV1 } from '@scratch-agent/ir/edit'
 
 const HASH_A = 'a'.repeat(64)
 const HASH_B = 'b'.repeat(64)
 const HASH_C = 'c'.repeat(64)
 const HASH_D = 'd'.repeat(64)
 const HASH_E = 'e'.repeat(64)
-const RETAINED_SCENARIO_POLICY = Object.freeze({
-  scenarioId: 'scenario',
-  applicability: 'baselineAndCandidate',
-  seed: 0,
-  fixedDateMs: 0,
-  maxTicks: 1,
-  steps: Object.freeze([{ do: 'greenFlag' as const }]),
-}) satisfies EditScenarioPolicyV1
-
-type MutableRetainedPolicyContract = {
-  policyBindings: Array<{
-    kind: string
-    semanticSha256: string
-    retainedArtifactSha256: string
-  }>
-  evaluationPlans: Array<{ scenarioPolicySha256s: string[] }>
-}
-
-function attachRetainedPolicyFixturesV1(
-  contract: MutableRetainedPolicyContract
-): readonly Uint8Array[]
-{
-  const scenarioBytes = canonicalJsonBytesV1(RETAINED_SCENARIO_POLICY)
-  const runtimeBytes = canonicalJsonBytesV1({
-    policyKind: 'runtime',
-    schemaVersion: 1,
-  })
-  const lensBytes = canonicalJsonBytesV1({
-    policyKind: 'lens',
-    schemaVersion: 1,
-  })
-  const bytesByKind = new Map<string, Uint8Array>([
-    ['scenario', scenarioBytes],
-    ['runtime', runtimeBytes],
-    ['lens', lensBytes],
-  ])
-  const scenarioSemanticSha256 = scenarioPolicyValueSemanticSha256V1(
-    RETAINED_SCENARIO_POLICY
-  )
-  for (const binding of contract.policyBindings)
-  {
-    const bytes = bytesByKind.get(binding.kind)
-    assert.ok(bytes, `test policy bytes are missing for ${binding.kind}`)
-    binding.retainedArtifactSha256 = sha256Hex(bytes)
-    if (binding.kind === 'scenario')
-      binding.semanticSha256 = scenarioSemanticSha256
-  }
-  for (const plan of contract.evaluationPlans)
-    plan.scenarioPolicySha256s = [scenarioSemanticSha256]
-  return Object.freeze([scenarioBytes, runtimeBytes, lensBytes])
-}
 const GROUP_C_RENAMED_SPRITE = 'Group C Hero'
 const GROUP_C_UPDATED_COMMENT = 'inspection evidence updated'
 const GROUP_C_RENAMED_VARIABLE = 'RenamedBatchVariable'
@@ -246,8 +207,9 @@ function invocation(ordinal: number): HostInvocationContextV1
   }
 }
 
-function reverseListingStore(
-  store: EditArtifactStorePort
+function forwardingArtifactStore(
+  store: EditArtifactStorePort,
+  overrides: Partial<EditArtifactStorePort>
 ): EditArtifactStorePort
 {
   return {
@@ -256,52 +218,6 @@ function reverseListingStore(
     createOrVerifyImmutable: (key, bytes) =>
       store.createOrVerifyImmutable(key, bytes),
     readImmutable: (key) => store.readImmutable(key),
-    hashImmutable: (key) => store.hashImmutable(key),
-    sizeImmutable: (key) => store.sizeImmutable(key),
-    listImmutable: async (prefix) =>
-      [...(await store.listImmutable(prefix))].reverse(),
-    compareAndSwapPointer: (key, expectedSha256, bytes) =>
-      store.compareAndSwapPointer(key, expectedSha256, bytes),
-    reconcilePointer: (key, expectedOldSha256, bytes) =>
-      store.reconcilePointer(key, expectedOldSha256, bytes),
-    reserveQuota: (reservationId, byteLength) =>
-      store.reserveQuota(reservationId, byteLength),
-    releaseQuota: (reservationId) => store.releaseQuota(reservationId),
-    settleQuota: (reservationId, actualByteLength) =>
-      store.settleQuota(reservationId, actualByteLength),
-    quotaOutcome: (reservationId) => store.quotaOutcome(reservationId),
-    cleanupProvenTemp: (proof) => store.cleanupProvenTemp(proof),
-    removeEvictable: (key, expectedSha256) =>
-      store.removeEvictable(key, expectedSha256),
-  }
-}
-
-function tamperedFutureBindingLedgerStore(
-  store: EditArtifactStorePort,
-  revisionManifestKey: string
-): EditArtifactStorePort
-{
-  return {
-    capability: () => store.capability(),
-    createImmutable: (key, bytes) => store.createImmutable(key, bytes),
-    createOrVerifyImmutable: (key, bytes) =>
-      store.createOrVerifyImmutable(key, bytes),
-    readImmutable: async (key) =>
-    {
-      const bytes = await store.readImmutable(key)
-      if (key !== revisionManifestKey) return bytes
-      const record = JSON.parse(new TextDecoder().decode(bytes)) as {
-        authorization?: {
-          futureBindingLedger?: {
-            realizations?: { bindingKeySha256?: string }[]
-          }
-        }
-      }
-      const row = record.authorization?.futureBindingLedger?.realizations?.[0]
-      assert.ok(row)
-      row.bindingKeySha256 = '0'.repeat(64)
-      return canonicalJsonBytesV1(record)
-    },
     hashImmutable: (key) => store.hashImmutable(key),
     sizeImmutable: (key) => store.sizeImmutable(key),
     listImmutable: (prefix) => store.listImmutable(prefix),
@@ -318,7 +234,68 @@ function tamperedFutureBindingLedgerStore(
     cleanupProvenTemp: (proof) => store.cleanupProvenTemp(proof),
     removeEvictable: (key, expectedSha256) =>
       store.removeEvictable(key, expectedSha256),
+    ...overrides,
   }
+}
+
+function reverseListingStore(
+  store: EditArtifactStorePort
+): EditArtifactStorePort
+{
+  return forwardingArtifactStore(store, {
+    listImmutable: async (prefix) =>
+      [...(await store.listImmutable(prefix))].reverse(),
+  })
+}
+
+function controllableRevisionReadStore(store: EditArtifactStorePort): {
+  readonly store: EditArtifactStorePort
+  tamperNextRead(key: string): void
+}
+{
+  let tamperedKey: string | null = null
+  return {
+    store: forwardingArtifactStore(store, {
+      readImmutable: async (key) =>
+      {
+        const bytes = await store.readImmutable(key)
+        if (key !== tamperedKey) return bytes
+        tamperedKey = null
+        const tampered = Uint8Array.from(bytes)
+        tampered[0] = (tampered[0] ?? 0) ^ 0xff
+        return tampered
+      },
+    }),
+    tamperNextRead(key: string): void
+    {
+      tamperedKey = key
+    },
+  }
+}
+
+function tamperedFutureBindingLedgerStore(
+  store: EditArtifactStorePort,
+  revisionManifestKey: string
+): EditArtifactStorePort
+{
+  return forwardingArtifactStore(store, {
+    readImmutable: async (key) =>
+    {
+      const bytes = await store.readImmutable(key)
+      if (key !== revisionManifestKey) return bytes
+      const record = JSON.parse(new TextDecoder().decode(bytes)) as {
+        authorization?: {
+          futureBindingLedger?: {
+            realizations?: { bindingKeySha256?: string }[]
+          }
+        }
+      }
+      const row = record.authorization?.futureBindingLedger?.realizations?.[0]
+      assert.ok(row)
+      row.bindingKeySha256 = '0'.repeat(64)
+      return canonicalJsonBytesV1(record)
+    },
+  })
 }
 
 async function inventory(
@@ -1493,7 +1470,8 @@ const GROUP_D_FUTURE_BINDING_KEYS = Object.freeze([
 
 function registeredScriptBlockContracts(
   sourceArtifactSha256: string,
-  sourceProject: ProjectIR
+  sourceProject: ProjectIR,
+  semanticAuthorityId: 'a0-v1' | 'standard-v2' = 'a0-v1'
 ): {
   readonly registry: EditChangeContractRegistryV1
   readonly valid: BoundChangeContractV1
@@ -1602,15 +1580,27 @@ function registeredScriptBlockContracts(
               },
             ],
           },
+          ...(semanticAuthorityId === 'standard-v2' ? [
+            { nodeKind: 'ordinary', opcode: 'pen_clear', fields: [], inputs: [] },
+            { nodeKind: 'ordinary', opcode: 'music_setTempo', fields: [], inputs: [
+              { name: 'TEMPO', value: { valueKind: 'literal', value: 60 } },
+            ] },
+            { nodeKind: 'ordinary', opcode: 'videoSensing_videoToggle', fields: [], inputs: [
+              { name: 'VIDEO_STATE', value: { valueKind: 'literal', value: 'off' } },
+            ] },
+            { nodeKind: 'ordinary', opcode: 'control_stop', fields: [
+              { name: 'STOP_OPTION', value: { valueKind: 'enum', value: 'other scripts in sprite' } },
+            ], inputs: [] },
+          ] as const : []),
           {
             nodeKind: 'ordinary',
             localAlias: 'say',
-            opcode: 'looks_say',
+            opcode: semanticAuthorityId === 'standard-v2' ? 'sound_setvolumeto' : 'looks_say',
             fields: [],
             inputs: [
               {
-                name: 'MESSAGE',
-                value: { valueKind: 'literal', value: 'hello' },
+                name: semanticAuthorityId === 'standard-v2' ? 'VOLUME' : 'MESSAGE',
+                value: { valueKind: 'literal', value: semanticAuthorityId === 'standard-v2' ? 70 : 'hello' },
               },
             ],
           },
@@ -1714,6 +1704,7 @@ function registeredScriptBlockContracts(
     }
   ): string =>
     scriptBlockCreationContentFingerprintForResultV1({
+      semanticAuthorityId,
       project: sourceProject,
       targetIndex: sprite.targetIndex,
       operation: {
@@ -1828,7 +1819,7 @@ function registeredScriptBlockContracts(
         entity: createdSayContractRef,
       },
       allowedPropertyPaths: [
-        { surface: 'blockInput', descriptorName: 'MESSAGE' },
+        { surface: 'blockInput', descriptorName: semanticAuthorityId === 'standard-v2' ? 'VOLUME' : 'MESSAGE' },
       ],
     },
   ]
@@ -2230,6 +2221,7 @@ class ProductionBatchPlannerV1
       current,
       contract: input.contract,
       transactionInput: {
+        ...editSemanticAuthorityBindingV1(retainedEditSemanticAuthorityV1(input.session.manifest).semanticAuthorityId),
         sessionId: input.session.sessionId,
         sourceBytes: input.sourceBytes,
         currentBytes,
@@ -2310,6 +2302,8 @@ class ProductionBatchPlannerV1
     const dispatcher = this.#dispatchers.get(planned.kind)
     assert.ok(dispatcher)
     const dispatched = dispatcher.execute(this.#context(), planned)
+    if (this.#input.semanticAuthorityId === 'standard-v2')
+      deriveStandardExtensionMetadataV2(this.#candidate)
     const priorLineageHistory = this.#lineageHistory
     this.#activeLineage = dispatched.activeLineage
     this.#lineageHistory = mergeProductionLineageHistoryV1(
@@ -3127,6 +3121,261 @@ test('Group B retains one exact lifecycle and replays it after a fresh restart',
   assert.equal(replay.verifiedReportCount, 11)
   assert.deepEqual(replay.finalHead, session.head)
   assert.equal(replay.semanticReportSha256, session.status().reportSha256)
+})
+
+test('current-head inspection caching stays exact across reads, refusals, and revision changes', async (t) =>
+{
+  const fixture = await buildFixtureSb3()
+  const sourceProject = await ProjectIR.fromSb3(fixture.sb3)
+  const sourceBytes = fixture.sb3
+  const sourceArtifactSha256 = sha256Hex(sourceBytes)
+  const { registry: contracts, bound } = registeredContract(
+    sourceArtifactSha256,
+    sourceProject
+  )
+  const fromProjectJson = t.mock.method(ProjectIR, 'fromProjectJson')
+  const parseCount = (): number => fromProjectJson.mock.callCount()
+  const controlled = controllableRevisionReadStore(
+    createEditArtifactStoreHostAdapter(tempRoot(t))
+  )
+  const sessions = createEditSessionRegistryForExecutorV1(
+    {
+      artifactStore: controlled.store,
+      changeContracts: contracts,
+      identity: {
+        realmSha256: HASH_A,
+        profileSha256: HASH_B,
+        pinnedScratchRuntimeSourceSha256: HASH_C,
+        retentionPolicySha256: HASH_D,
+        policyConfigVersion: 1,
+      },
+      clock: deterministicClock(1_753_056_000_000),
+      entropy: deterministicEntropy(29),
+      handleSecret: new Uint8Array(32).fill(0x42),
+    },
+    new KernelTestTransactionExecutorV1()
+  )
+  const projectSessionId = 'inspection-cache-project-session'
+  const begun = await sessions.begin(
+    {
+      schemaVersion: 1,
+      requestId: 'begin-inspection-cache',
+      baseline: {
+        kind: 'projectSession',
+        projectSessionId,
+        expectedSourceArtifactSha256: sourceArtifactSha256,
+      },
+      changeContractRegistrationId: bound.registration.registrationId,
+      expectedSemanticContractSha256: bound.registration.semanticContractSha256,
+    },
+    {
+      bytes: sourceBytes,
+      displayName: 'inspection-cache-fixture.sb3',
+      expectedArtifactSha256: sourceArtifactSha256,
+      provenance: {
+        kind: 'projectSession',
+        projectSessionId,
+        selectedDisplayName: 'inspection-cache-fixture.sb3',
+        canonicalRealpath: '/virtual/inspection-cache-fixture.sb3',
+        device: 'test-device',
+        inode: 'inspection-cache-inode',
+        byteLength: sourceBytes.byteLength,
+        modifiedAtNanoseconds: '1753056000000000000',
+        sourceInspectionPolicySha256: HASH_A,
+        diagnosticPolicySha256: HASH_B,
+        runtimePolicySha256: HASH_C,
+        provenanceRegistrationSha256: HASH_D,
+      },
+      recheck: async () => ({
+        ok: true,
+        observedArtifactSha256: sourceArtifactSha256,
+      }),
+    },
+    invocation(1)
+  )
+  const session = sessions.session(begun.sessionId)
+  const revisionZero = session.revisions[0]!
+
+  const beforeFirstInspect = parseCount()
+  const firstInspect = await session.inspect({ issueHandles: true })
+  assert.equal(parseCount(), beforeFirstInspect + 1)
+  const pristineFirstInspect = structuredClone(firstInspect)
+  const mutableFirstInspect = firstInspect as unknown as {
+    revision: { revisionNumber: number }
+    items: {
+      semanticLocationSha256: string
+      location: { retainedLocationArtifactId: string }
+    }[]
+  }
+  mutableFirstInspect.revision.revisionNumber = 999
+  mutableFirstInspect.items[0]!.semanticLocationSha256 = HASH_A
+  mutableFirstInspect.items[0]!.location.retainedLocationArtifactId =
+    'poisoned-location'
+  mutableFirstInspect.items.pop()
+
+  const repeatedHandled = await session.inspect({ issueHandles: true })
+  assert.equal(parseCount(), beforeFirstInspect + 1)
+  assert.notStrictEqual(repeatedHandled, firstInspect)
+  assert.notStrictEqual(repeatedHandled.items, firstInspect.items)
+  assert.deepEqual(repeatedHandled, pristineFirstInspect)
+  const handleFree = await session.inspect({ issueHandles: false })
+  const filtered = await session.inspect({
+    issueHandles: true,
+    entityKinds: ['target'],
+  })
+  assert.equal(parseCount(), beforeFirstInspect + 1)
+  assert.equal(handleFree.handlesIssued, false)
+  assert.equal(
+    handleFree.items.every((item) => item.handle === undefined),
+    true
+  )
+  assert.equal(
+    filtered.items.every((item) => item.entityKind === 'target'),
+    true
+  )
+  assert.equal(
+    filtered.items.length,
+    pristineFirstInspect.items.filter((item) => item.entityKind === 'target')
+      .length
+  )
+
+  controlled.tamperNextRead(revisionZero.candidateKey)
+  await assert.rejects(
+    session.inspect({ issueHandles: true }),
+    (error: unknown) =>
+      error instanceof EditSessionErrorV1 &&
+      error.code === 'edit.internal_invariant'
+  )
+  assert.equal(parseCount(), beforeFirstInspect + 1)
+
+  const mediaItem = pristineFirstInspect.items.find(
+    (item) =>
+      item.entityKind === 'media' &&
+      item.location.payloadResolution === 'present'
+  )
+  assert.ok(mediaItem && mediaItem.entityKind === 'media')
+  assert.ok(mediaItem.handle)
+  const payloadSha256 = mediaItem.location.payloadOrExpectedIdentitySha256
+  const beforeSourceMedia = parseCount()
+  const sourceMedia = await session.sourceMediaAssetSourceV1({
+    media: handleRef(mediaItem, 'media'),
+    expectedPayloadSha256: payloadSha256,
+  })
+  assert.equal(parseCount(), beforeSourceMedia + 1)
+  assert.equal(sourceMedia.mediaKind, mediaItem.entitySubtype)
+  assert.equal(sha256Hex(sourceMedia.bytes), payloadSha256)
+  const afterSourceMediaInspect = await session.inspect({ issueHandles: true })
+  assert.equal(parseCount(), beforeSourceMedia + 1)
+  assert.deepEqual(afterSourceMediaInspect, pristineFirstInspect)
+
+  const transaction = defineKernelTestTransactionV1([
+    {
+      kind: 'kernel.test.setTargetNumber',
+      opId: 'set-stage-volume-for-cache',
+      targetIndex: 0,
+      property: 'volume',
+      value: { kind: 'literal', value: 73 },
+    },
+  ])
+  const preview = await session.preview(
+    {
+      requestId: 'preview-inspection-cache',
+      expectedHead: session.head,
+      canonicalTransaction: transaction,
+    },
+    invocation(2)
+  )
+  const afterPreview = parseCount()
+  assert.ok(afterPreview > beforeSourceMedia + 1)
+  assert.deepEqual(
+    await session.inspect({ issueHandles: true }),
+    pristineFirstInspect
+  )
+  assert.equal(parseCount(), afterPreview)
+
+  assert.notEqual(preview.preview.resolvedPlanSha256, HASH_A)
+  await assert.rejects(
+    session.apply(
+      {
+        schemaVersion: 1,
+        sessionId: session.sessionId,
+        requestId: 'apply-inspection-cache-wrong-plan',
+        ...expectedHeadRequest(preview.preview.expectedHead),
+        previewId: preview.preview.previewId,
+        applyGuardSha256: preview.preview.applyGuardSha256,
+        expectedResolvedPlanSha256: HASH_A,
+      },
+      invocation(3)
+    ),
+    (error: unknown) =>
+      error instanceof EditSessionErrorV1 && error.code === 'edit.stale_preview'
+  )
+  assert.equal(parseCount(), afterPreview)
+  assert.deepEqual(
+    await session.inspect({ issueHandles: true }),
+    pristineFirstInspect
+  )
+  assert.equal(parseCount(), afterPreview)
+
+  await session.apply(
+    {
+      schemaVersion: 1,
+      sessionId: session.sessionId,
+      requestId: 'apply-inspection-cache',
+      ...expectedHeadRequest(preview.preview.expectedHead),
+      previewId: preview.preview.previewId,
+      applyGuardSha256: preview.preview.applyGuardSha256,
+      expectedResolvedPlanSha256: preview.preview.resolvedPlanSha256,
+    },
+    invocation(4)
+  )
+  const afterApply = parseCount()
+  assert.ok(afterApply > afterPreview)
+  const firstNewHeadInspect = await session.inspect({ issueHandles: true })
+  assert.equal(parseCount(), afterApply + 1)
+  assert.equal(firstNewHeadInspect.revision.revisionNumber, 1)
+  const afterNewHeadInspect = parseCount()
+  assert.deepEqual(
+    await session.inspect({ issueHandles: true }),
+    firstNewHeadInspect
+  )
+  assert.equal(parseCount(), afterNewHeadInspect)
+
+  const historicalInspect = await session.inspect({
+    revisionNumber: revisionZero.head.revisionNumber,
+    revisionId: revisionZero.head.revisionId,
+    issueHandles: false,
+    entityKinds: ['target'],
+  })
+  assert.equal(parseCount(), afterNewHeadInspect + 1)
+  assert.equal(historicalInspect.revision.revisionNumber, 0)
+  assert.equal(
+    historicalInspect.items.every((item) => item.entityKind === 'target'),
+    true
+  )
+  const afterHistoricalInspect = parseCount()
+  assert.deepEqual(
+    await session.inspect({ issueHandles: true }),
+    firstNewHeadInspect
+  )
+  assert.equal(parseCount(), afterHistoricalInspect)
+
+  await session.close(
+    {
+      schemaVersion: 1,
+      sessionId: session.sessionId,
+      requestId: 'close-inspection-cache',
+      reason: 'cache lifecycle test completed',
+      ...expectedHeadRequest(session.head),
+    },
+    invocation(5)
+  )
+  const afterClose = parseCount()
+  const firstClosedInspect = await session.inspect({ issueHandles: true })
+  assert.equal(parseCount(), afterClose + 1)
+  const secondClosedInspect = await session.inspect({ issueHandles: true })
+  assert.equal(parseCount(), afterClose + 2)
+  assert.deepEqual(secondClosedInspect, firstClosedInspect)
 })
 
 test('Group C target scope selection refuses overlapping scopes independent of order', async () =>
@@ -7195,14 +7444,18 @@ test('Group C candidate admission elevates an injected broken reference', async 
   )
 })
 
-test('Group D production lifecycle authors a script, realizes fixed and dynamic future bindings, and exactly replays', async (t) =>
+for (const semanticAuthorityId of ['a0-v1', 'standard-v2'] as const)
+{
+test(semanticAuthorityId === 'a0-v1'
+  ? 'Group D production lifecycle authors a script, realizes fixed and dynamic future bindings, and exactly replays'
+  : 'standard authority lifecycle authors sound, extensions, menus, stop continuation, and exactly replays', async (t) =>
 {
   const root = tempRoot(t)
   const fixture = await buildFixtureSb3()
   const sourceProject = await ProjectIR.fromSb3(fixture.sb3)
   const sourceBytes = await sourceProject.toSb3()
   const sourceArtifactSha256 = sha256Hex(sourceBytes)
-  const groupD = registeredScriptBlockContracts(sourceArtifactSha256, sourceProject)
+  const groupD = registeredScriptBlockContracts(sourceArtifactSha256, sourceProject, semanticAuthorityId)
   const store = createEditArtifactStoreHostAdapter(root)
   const dispatchers: readonly ProductionOperationDispatcherV1[] = [
     ...scriptBlockProductionOperationDispatchersV1(),
@@ -7210,6 +7463,7 @@ test('Group D production lifecycle authors a script, realizes fixed and dynamic 
   const sessions = createEditSessionRegistryForExecutorV1(
     {
       artifactStore: store,
+      semanticAuthorityId,
       changeContracts: groupD.registry,
       identity: {
         realmSha256: HASH_A,
@@ -7287,27 +7541,50 @@ test('Group D production lifecycle authors a script, realizes fixed and dynamic 
     ([blockId, entry]) =>
       !blockIdsBefore.has(blockId) &&
       !Array.isArray(entry) &&
-      (entry as { opcode?: string }).opcode === 'looks_say'
+      (entry as { opcode?: string }).opcode === (semanticAuthorityId === 'standard-v2' ? 'sound_setvolumeto' : 'looks_say')
   )?.[0]
-  assert.ok(sayBlockId, 'script.add did not author a looks_say block')
+  assert.ok(sayBlockId, 'script.add did not author the exposed statement')
+  const inputName = semanticAuthorityId === 'standard-v2' ? 'VOLUME' : 'MESSAGE'
   planner.add({
     kind: 'block.setInput',
     opId: 'group-d-set-say-message',
     block: groupD.createdSayRef,
-    inputName: 'MESSAGE',
+    inputName,
     expectedInputFingerprint: blockInputFingerprintV1(
       spriteIndex,
       sayBlockId,
-      'MESSAGE',
+      inputName,
       (
         planner.candidate.json.targets[spriteIndex]!.blocks[sayBlockId] as {
           inputs?: Record<string, never>
         }
-      ).inputs?.MESSAGE
+      ).inputs?.[inputName]
     ),
     replacedInput: { kind: 'requireNoOwnedBlock' },
-    value: { valueKind: 'literal', value: 'goodbye' },
+    value: { valueKind: 'literal', value: semanticAuthorityId === 'standard-v2' ? 85 : 'goodbye' },
   } as UnplannedSemanticEditOperationV1)
+  if (semanticAuthorityId === 'standard-v2')
+  {
+    const priorHead = structuredClone(session.head)
+    const invalid = {
+      ...planner.batch(),
+      operations: planner.batch().operations.map((operation) =>
+        operation.kind === 'script.add' && operation.root.rootKind === 'eventScript'
+          ? {...operation, root: {...operation.root, body: {blocks: [
+              ...(operation.root.body?.blocks ?? []),
+              {nodeKind: 'ordinary', opcode: 'unregistered_network_command', fields: [], inputs: []},
+            ]}}}
+          : operation
+      ),
+    }
+    await assertEditRefusal(() => session.preview({
+      requestId: 'refuse-standard-unknown-opcode',
+      expectedHead: session.head,
+      canonicalTransaction: invalid,
+    }, invocation(2)), 'edit.schema_failed')
+    assert.deepEqual(session.head, priorHead)
+    assert.equal(session.revisions.length, 1)
+  }
   const preview = await session.preview(
     {
       requestId: 'preview-group-d-production',
@@ -7374,8 +7651,53 @@ test('Group D production lifecycle authors a script, realizes fixed and dynamic 
       `${occurrence.opId} is absent from the Group D parent delta`
     )
   }
+  const candidate = await ProjectIR.fromSb3(await store.readImmutable(revision.candidateKey))
+  if (semanticAuthorityId === 'standard-v2')
+  {
+    assert.equal(session.manifest.semanticAuthorityId, 'standard-v2')
+    assert.match(session.manifest.semanticAuthoritySha256!, /^[a-f0-9]{64}$/u)
+    assert.deepEqual(candidate.json.extensions, ['music', 'pen', 'videoSensing'])
+    assert.throws(() => assertStandardExtensionRemovalV2(candidate, 'pen'),
+      { code: 'edit.project_constraint' })
+    assert.throws(() => retainedEditSemanticAuthorityV1({
+      ...session.manifest,
+      semanticAuthoritySha256: HASH_D,
+    }), { code: 'edit.stale_capability_profile' })
+    const stop = Object.values(candidate.json.targets[spriteIndex]!.blocks).find(
+      (block) => !Array.isArray(block) && block.opcode === 'control_stop'
+    )
+    assert.ok(stop && !Array.isArray(stop))
+    assert.equal(stop.mutation?.hasnext, 'true')
+    assert.ok(stop.next)
+  }
+  else
+  {
+    assert.equal(Object.hasOwn(session.manifest, 'semanticAuthorityId'), false)
+    assert.equal(Object.hasOwn(session.manifest, 'semanticAuthoritySha256'), false)
+  }
+  const beforeReplay = await store.listImmutable(`sessions/${session.manifest.sessionKey}`)
+  const capability = await store.capability()
+  const reopenedStore = createEditArtifactStoreHostAdapter(root, {
+    mode: 'read-only',
+    expectedStoreId: capability.storeId,
+    expectedOwnershipSha256: capability.ownershipSha256,
+  })
+  if (semanticAuthorityId === 'standard-v2')
+  {
+    const mismatch = forwardingArtifactStore(reopenedStore, {
+      readImmutable: async (key) => key === `sessions/${session.manifest.sessionKey}/session.json`
+        ? editCanonicalBytesV1({...session.manifest, semanticAuthoritySha256: HASH_D})
+        : reopenedStore.readImmutable(key),
+    })
+    await assert.rejects(verifyEditSessionReplayV1({
+      artifactStore: mismatch,
+      sessionKey: session.manifest.sessionKey,
+      boundChangeContract: groupD.valid,
+      transactionExecutor: new ProductionTransactionExecutorV1(dispatchers),
+    }), {code: 'edit.stale_capability_profile'})
+  }
   const replay = await verifyEditSessionReplayV1({
-    artifactStore: store,
+    artifactStore: reopenedStore,
     sessionKey: session.manifest.sessionKey,
     boundChangeContract: groupD.valid,
     transactionExecutor: new ProductionTransactionExecutorV1(dispatchers),
@@ -7384,7 +7706,10 @@ test('Group D production lifecycle authors a script, realizes fixed and dynamic 
   assert.equal(replay.ok, true)
   assert.equal(replay.verifiedRevisionCount, session.revisions.length)
   assert.deepEqual(replay.finalHead, session.head)
+  assert.deepEqual(await store.listImmutable(`sessions/${session.manifest.sessionKey}`), beforeReplay)
+  assert.equal(sha256Hex(sourceBytes), sourceArtifactSha256)
 })
+}
 
 // the gate's procedure keeps one parameter type across all slots, so a reorder
 // leaves the placeholder run fixed & moves only ordinals
@@ -7697,7 +8022,8 @@ const GROUP_E_UPDATED_ORDER = Object.freeze([
 
 function registeredProcedureContracts(
   sourceArtifactSha256: string,
-  sourceProject: ProjectIR
+  sourceProject: ProjectIR,
+  semanticAuthorityId: 'a0-v1' | 'standard-v2' = 'a0-v1'
 ): {
   readonly registry: EditChangeContractRegistryV1
   readonly valid: BoundChangeContractV1
@@ -7806,7 +8132,35 @@ function registeredProcedureContracts(
             parameterLocalKey: 'delta',
             source: {
               kind: 'initializeNewParameter' as const,
-              value: { valueKind: 'literal' as const, value: 'four' },
+              value:
+                semanticAuthorityId === 'standard-v2'
+                  ? {
+                      valueKind: 'block' as const,
+                      value: {
+                        nodeKind: 'ordinary' as const,
+                        opcode: 'operator_equals',
+                        fields: [],
+                        inputs: [
+                          {
+                            name: 'OPERAND1',
+                            value: {
+                              valueKind: 'block' as const,
+                              value: {
+                                nodeKind: 'ordinary' as const,
+                                opcode: 'motion_xposition',
+                                fields: [],
+                                inputs: [],
+                              },
+                            },
+                          },
+                          {
+                            name: 'OPERAND2',
+                            value: { valueKind: 'literal' as const, value: 4 },
+                          },
+                        ],
+                      },
+                    }
+                  : { valueKind: 'literal' as const, value: 'four' },
             },
           },
         ],
@@ -7853,6 +8207,7 @@ function registeredProcedureContracts(
   const deltaContentSha256 = procedureCreationContentFingerprintForResultV1({
     project: sourceProject,
     targetIndex,
+    semanticAuthorityId,
     operation: {
       ...updateSignature,
       expectedPlanningFactSetSha256: HASH_A,
@@ -8006,10 +8361,12 @@ async function beginProcedureSession(input: {
   readonly sourceArtifactSha256: string
   readonly groupE: ReturnType<typeof registeredProcedureContracts>
   readonly dispatchers: readonly ProductionOperationDispatcherV1[]
+  readonly semanticAuthorityId?: 'a0-v1' | 'standard-v2'
 }): Promise<EditSessionV1>
 {
   const sessions = createEditSessionRegistryForExecutorV1(
     {
+      semanticAuthorityId: input.semanticAuthorityId,
       artifactStore: input.store,
       changeContracts: input.groupE.registry,
       identity: {
@@ -8068,212 +8425,888 @@ async function beginProcedureSession(input: {
   return sessions.session(begun.sessionId)
 }
 
-test('Group E production lifecycle reorders a signature, realizes a parameter future binding, and exactly replays', async (t) =>
+// one certified construction exercises procedure-local reporters followed by a
+// same-batch call through the newly realized procedure & parameter bindings
+function registeredStandardProcedureCreationContracts(
+  sourceArtifactSha256: string,
+  sourceProject: ProjectIR,
+  parameterType: 'number' | 'boolean'
+)
 {
-  const root = tempRoot(t)
-  const sourceBytes = await buildProcedureFixtureSb3()
-  const sourceProject = await ProjectIR.fromSb3(sourceBytes)
-  const sourceArtifactSha256 = sha256Hex(sourceBytes)
-  const groupE = registeredProcedureContracts(sourceArtifactSha256, sourceProject)
-  const store = createEditArtifactStoreHostAdapter(root)
-  const dispatchers: readonly ProductionOperationDispatcherV1[] = [
-    ...procedureProductionOperationDispatchersV1(),
-    ...mediaTargetProductionOperationDispatchersV1(),
-  ]
-  const session = await beginProcedureSession({
-    store,
-    sourceBytes,
-    sourceArtifactSha256,
-    groupE,
-    dispatchers,
-  })
-  const inspection = await session.inspect({ issueHandles: true })
-  const planner = await ProductionBatchPlannerV1.create({
-    source: sourceProject,
-    sourceBytes,
-    session,
-    store,
-    contract: groupE.valid,
-    inspection,
-  })
-  const beforeLineage = session.revisions.at(-1)!
-    .activeLineage as SemanticLineageSnapshot
-  planner.add(groupE.updateSignature)
-  const preview = await session.preview(
-    {
-      requestId: 'preview-group-e-production',
-      expectedHead: session.head,
-      canonicalTransaction: planner.batch(),
-    },
-    invocation(2)
-  )
-  assert.equal(preview.preview.operationCount, 1)
-  const apply = await session.apply(
-    {
-      schemaVersion: 1,
-      sessionId: session.sessionId,
-      requestId: 'apply-group-e-production',
-      ...expectedHeadRequest(preview.preview.expectedHead),
-      previewId: preview.preview.previewId,
-      applyGuardSha256: preview.preview.applyGuardSha256,
-      expectedResolvedPlanSha256: preview.preview.resolvedPlanSha256,
-    },
-    invocation(3)
-  )
-  assert.equal(
-    apply.head.candidateSha256,
-    preview.preview.predictedCandidateSha256
-  )
-  const revision = session.revisions.at(-1)!
-  const appliedProject = await ProjectIR.fromSb3(
-    await store.readImmutable(revision.candidateKey)
-  )
-  // the rewritten prototype: reordered names, the retained argument ids in the
-  // new order, one freshly allocated id for delta, & the flipped warp flag
-  const record = resolveProcedureRecordV1(
-    appliedProject,
-    groupE.spriteTargetIndex,
-    GROUP_E_UPDATED_PROCCODE
-  )
-  assert.equal(record.warp, true)
-  assert.deepEqual([...record.argumentNames], [...GROUP_E_UPDATED_ORDER])
-  assert.deepEqual(record.argumentIds.slice(0, 3), ['a3', 'a1', 'a2'])
-  assert.equal(record.argumentIds.includes('a1'), true)
-  assert.notEqual(record.argumentIds[3], undefined)
-  // the call site keeps every preserved argument bound to its own value & gains
-  // exactly one initialized input for the new parameter
-  const call = procedureCallSitesV1(
-    appliedProject,
-    groupE.spriteTargetIndex,
-    GROUP_E_UPDATED_PROCCODE
-  )
-  assert.equal(call.length, 1)
-  assert.deepEqual([...call[0]!.argumentIds], [...record.argumentIds])
-  const callBlock = (
-    appliedProject.json.targets[groupE.spriteTargetIndex]!.blocks as Record<
-      string,
-      { readonly inputs?: Record<string, [number, [number, string]]> }
-    >
-  )['ecall']!
-  assert.equal(callBlock.inputs?.['a3']?.[1]?.[1], 'three')
-  assert.equal(callBlock.inputs?.['a1']?.[1]?.[1], 'one')
-  assert.equal(callBlock.inputs?.['a2']?.[1]?.[1], 'two')
-  assert.equal(callBlock.inputs?.[record.argumentIds[3]!]?.[1]?.[1], 'four')
-  // semantic movement, not index churn: every retained parameter keeps its
-  // lineage id while its canonical ordinal shifts to the new position
-  const afterLineage = revision.activeLineage as SemanticLineageSnapshot
-  const parameterRows = (snapshot: SemanticLineageSnapshot) =>
-    new Map(
-      snapshot.records
-        .filter(
-          (entry) => entry.status === 'active' && entry.kind === 'parameter'
+  const sprite = targetEntityEvidenceSetV1(sourceProject.json).find(
+    (entry) => entry.targetKind === 'sprite'
+  )!
+  const targetIndex = sprite.targetIndex
+  const spriteRef = spriteBindingRef()
+  const targetRef = {
+    entityKind: 'target',
+    refKind: 'structural',
+    selectorKind: 'exactLocation',
+    location: targetBoundedLocationProjectionV1(
+      sprite,
+      `standard-procedure-target-${sprite.semanticLocationSha256.slice(0, 32)}`
+    ),
+    expectedFullLocationSha256: sprite.semanticLocationSha256,
+    expectedSemanticFingerprint: sprite.semanticFingerprintSha256,
+    expectedContextFingerprint: sprite.contextFingerprintSha256,
+  } as const
+  const signature = {
+    warp: false,
+    parts: [
+      { kind: 'label', text: 'advance' },
+      {
+        kind: 'parameter',
+        localKey: 'distance',
+        name: 'distance',
+        ...(parameterType === 'boolean'
+          ? { parameterType, defaultValue: false }
+          : { parameterType, defaultValue: 0 }),
+      },
+    ],
+  } as const
+  const decoded = canonicalProcedureSignatureV1(signature)
+  const signatureSha256 = standardProcedureSignatureSha256V2(decoded)
+  const procedureRef = {
+    contractRefKind: 'future',
+    entityKind: 'procedure',
+    entitySubtype: 'unspecialized',
+    bindingKey: 'standard-created-procedure',
+  } as const
+  const definitionRef = {
+    contractRefKind: 'future',
+    entityKind: 'script',
+    entitySubtype: 'unspecialized',
+    bindingKey: 'standard-created-definition',
+  } as const
+  const parameterRef = {
+    contractRefKind: 'future',
+    entityKind: 'parameter',
+    entitySubtype: 'unspecialized',
+    bindingKey: 'standard-created-distance',
+  } as const
+  const callScriptEvidence = scriptEntityEvidenceSetV1(sourceProject).find(
+    (entry) => entry.targetIndex === targetIndex && entry.topBlockId === 'hat1'
+  )!
+  const anchor = blockEntityEvidenceSetV1(sourceProject).find(
+    (entry) => entry.targetIndex === targetIndex && entry.blockId === 'changex1'
+  )!
+  const callScriptRef = {
+    contractRefKind: 'existing',
+    entityKind: 'script',
+    entitySubtype: 'unspecialized',
+    bindingKey: 'standard-call-script',
+  } as const
+  const callRootRef = {
+    contractRefKind: 'future',
+    entityKind: 'block',
+    entitySubtype: 'unspecialized',
+    bindingKey: 'standard-created-call-root',
+  } as const
+  const addProcedure = {
+    kind: 'procedure.add',
+    opId: 'standard-add-procedure',
+    target: targetRef,
+    signature,
+    workspace: { x: 360, y: 300 },
+    requireExistingProspectiveCollisionCount: 0,
+    expectedProspectiveProcedureCollisionSetSha256:
+      prospectiveProcedureCollisionSetSha256V1(
+        prospectiveProcedureCollisionSetV1(
+          sourceProject,
+          targetIndex,
+          decoded.proccode
         )
-        .map((entry) => [entry.rawIdentity, entry])
-    )
-  const before = parameterRows(beforeLineage)
-  const after = parameterRows(afterLineage)
-  assert.equal(before.size, 3)
-  assert.equal(after.size, 4)
-  for (const [rawIdentity, expectedOrdinal] of [
-    ['parameter:a3', 0],
-    ['parameter:a1', 1],
-    ['parameter:a2', 2],
-  ] as const)
-  {
-    const priorRow = before.get(rawIdentity)
-    const nextRow = after.get(rawIdentity)
-    assert.ok(priorRow, `${rawIdentity} is absent before the update`)
-    assert.ok(nextRow, `${rawIdentity} is absent after the update`)
-    assert.equal(
-      nextRow.lineageId,
-      priorRow.lineageId,
-      `${rawIdentity} did not keep its lineage id across the reorder`
-    )
-    assert.equal(nextRow.canonicalOrdinal, expectedOrdinal)
+      ),
+    body: {
+      blocks: [
+        {
+          nodeKind: 'ordinary',
+          opcode: 'motion_changexby',
+          fields: [],
+          inputs: [
+            {
+              name: 'DX',
+              value: {
+                valueKind: 'block',
+                value: {
+                  nodeKind: 'ordinary',
+                  opcode: 'operator_add',
+                  fields: [],
+                  inputs: [
+                    {
+                      name: 'NUM1',
+                      value: {
+                        valueKind: 'block',
+                        value: {
+                          nodeKind: 'parameterReporter',
+                          parameter: {
+                            refKind: 'procedureLocalParameter',
+                            localKey: 'distance',
+                          },
+                        },
+                      },
+                    },
+                    { name: 'NUM2', value: { valueKind: 'literal', value: 1 } },
+                  ],
+                },
+              },
+            },
+          ],
+        },
+      ],
+    },
+  } as const satisfies UnplannedSemanticEditOperationV1
+  const addCall = {
+    kind: 'block.insertAfter',
+    opId: 'standard-add-procedure-call',
+    anchor: exactBlockRef(anchor),
+    tree: {
+      blocks: [
+        {
+          nodeKind: 'procedureCall',
+          procedure: {
+            entityKind: 'procedure',
+            refKind: 'created',
+            opId: addProcedure.opId,
+            slot: { slotKind: 'fixed', name: 'procedure' },
+          },
+          expectedSignatureSha256: signatureSha256,
+          arguments: [
+            {
+              parameter: {
+                entityKind: 'parameter',
+                refKind: 'created',
+                opId: addProcedure.opId,
+                slot: { slotKind: 'parameter', localKey: 'distance' },
+              },
+              value: {
+                valueKind: 'block',
+                value: {
+                  nodeKind: 'ordinary',
+                  opcode: 'operator_equals',
+                  fields: [],
+                  inputs: [
+                    {
+                      name: 'OPERAND1',
+                      value: {
+                        valueKind: 'block',
+                        value: {
+                          nodeKind: 'ordinary',
+                          opcode: 'motion_xposition',
+                          fields: [],
+                          inputs: [],
+                        },
+                      },
+                    },
+                    {
+                      name: 'OPERAND2',
+                      value: { valueKind: 'literal', value: 4 },
+                    },
+                  ],
+                },
+              },
+            },
+          ],
+        },
+      ],
+    },
+  } as const satisfies UnplannedSemanticEditOperationV1
+  const definitionDescriptor = {
+    bindingKind: 'future',
+    entityKind: 'script',
+    entitySubtype: 'unspecialized',
+    expectedCreatorOperationKind: 'procedure.add',
+    expectedCreationRole: {
+      roleKind: 'fixed',
+      name: 'definitionScript',
+      entityKind: 'script',
+      entitySubtype: 'unspecialized',
+    },
+    expectedCreationScope: {
+      scopeKind: 'targetAndOwnedDescendants',
+      target: spriteRef,
+    },
+  } as const
+  const procedureDescriptor = {
+    ...definitionDescriptor,
+    entityKind: 'procedure',
+    expectedCreationRole: {
+      roleKind: 'fixed',
+      name: 'procedure',
+      entityKind: 'procedure',
+      entitySubtype: 'unspecialized',
+    },
+  } as const
+  const parameterDescriptor = {
+    bindingKind: 'future',
+    entityKind: 'parameter',
+    entitySubtype: 'unspecialized',
+    expectedCreatorOperationKind: 'procedure.add',
+    expectedCreationRole: {
+      roleKind: 'dynamic',
+      name: 'parameter',
+      entityKind: 'parameter',
+      entitySubtype: 'unspecialized',
+    },
+    expectedCreationScope: {
+      scopeKind: 'procedureOwnedClosure',
+      procedure: procedureRef,
+    },
+  } as const
+  const rootDescriptor = {
+    bindingKind: 'future',
+    entityKind: 'block',
+    entitySubtype: 'unspecialized',
+    expectedCreatorOperationKind: 'block.insertAfter',
+    expectedCreationRole: {
+      roleKind: 'fixed',
+      name: 'rootBlock',
+      entityKind: 'block',
+      entitySubtype: 'unspecialized',
+    },
+    expectedCreationScope: {
+      scopeKind: 'scriptClosure',
+      script: callScriptRef,
+    },
+  } as const
+  const scope = {
+    proccode: decoded.proccode,
+    warp: decoded.warp,
+    signatureSha256,
+    parameters: decoded.parameters.map((parameter) => ({
+      ...parameter,
+      argumentId: parameter.localKey,
+    })),
   }
-  const deltaRow = [...after.entries()].find(
-    ([rawIdentity]) => !before.has(rawIdentity)
+  const normalizeContext = {
+    semanticAuthorityId: 'standard-v2' as const,
+    project: sourceProject,
+    targetIndex,
+    selectedSource: { scriptTopBlockId: 'hat1' },
+    resolveContractEntityRef: (
+      request: import('@scratch-agent/ir/edit').ScriptBlockContractEntityResolutionRequestV1
+    ) =>
+      request.expectedEntityKind === 'procedure'
+        ? procedureRef
+        : request.expectedEntityKind === 'parameter'
+          ? parameterRef
+          : request.expectedEntityKind === 'script'
+            ? callScriptRef
+            : spriteRef,
+    resolveProcedure: () => ({
+      ...scope,
+      ownerTargetIndex: targetIndex,
+      semanticLineageSha256: HASH_A,
+      semanticFingerprintSha256: HASH_B,
+    }),
+    resolveParameter: () => ({
+      ...scope.parameters[0]!,
+      proccode: scope.proccode,
+      signatureSha256,
+      ownerTargetIndex: targetIndex,
+      semanticLineageSha256: HASH_A,
+      semanticFingerprintSha256: HASH_B,
+    }),
+  }
+  const bindings = [
+    {
+      ref: procedureRef,
+      descriptor: procedureDescriptor,
+      fingerprint: procedureCreationContentFingerprintForResultV1({
+        ...normalizeContext,
+        operation: { ...addProcedure, expectedPlanningFactSetSha256: HASH_A },
+        descriptor: procedureDescriptor,
+        resultRole: { roleKind: 'fixed', name: 'procedure' },
+      }),
+    },
+    {
+      ref: definitionRef,
+      descriptor: definitionDescriptor,
+      fingerprint: procedureCreationContentFingerprintForResultV1({
+        ...normalizeContext,
+        operation: { ...addProcedure, expectedPlanningFactSetSha256: HASH_A },
+        descriptor: definitionDescriptor,
+        resultRole: { roleKind: 'fixed', name: 'definitionScript' },
+      }),
+    },
+    {
+      ref: parameterRef,
+      descriptor: parameterDescriptor,
+      fingerprint: procedureCreationContentFingerprintForResultV1({
+        ...normalizeContext,
+        operation: { ...addProcedure, expectedPlanningFactSetSha256: HASH_A },
+        descriptor: parameterDescriptor,
+        resultRole: {
+          roleKind: 'dynamic',
+          name: 'parameter',
+          alias: 'distance',
+        },
+      }),
+    },
+    {
+      ref: callRootRef,
+      descriptor: rootDescriptor,
+      fingerprint: scriptBlockCreationContentFingerprintForResultV1({
+        ...normalizeContext,
+        operation: { ...addCall, expectedPlanningFactSetSha256: HASH_A },
+        descriptor: rootDescriptor,
+        resultRole: { roleKind: 'fixed', name: 'rootBlock' },
+      }),
+    },
+  ]
+  const base = structuredClone(SEMANTICALLY_VALID_CHANGE_CONTRACT_SAMPLE)
+  base.sourceConstraint = { kind: 'exactArtifact', sourceArtifactSha256 }
+  base.entityBindings = [
+    {
+      bindingKey: spriteRef.bindingKey,
+      bindingKind: 'existing',
+      entityKind: 'target',
+      entitySubtype: 'sprite',
+      expectedMatchCount: 1,
+      sourceLocationSha256: sprite.semanticLocationSha256,
+      expectedSourceSemanticFingerprint: sprite.semanticFingerprintSha256,
+      expectedSourceContextFingerprint: sprite.contextFingerprintSha256,
+    },
+    {
+      bindingKey: callScriptRef.bindingKey,
+      bindingKind: 'existing',
+      entityKind: 'script',
+      entitySubtype: 'unspecialized',
+      expectedMatchCount: 1,
+      sourceLocationSha256: callScriptEvidence.semanticLocationSha256,
+      expectedSourceSemanticFingerprint:
+        callScriptEvidence.semanticFingerprintSha256,
+      expectedSourceContextFingerprint:
+        callScriptEvidence.contextFingerprintSha256,
+    },
+    ...bindings.map(({ ref, descriptor, fingerprint }) => ({
+      bindingKey: ref.bindingKey,
+      ...descriptor,
+      expectedCreationContentFingerprintSha256: fingerprint,
+    })),
+  ]
+  base.allowedOperationKinds = ['procedure.add', 'block.insertAfter']
+  const scopes: readonly ContractScopeV1[] = [
+    {
+      scopeSubjectKind: 'entity',
+      operationKind: 'procedure.add',
+      entityKind: 'procedure',
+      entitySubtype: 'unspecialized',
+      locationScope: {
+        scopeKind: 'targetAndOwnedDescendants',
+        target: spriteRef,
+      },
+      allowedPropertyPaths: [],
+    },
+    {
+      scopeSubjectKind: 'entity',
+      operationKind: 'block.insertAfter',
+      entityKind: 'block',
+      entitySubtype: 'unspecialized',
+      locationScope: { scopeKind: 'scriptClosure', script: callScriptRef },
+      allowedPropertyPaths: [],
+    },
+  ]
+  base.allowedSemanticScopes = scopes
+  base.allowedStructuralChanges = bindings.map(({ ref, fingerprint }) => ({
+    allowanceId: `${ref.bindingKey}-addition`,
+    kind: 'entityAddition',
+    candidate: ref,
+    expectedAddedContentSha256: fingerprint,
+  }))
+  base.requiredStructuralChanges = scopes.map((scope) => ({
+    objectiveId: `${scope.operationKind.replace('.', '-')}-required`,
+    kind: 'deltaContains',
+    direction: 'parent-child',
+    operationKind: scope.operationKind,
+    semanticScopeSha256: productionContractScopeSha256V1(scope),
+    semanticChangeFingerprint: HASH_D,
+  }))
+  const artifacts = attachRetainedPolicyFixturesV1(
+    base as unknown as MutableRetainedPolicyContract
   )
-  assert.ok(deltaRow, 'the created parameter has no lineage row')
-  assert.equal(deltaRow[1].canonicalOrdinal, 3)
-  const deltaLineageId = deltaRow[1].lineageId
-  // the delta states the reorder as ordered-collection movement of the same
-  // lineages, not as raw index churn over rewritten argument arrays
-  const orderedChanges =
-    (
-      revision.parentDelta as {
-        orderedCollectionChanges?: readonly {
-          readonly collectionKind: string
-          readonly lineageId: string
-          readonly kind: string
-          readonly beforeIndex?: number
-          readonly afterIndex?: number
+  const parsed = parseSemanticChangeContractV1(base)
+  assert.equal(
+    parsed.ok,
+    true,
+    parsed.ok ? undefined : JSON.stringify(parsed.issues)
+  )
+  if (!parsed.ok)
+    assert.fail('standard procedure creation contract did not parse')
+  const registry = new EditChangeContractRegistryV1({
+    hostDefaultLimits: HOST_DEFAULT_LIMITS,
+    hostHardLimits: HOST_HARD_LIMITS,
+  })
+  const provenance = {
+    authorityId: 'standard-procedure-construction',
+    hostConfigurationSha256: HASH_A,
+    provenanceArtifactSha256: HASH_B,
+    registeredAt: '2026-07-20T00:00:00.000Z',
+  }
+  const displayObjective = boundedDisplayStringV1(
+    'author a procedure with local arithmetic and call it in the same batch'
+  ) as EditChangeContractRegistrationV1['displayObjective']
+  const registration = {
+    schemaVersion: 1,
+    registrationId: 'standard-procedure-construction',
+    semanticContract: parsed.value,
+    semanticContractSha256: semanticHashV1('change-contract', parsed.value),
+    bindingDisplayEvidence: [],
+    displayObjective,
+    provenance,
+    displayEvidenceSha256: sha256Hex(
+      canonicalJsonBytesV1({
+        bindingDisplayEvidence: [],
+        displayObjective,
+        provenance,
+      })
+    ),
+  } as const
+  registry.registerBytes(canonicalJsonBytesV1(registration), artifacts)
+  registry.seal()
+  const valid = registry.bind({
+    registrationId: registration.registrationId,
+    expectedSemanticContractSha256: registration.semanticContractSha256,
+    source: { kind: 'exactArtifact', sourceArtifactSha256 },
+    existingBindings: [
+      {
+        bindingKey: spriteRef.bindingKey,
+        entityKind: 'target',
+        sourceLocationSha256: sprite.semanticLocationSha256,
+      },
+      {
+        bindingKey: callScriptRef.bindingKey,
+        entityKind: 'script',
+        sourceLocationSha256: callScriptEvidence.semanticLocationSha256,
+      },
+    ],
+  })
+  return {
+    registry,
+    valid,
+    updateSignature: addProcedure,
+    spriteTargetIndex: targetIndex,
+    addProcedure,
+    addCall,
+    proccode: decoded.proccode,
+    bindingKeys: bindings.map(({ ref }) => ref.bindingKey),
+  }
+}
+
+test('standard-v2 certified lifecycle preserves procedure socket compatibility and exactly replays', async (t) =>
+{
+  for (const parameterType of ['number', 'boolean'] as const)
+  {
+    const root = tempRoot(t)
+    const sourceBytes = (await buildFixtureSb3()).sb3
+    const sourceArtifactSha256 = sha256Hex(sourceBytes)
+    const sourceProject = await ProjectIR.fromSb3(sourceBytes)
+    const groupE = registeredStandardProcedureCreationContracts(
+      sourceArtifactSha256,
+      sourceProject,
+      parameterType
+    )
+    const store = createEditArtifactStoreHostAdapter(root)
+    const dispatchers = [
+      ...procedureProductionOperationDispatchersV1(),
+      ...scriptBlockProductionOperationDispatchersV1(),
+      ...mediaTargetProductionOperationDispatchersV1(),
+    ]
+    const session = await beginProcedureSession({
+      store,
+      sourceBytes,
+      sourceArtifactSha256,
+      groupE,
+      dispatchers,
+      semanticAuthorityId: 'standard-v2',
+    })
+    const planner = await ProductionBatchPlannerV1.create({
+      source: sourceProject,
+      sourceBytes,
+      session,
+      store,
+      contract: groupE.valid,
+      inspection: await session.inspect({ issueHandles: true }),
+    })
+    planner.add(groupE.addProcedure)
+    if (parameterType === 'boolean')
+    {
+      const priorHead = structuredClone(session.head)
+      const priorAllocator = structuredClone(
+        session.revisions.at(-1)!.allocatorState
+      )
+      const plannedAllocator = planner.candidate.uids.snapshot()
+      const invalidCall = {
+        ...groupE.addCall,
+        tree: {
+          blocks: groupE.addCall.tree.blocks.map((node) => ({
+            ...node,
+            arguments: node.arguments.map((argument) => ({
+              ...argument,
+              value: {
+                valueKind: 'block' as const,
+                value: {
+                  nodeKind: 'ordinary' as const,
+                  opcode: 'motion_xposition',
+                  fields: [],
+                  inputs: [],
+                },
+              },
+            })),
+          })),
+        },
+      } as const
+      await assertEditRefusal(
+        () =>
+          session.preview(
+            {
+              requestId: 'refuse-round-reporter-in-boolean-socket',
+              expectedHead: session.head,
+              canonicalTransaction: {
+                ...planner.batch(),
+                operations: [
+                  ...planner.batch().operations,
+                  planner.plan(invalidCall),
+                ],
+              },
+            },
+            invocation(2)
+          ),
+        'edit.schema_failed'
+      )
+      assert.deepEqual(session.head, priorHead)
+      assert.equal(session.revisions.length, 1)
+      assert.deepEqual(session.revisions.at(-1)!.allocatorState, priorAllocator)
+      assert.deepEqual(planner.candidate.uids.snapshot(), plannedAllocator)
+    }
+    planner.add(groupE.addCall)
+    const preview = await session.preview(
+      {
+        requestId: 'preview-standard-procedure-construction',
+        expectedHead: session.head,
+        canonicalTransaction: planner.batch(),
+      },
+      invocation(2)
+    )
+    assert.equal(preview.preview.operationCount, 2)
+    const applied = await session.apply(
+      {
+        schemaVersion: 1,
+        sessionId: session.sessionId,
+        requestId: 'apply-standard-procedure-construction',
+        ...expectedHeadRequest(preview.preview.expectedHead),
+        previewId: preview.preview.previewId,
+        applyGuardSha256: preview.preview.applyGuardSha256,
+        expectedResolvedPlanSha256: preview.preview.resolvedPlanSha256,
+      },
+      invocation(3)
+    )
+    assert.equal(
+      applied.head.candidateSha256,
+      preview.preview.predictedCandidateSha256
+    )
+    const revision = session.revisions.at(-1)!
+    const candidate = await ProjectIR.fromSb3(
+      await store.readImmutable(revision.candidateKey)
+    )
+    const record = resolveProcedureRecordV1(
+      candidate,
+      groupE.spriteTargetIndex,
+      groupE.proccode
+    )
+    assert.deepEqual(record.argumentNames, ['distance'])
+    const calls = procedureCallSitesV1(
+      candidate,
+      groupE.spriteTargetIndex,
+      groupE.proccode
+    )
+    assert.equal(calls.length, 1)
+    assert.deepEqual(calls[0]!.argumentIds, record.argumentIds)
+    const blocks = candidate.json.targets[groupE.spriteTargetIndex]!.blocks
+    const definition = blocks[record.definitionBlockId]!
+    assert.ok(!Array.isArray(definition) && definition.next)
+    const move = blocks[definition.next]!
+    assert.ok(!Array.isArray(move) && move.opcode === 'motion_changexby')
+    const arithmeticId = move.inputs!.DX![1]
+    assert.equal(typeof arithmeticId, 'string')
+    const arithmetic = blocks[arithmeticId as string]!
+    assert.ok(
+      !Array.isArray(arithmetic) && arithmetic.opcode === 'operator_add'
+    )
+    const reporter = blocks[arithmetic.inputs!.NUM1![1] as string]!
+    assert.ok(
+      !Array.isArray(reporter) &&
+        reporter.opcode ===
+          (parameterType === 'boolean'
+            ? 'argument_reporter_boolean'
+            : 'argument_reporter_string_number')
+    )
+    assert.equal(reporter.fields!.VALUE![0], 'distance')
+    assert.equal(reporter.parent, arithmeticId)
+    const callBlock = blocks[calls[0]!.blockId]!
+    assert.ok(!Array.isArray(callBlock))
+    const callValue =
+      blocks[callBlock.inputs![record.argumentIds[0]!]![1] as string]!
+    assert.ok(
+      !Array.isArray(callValue) && callValue.opcode === 'operator_equals'
+    )
+    const ledger = retainedFutureBindingLedger(revision)
+    assert.equal(ledger.realizations.length, 4)
+    assertHashOnlyFutureBindingRows(ledger.realizations, groupE.bindingKeys)
+    const capability = await store.capability()
+    const readOnlyStore = createEditArtifactStoreHostAdapter(root, {
+      mode: 'read-only',
+      expectedStoreId: capability.storeId,
+      expectedOwnershipSha256: capability.ownershipSha256,
+    })
+    const beforeReplay = await store.listImmutable(
+      `sessions/${session.manifest.sessionKey}`
+    )
+    const replay = await verifyEditSessionReplayV1({
+      artifactStore: readOnlyStore,
+      sessionKey: session.manifest.sessionKey,
+      boundChangeContract: groupE.valid,
+      transactionExecutor: new ProductionTransactionExecutorV1(dispatchers),
+    })
+    assert.deepEqual(replay.failures, [])
+    assert.equal(replay.ok, true)
+    assert.deepEqual(replay.finalHead, session.head)
+    assert.deepEqual(
+      await store.listImmutable(`sessions/${session.manifest.sessionKey}`),
+      beforeReplay
+    )
+    assert.equal(sha256Hex(sourceBytes), sourceArtifactSha256)
+  }
+})
+
+for (const semanticAuthorityId of ['a0-v1', 'standard-v2'] as const)
+  test(`Group E ${semanticAuthorityId} production lifecycle reorders a signature, realizes a parameter future binding, and exactly replays`, async (t) =>
+  {
+    const root = tempRoot(t)
+    const sourceBytes = await buildProcedureFixtureSb3()
+    const sourceProject = await ProjectIR.fromSb3(sourceBytes)
+    const sourceArtifactSha256 = sha256Hex(sourceBytes)
+    const groupE = registeredProcedureContracts(
+      sourceArtifactSha256,
+      sourceProject,
+      semanticAuthorityId
+    )
+    const store = createEditArtifactStoreHostAdapter(root)
+    const dispatchers: readonly ProductionOperationDispatcherV1[] = [
+      ...procedureProductionOperationDispatchersV1(),
+      ...mediaTargetProductionOperationDispatchersV1(),
+    ]
+    const session = await beginProcedureSession({
+      store,
+      sourceBytes,
+      sourceArtifactSha256,
+      groupE,
+      dispatchers,
+      semanticAuthorityId,
+    })
+    const inspection = await session.inspect({ issueHandles: true })
+    const planner = await ProductionBatchPlannerV1.create({
+      source: sourceProject,
+      sourceBytes,
+      session,
+      store,
+      contract: groupE.valid,
+      inspection,
+    })
+    const beforeLineage = session.revisions.at(-1)!
+      .activeLineage as SemanticLineageSnapshot
+    planner.add(groupE.updateSignature)
+    const preview = await session.preview(
+      {
+        requestId: 'preview-group-e-production',
+        expectedHead: session.head,
+        canonicalTransaction: planner.batch(),
+      },
+      invocation(2)
+    )
+    assert.equal(preview.preview.operationCount, 1)
+    const apply = await session.apply(
+      {
+        schemaVersion: 1,
+        sessionId: session.sessionId,
+        requestId: 'apply-group-e-production',
+        ...expectedHeadRequest(preview.preview.expectedHead),
+        previewId: preview.preview.previewId,
+        applyGuardSha256: preview.preview.applyGuardSha256,
+        expectedResolvedPlanSha256: preview.preview.resolvedPlanSha256,
+      },
+      invocation(3)
+    )
+    assert.equal(
+      apply.head.candidateSha256,
+      preview.preview.predictedCandidateSha256
+    )
+    const revision = session.revisions.at(-1)!
+    const appliedProject = await ProjectIR.fromSb3(
+      await store.readImmutable(revision.candidateKey)
+    )
+    // the rewritten prototype: reordered names, the retained argument ids in the
+    // new order, one freshly allocated id for delta, & the flipped warp flag
+    const record = resolveProcedureRecordV1(
+      appliedProject,
+      groupE.spriteTargetIndex,
+      GROUP_E_UPDATED_PROCCODE
+    )
+    assert.equal(record.warp, true)
+    assert.deepEqual([...record.argumentNames], [...GROUP_E_UPDATED_ORDER])
+    assert.deepEqual(record.argumentIds.slice(0, 3), ['a3', 'a1', 'a2'])
+    assert.equal(record.argumentIds.includes('a1'), true)
+    assert.notEqual(record.argumentIds[3], undefined)
+    // the call site keeps every preserved argument bound to its own value & gains
+    // exactly one initialized input for the new parameter
+    const call = procedureCallSitesV1(
+      appliedProject,
+      groupE.spriteTargetIndex,
+      GROUP_E_UPDATED_PROCCODE
+    )
+    assert.equal(call.length, 1)
+    assert.deepEqual([...call[0]!.argumentIds], [...record.argumentIds])
+    const callBlock = (
+      appliedProject.json.targets[groupE.spriteTargetIndex]!.blocks as Record<
+        string,
+        { readonly inputs?: Record<string, [number, [number, string]]> }
+      >
+    )['ecall']!
+    assert.equal(callBlock.inputs?.['a3']?.[1]?.[1], 'three')
+    assert.equal(callBlock.inputs?.['a1']?.[1]?.[1], 'one')
+    assert.equal(callBlock.inputs?.['a2']?.[1]?.[1], 'two')
+    if (semanticAuthorityId === 'standard-v2')
+    {
+      const id = callBlock.inputs?.[record.argumentIds[3]!]?.[1] as unknown
+      assert.equal(typeof id, 'string')
+      const argument =
+        appliedProject.json.targets[groupE.spriteTargetIndex]!.blocks[
+          id as string
+        ]!
+      assert.ok(
+        !Array.isArray(argument) && argument.opcode === 'operator_equals'
+      )
+    }
+    else
+      assert.equal(callBlock.inputs?.[record.argumentIds[3]!]?.[1]?.[1], 'four')
+    // semantic movement, not index churn: every retained parameter keeps its
+    // lineage id while its canonical ordinal shifts to the new position
+    const afterLineage = revision.activeLineage as SemanticLineageSnapshot
+    const parameterRows = (snapshot: SemanticLineageSnapshot) =>
+      new Map(
+        snapshot.records
+          .filter(
+            (entry) => entry.status === 'active' && entry.kind === 'parameter'
+          )
+          .map((entry) => [entry.rawIdentity, entry])
+      )
+    const before = parameterRows(beforeLineage)
+    const after = parameterRows(afterLineage)
+    assert.equal(before.size, 3)
+    assert.equal(after.size, 4)
+    for (const [rawIdentity, expectedOrdinal] of [
+      ['parameter:a3', 0],
+      ['parameter:a1', 1],
+      ['parameter:a2', 2],
+    ] as const)
+    {
+      const priorRow = before.get(rawIdentity)
+      const nextRow = after.get(rawIdentity)
+      assert.ok(priorRow, `${rawIdentity} is absent before the update`)
+      assert.ok(nextRow, `${rawIdentity} is absent after the update`)
+      assert.equal(
+        nextRow.lineageId,
+        priorRow.lineageId,
+        `${rawIdentity} did not keep its lineage id across the reorder`
+      )
+      assert.equal(nextRow.canonicalOrdinal, expectedOrdinal)
+    }
+    const deltaRow = [...after.entries()].find(
+      ([rawIdentity]) => !before.has(rawIdentity)
+    )
+    assert.ok(deltaRow, 'the created parameter has no lineage row')
+    assert.equal(deltaRow[1].canonicalOrdinal, 3)
+    const deltaLineageId = deltaRow[1].lineageId
+    // the delta states the reorder as ordered-collection movement of the same
+    // lineages, not as raw index churn over rewritten argument arrays
+    const orderedChanges =
+      (
+        revision.parentDelta as {
+          orderedCollectionChanges?: readonly {
+            readonly collectionKind: string
+            readonly lineageId: string
+            readonly kind: string
+            readonly beforeIndex?: number
+            readonly afterIndex?: number
+          }[]
+        }
+      ).orderedCollectionChanges ?? []
+    const parameterChanges = orderedChanges.filter(
+      (entry) => entry.collectionKind === 'procedure-parameters'
+    )
+    const movedParameters = parameterChanges.filter(
+      (entry) => entry.kind === 'moved'
+    )
+    assert.equal(
+      movedParameters.length > 0,
+      true,
+      'the reorder produced no moved procedure-parameters change'
+    )
+    for (const moved of movedParameters)
+      assert.notEqual(moved.beforeIndex, moved.afterIndex)
+    assert.equal(
+      parameterChanges.some(
+        (entry) => entry.kind === 'added' && entry.lineageId === deltaLineageId
+      ),
+      true,
+      'the new parameter is absent from the ordered-collection changes'
+    )
+    assert.equal(
+      orderedChanges.some(
+        (entry) => entry.collectionKind === 'procedure-call-arguments'
+      ),
+      true,
+      'the rewritten call site produced no ordered call-argument change'
+    )
+    // the one declared future binding realizes exactly once & the retained ledger
+    // stays hash-only
+    const ledger = retainedFutureBindingLedger(revision)
+    assert.equal(ledger.realizations.length, 1)
+    assertHashOnlyFutureBindingRows(ledger.realizations, [
+      'group-e-created-parameter-delta',
+    ])
+    const authorization = revision.authorization as {
+      contractAuthorization: {
+        operationScopeEvidence: readonly {
+          opId: string
+          occurrenceId: string
         }[]
       }
-    ).orderedCollectionChanges ?? []
-  const parameterChanges = orderedChanges.filter(
-    (entry) => entry.collectionKind === 'procedure-parameters'
-  )
-  const movedParameters = parameterChanges.filter(
-    (entry) => entry.kind === 'moved'
-  )
-  assert.equal(
-    movedParameters.length > 0,
-    true,
-    'the reorder produced no moved procedure-parameters change'
-  )
-  for (const moved of movedParameters)
-    assert.notEqual(moved.beforeIndex, moved.afterIndex)
-  assert.equal(
-    parameterChanges.some(
-      (entry) => entry.kind === 'added' && entry.lineageId === deltaLineageId
-    ),
-    true,
-    'the new parameter is absent from the ordered-collection changes'
-  )
-  assert.equal(
-    orderedChanges.some(
-      (entry) => entry.collectionKind === 'procedure-call-arguments'
-    ),
-    true,
-    'the rewritten call site produced no ordered call-argument change'
-  )
-  // the one declared future binding realizes exactly once & the retained ledger
-  // stays hash-only
-  const ledger = retainedFutureBindingLedger(revision)
-  assert.equal(ledger.realizations.length, 1)
-  assertHashOnlyFutureBindingRows(ledger.realizations, [
-    'group-e-created-parameter-delta',
-  ])
-  const authorization = revision.authorization as {
-    contractAuthorization: {
-      operationScopeEvidence: readonly { opId: string; occurrenceId: string }[]
     }
-  }
-  const occurrences =
-    authorization.contractAuthorization.operationScopeEvidence.filter(
-      (entry) => entry.opId === 'group-e-update-signature'
+    const occurrences =
+      authorization.contractAuthorization.operationScopeEvidence.filter(
+        (entry) => entry.opId === 'group-e-update-signature'
+      )
+    assert.equal(occurrences.length, 1)
+    assert.match(occurrences[0]!.occurrenceId, /^[a-f0-9]{64}$/u)
+    assert.equal(
+      operationIdArrays(revision.parentDelta)
+        .flat()
+        .includes(occurrences[0]!.occurrenceId),
+      true,
+      'procedure.updateSignature is absent from the Group E parent delta'
     )
-  assert.equal(occurrences.length, 1)
-  assert.match(occurrences[0]!.occurrenceId, /^[a-f0-9]{64}$/u)
-  assert.equal(
-    operationIdArrays(revision.parentDelta)
-      .flat()
-      .includes(occurrences[0]!.occurrenceId),
-    true,
-    'procedure.updateSignature is absent from the Group E parent delta'
-  )
-  const replay = await verifyEditSessionReplayV1({
-    artifactStore: store,
-    sessionKey: session.manifest.sessionKey,
-    boundChangeContract: groupE.valid,
-    transactionExecutor: new ProductionTransactionExecutorV1(dispatchers),
+    const replay = await verifyEditSessionReplayV1({
+      artifactStore: store,
+      sessionKey: session.manifest.sessionKey,
+      boundChangeContract: groupE.valid,
+      transactionExecutor: new ProductionTransactionExecutorV1(dispatchers),
+    })
+    assert.deepEqual(replay.failures, [])
+    assert.equal(replay.ok, true)
+    assert.equal(replay.verifiedRevisionCount, session.revisions.length)
+    assert.deepEqual(replay.finalHead, session.head)
   })
-  assert.deepEqual(replay.failures, [])
-  assert.equal(replay.ok, true)
-  assert.equal(replay.verifiedRevisionCount, session.revisions.length)
-  assert.deepEqual(replay.finalHead, session.head)
-})
 
 test('Group E refuses an injected mid-transaction failure and leaves exact prior bytes, allocator, and quota', async (t) =>
 {
@@ -10590,4 +11623,1219 @@ test('Group F refuses removing the final costume and leaves repeated admissions 
   assert.ok(firstResolved && secondResolved)
   assert.deepEqual([...secondResolved.bytes], [...firstResolved.bytes])
   assert.deepEqual([...secondResolved.bytes], [...harness.fixture.deltaPng])
+})
+
+test('T03 certified sensing edits preserve fallback ownership, retire menus, refuse invalid pairs, and exactly replay', async (t) =>
+{
+  const root = tempRoot(t)
+  const fixture = await buildFixtureSb3()
+  const seed = await ProjectIR.fromSb3(fixture.sb3)
+  const actor = seed.json.targets[1]!
+  actor.name = 'Actor'
+  actor.variables = {}
+  actor.lists = {}
+  actor.comments = {
+    note: {
+      blockId: 'menu',
+      x: 300,
+      y: 100,
+      width: 180,
+      height: 90,
+      minimized: false,
+      text: 'explicitly detach before replacing this menu',
+    },
+  }
+  const block = (
+    opcode: string,
+    parent: string | null,
+    inputs: Block['inputs'] = {},
+    fields: Block['fields'] = {},
+    shadow = false
+  ): Block => ({
+    opcode,
+    parent,
+    next: null,
+    inputs,
+    fields,
+    shadow,
+    topLevel: false,
+  })
+  actor.blocks = {
+    flag: {
+      ...block('event_whenflagclicked', null),
+      next: 'say',
+      topLevel: true,
+      x: 40,
+      y: 40,
+    },
+    say: block('looks_say', 'flag', { MESSAGE: [3, 'sense', [10, '']] }),
+    sense: block(
+      'sensing_of',
+      'say',
+      { OBJECT: [3, 'dynamic', 'menu'] },
+      { PROPERTY: ['volume'] }
+    ),
+    dynamic: block('motion_xposition', 'sense'),
+    menu: {
+      ...block(
+        'sensing_of_object_menu',
+        'sense',
+        {},
+        { OBJECT: ['Actor'] },
+        true
+      ),
+      comment: 'note',
+    },
+  }
+  actor.blocks['imported-hat'] = {
+    ...block('event_whenflagclicked', null),
+    next: 'imported-say',
+    topLevel: true,
+    x: 720,
+    y: 40,
+  }
+  actor.blocks['imported-say'] = block('looks_say', 'imported-hat', {
+    MESSAGE: [3, 'imported-sense', [10, '']],
+  })
+  actor.blocks['imported-sense'] = block(
+    'sensing_of',
+    'imported-say',
+    { OBJECT: [1, 'imported-menu'] },
+    { PROPERTY: ['x position', null] }
+  )
+  actor.blocks['imported-menu'] = block(
+    'sensing_of_object_menu',
+    'imported-sense',
+    {},
+    { OBJECT: ['Actor'] },
+    true
+  )
+  seed.json.targets[0]!.variables = {
+    reserved: ['volume', 7],
+    otherKind: ['x position', 8],
+  }
+  const peers: readonly (readonly [string, Record<string, VariableEntry>])[] = [
+    ['PeerA', { aScore: ['score', 7] }],
+    ['PeerB', { bScore: ['score', 19] }],
+    ['Ambiguous', { first: ['score', 1], second: ['score', 2] }],
+  ]
+  for (const [name, variables] of peers)
+    seed.addSprite(name, {
+      costumes: structuredClone(actor.costumes),
+      variables: structuredClone(variables),
+    })
+  // independent reads keep narrowing dynamic sensing from creating real unused diagnostics
+  for (const owner of seed.json.targets)
+    for (const [id, [name]] of Object.entries(owner.variables))
+    {
+      const hat = `read-${id}`
+      const say = `say-${id}`
+      const reporter = `variable-${id}`
+      owner.blocks[hat] = {
+        ...block('event_whenflagclicked', null),
+        next: say,
+        topLevel: true,
+        x: 500,
+        y: 40,
+      }
+      owner.blocks[say] = block('looks_say', hat, {
+        MESSAGE: [3, reporter, [10, '']],
+      })
+      owner.blocks[reporter] = block(
+        'data_variable',
+        say,
+        {},
+        { VARIABLE: [name, id] }
+      )
+    }
+  const sourceBytes = await seed.toSb3()
+  const source = await ProjectIR.fromSb3(sourceBytes)
+  const sourceArtifactSha256 = sha256Hex(sourceBytes)
+  const targets = targetEntityEvidenceSetV1(source.json)
+  const targetNamed = (name: string) =>
+    targets.find(
+      (entry) => source.json.targets[entry.targetIndex]!.name === name
+    )!
+  const actorEvidence = targetNamed('Actor')
+  const actorIndex = actorEvidence.targetIndex
+  const sourceBlocks = blockEntityEvidenceSetV1(source)
+  const blockNamed = (id: string) =>
+    sourceBlocks.find(
+      (entry) => entry.targetIndex === actorIndex && entry.blockId === id
+    )!
+  const script = scriptEntityEvidenceSetV1(source).find(
+    (entry) => entry.targetIndex === actorIndex && entry.topBlockId === 'flag'
+  )!
+  const comment = commentEntityEvidenceSetV1(source).find(
+    (entry) => entry.commentId === 'note'
+  )!
+  const existing = (
+    bindingKey: string,
+    entityKind: 'target' | 'block' | 'script' | 'comment' | 'declaration',
+    entitySubtype: 'stage' | 'sprite' | 'unspecialized' | 'variable',
+    evidence: {
+      semanticLocationSha256: string
+      semanticFingerprintSha256: string
+      contextFingerprintSha256: string
+    }
+  ) => ({
+    bindingKey,
+    bindingKind: 'existing',
+    entityKind,
+    entitySubtype,
+    expectedMatchCount: 1,
+    sourceLocationSha256: evidence.semanticLocationSha256,
+    expectedSourceSemanticFingerprint: evidence.semanticFingerprintSha256,
+    expectedSourceContextFingerprint: evidence.contextFingerprintSha256,
+  })
+  const ref = (
+    bindingKey: string,
+    entityKind: ContractEntityRefV1['entityKind'],
+    entitySubtype: ContractEntityRefV1['entitySubtype']
+  ): ContractEntityRefV1 =>
+    ({
+      contractRefKind: 'existing',
+      bindingKey,
+      entityKind,
+      entitySubtype,
+    }) as ContractEntityRefV1
+  const senseRef = ref('sense', 'block', 'unspecialized')
+  const scriptRef = {
+    contractRefKind: 'existing',
+    bindingKey: 'script',
+    entityKind: 'script',
+    entitySubtype: 'unspecialized',
+  } as const
+  const bindings: ContractEntityBindingV1[] = [
+    existing(
+      'sense',
+      'block',
+      'unspecialized',
+      blockNamed('sense')
+    ) as ContractEntityBindingV1,
+    existing(
+      'dynamic',
+      'block',
+      'unspecialized',
+      blockNamed('dynamic')
+    ) as ContractEntityBindingV1,
+    existing(
+      'menu',
+      'block',
+      'unspecialized',
+      blockNamed('menu')
+    ) as ContractEntityBindingV1,
+    existing(
+      'script',
+      'script',
+      'unspecialized',
+      script
+    ) as ContractEntityBindingV1,
+    existing(
+      'note',
+      'comment',
+      'unspecialized',
+      comment
+    ) as ContractEntityBindingV1,
+    ...targets.map(
+      (entry) =>
+        existing(
+          `target-${entry.targetIndex}`,
+          'target',
+          entry.targetKind,
+          entry
+        ) as ContractEntityBindingV1
+    ),
+    ...declarationEntityEvidenceSetV1(source).map(
+      (entry) =>
+        existing(
+          `variable-${entry.rawRef.id}`,
+          'declaration',
+          'variable',
+          entry
+        ) as ContractEntityBindingV1
+    ),
+  ]
+  const menuValues: readonly SemanticInputValueV1[] = [
+    ...['PeerA', 'PeerB'].map(
+      (name) =>
+        ({
+          valueKind: 'entity',
+          value: exactTargetRef(targetNamed(name)),
+        }) as const
+    ),
+    {
+      valueKind: 'special',
+      value: { domain: 'targetSelector', token: 'stage' },
+    },
+    { valueKind: 'entity', value: exactTargetRef(actorEvidence) },
+    {
+      valueKind: 'block',
+      value: {
+        nodeKind: 'ordinary',
+        opcode: 'motion_xposition',
+        fields: [],
+        inputs: [],
+      },
+    },
+    { valueKind: 'literal', value: 'Actor' },
+  ]
+  const descriptor = {
+    bindingKind: 'future',
+    entityKind: 'block',
+    entitySubtype: 'unspecialized',
+    expectedCreatorOperationKind: 'block.setInput',
+    expectedCreationRole: {
+      roleKind: 'fixed',
+      name: 'rootBlock',
+      entityKind: 'block',
+      entitySubtype: 'unspecialized',
+    },
+    expectedCreationScope: { scopeKind: 'scriptClosure', script: scriptRef },
+  } as const satisfies ScriptBlockCreationBindingDescriptorV1
+  const futureBindings = menuValues.map((value, index) =>
+  {
+    const fingerprint = scriptBlockCreationContentFingerprintForResultV1({
+      semanticAuthorityId: 'standard-v2',
+      project: source,
+      targetIndex: actorIndex,
+      descriptor,
+      resultRole: { roleKind: 'fixed', name: 'rootBlock' },
+      selectedSource: { scriptTopBlockId: script.topBlockId, blockId: 'sense' },
+      operation: {
+        kind: 'block.setInput',
+        opId: `menu-${index}`,
+        block: exactBlockRef(blockNamed('sense')),
+        inputName: 'OBJECT',
+        expectedInputFingerprint: HASH_A,
+        expectedPlanningFactSetSha256: HASH_A,
+        replacedInput: { kind: 'requireNoOwnedBlock' },
+        value,
+      },
+      resolveContractEntityRef: (request) =>
+      {
+        if (request.sourceKind === 'rawScript') return scriptRef
+        assert.equal(request.sourceKind, 'semanticReference')
+        if (request.sourceKind !== 'semanticReference')
+          assert.fail('unexpected creation reference')
+        const entry = targets.find(
+          (entry) =>
+            JSON.stringify(exactTargetRef(entry)) ===
+            JSON.stringify(request.reference)
+        )
+        assert.ok(entry)
+        return ref(`target-${entry.targetIndex}`, 'target', entry.targetKind)
+      },
+    })
+    return {
+      bindingKey: `created-${index}`,
+      ...descriptor,
+      expectedCreationContentFingerprintSha256: fingerprint,
+    }
+  })
+  const importedScript = scriptEntityEvidenceSetV1(source).find(
+    (entry) =>
+      entry.targetIndex === actorIndex && entry.topBlockId === 'imported-hat'
+  )!
+  const importedRef = ref('imported-script', 'script', 'unspecialized')
+  bindings.push(
+    existing(
+      'imported-script',
+      'script',
+      'unspecialized',
+      importedScript
+    ) as ContractEntityBindingV1
+  )
+  const duplicate = {
+    kind: 'script.duplicate',
+    opId: 'duplicate-imported-null-scalar',
+    script: exactScriptRef(importedScript),
+    workspace: { x: 960, y: 40 },
+    comments: { kind: 'rejectIfPresent' },
+    exposeClones: [],
+  } as const satisfies UnplannedSemanticEditOperationV1
+  const duplicateDescriptor = {
+    bindingKind: 'future',
+    entityKind: 'script',
+    entitySubtype: 'unspecialized',
+    expectedCreatorOperationKind: 'script.duplicate',
+    expectedCreationRole: {
+      roleKind: 'fixed',
+      name: 'script',
+      entityKind: 'script',
+      entitySubtype: 'unspecialized',
+    },
+    expectedCreationScope: {
+      scopeKind: 'targetAndOwnedDescendants',
+      target: {
+        contractRefKind: 'existing',
+        bindingKey: `target-${actorIndex}`,
+        entityKind: 'target',
+        entitySubtype: 'sprite',
+      },
+    },
+  } as const satisfies ScriptBlockCreationBindingDescriptorV1
+  const duplicateRootDescriptor = {
+    ...duplicateDescriptor,
+    entityKind: 'block',
+    expectedCreationRole: {
+      roleKind: 'fixed',
+      name: 'rootBlock',
+      entityKind: 'block',
+      entitySubtype: 'unspecialized',
+    },
+    expectedCreationScope: {
+      scopeKind: 'scriptClosure',
+      script: {
+        contractRefKind: 'future',
+        bindingKey: 'duplicated-imported-script',
+        entityKind: 'script',
+        entitySubtype: 'unspecialized',
+      },
+    },
+  } as const satisfies ScriptBlockCreationBindingDescriptorV1
+  const duplicateFingerprint = (
+    project: ProjectIR,
+    descriptor: ScriptBlockCreationBindingDescriptorV1 = duplicateDescriptor
+  ) =>
+    scriptBlockCreationContentFingerprintForResultV1({
+      semanticAuthorityId: 'standard-v2',
+      project,
+      targetIndex: actorIndex,
+      descriptor,
+      resultRole: {
+        roleKind: 'fixed',
+        name: descriptor.entityKind === 'script' ? 'script' : 'rootBlock',
+      },
+      selectedSource: { scriptTopBlockId: importedScript.topBlockId },
+      operation: { ...duplicate, expectedPlanningFactSetSha256: HASH_A },
+      resolveContractEntityRef: () =>
+        ref(`target-${actorIndex}`, 'target', 'sprite'),
+    })
+  const duplicatedContent = duplicateFingerprint(source)
+  const duplicatedRootContent = duplicateFingerprint(
+    source,
+    duplicateRootDescriptor
+  )
+  const scalarControl = ProjectIR.fromProjectJson(
+    structuredClone(source.json),
+    source.assets
+  )
+  const importedSense = scalarControl.json.targets[actorIndex]!.blocks[
+    'imported-sense'
+  ] as Block
+  importedSense.fields!.PROPERTY = ['x position']
+  assert.equal(duplicateFingerprint(scalarControl), duplicatedContent)
+  importedSense.fields!.PROPERTY = ['x position', 'not-a-scalar-id']
+  assert.throws(
+    () => duplicateFingerprint(scalarControl),
+    /raw script is not a safe curated closure/u
+  )
+  bindings.push({
+    bindingKey: 'duplicated-imported-script',
+    ...duplicateDescriptor,
+    expectedCreationContentFingerprintSha256: duplicatedContent,
+  })
+  bindings.push({
+    bindingKey: 'duplicated-imported-root',
+    ...duplicateRootDescriptor,
+    expectedCreationContentFingerprintSha256: duplicatedRootContent,
+  })
+  bindings.push(...futureBindings)
+  const scopes: ContractScopeV1[] = [
+    {
+      scopeSubjectKind: 'entity',
+      operationKind: 'block.setInput',
+      entityKind: 'block',
+      entitySubtype: 'unspecialized',
+      locationScope: { scopeKind: 'exactEntity', entity: senseRef },
+      allowedPropertyPaths: [
+        { surface: 'blockInput', descriptorName: 'OBJECT' },
+      ],
+    },
+    {
+      scopeSubjectKind: 'entity',
+      operationKind: 'block.setField',
+      entityKind: 'block',
+      entitySubtype: 'unspecialized',
+      locationScope: { scopeKind: 'exactEntity', entity: senseRef },
+      allowedPropertyPaths: [
+        { surface: 'blockField', descriptorName: 'PROPERTY' },
+      ],
+    },
+    {
+      scopeSubjectKind: 'entity',
+      operationKind: 'block.remove',
+      entityKind: 'block',
+      entitySubtype: 'unspecialized',
+      locationScope: {
+        scopeKind: 'exactEntity',
+        entity: ref('dynamic', 'block', 'unspecialized'),
+      },
+      allowedPropertyPaths: [],
+    },
+    {
+      scopeSubjectKind: 'entity',
+      operationKind: 'comment.detach',
+      entityKind: 'comment',
+      entitySubtype: 'unspecialized',
+      locationScope: {
+        scopeKind: 'exactEntity',
+        entity: ref('note', 'comment', 'unspecialized'),
+      },
+      allowedPropertyPaths: [{ surface: 'comment', property: 'attachment' }],
+    },
+    {
+      scopeSubjectKind: 'entity',
+      operationKind: 'target.renameSprite',
+      entityKind: 'target',
+      entitySubtype: 'sprite',
+      locationScope: {
+        scopeKind: 'exactEntity',
+        entity: ref(
+          `target-${targetNamed('PeerA').targetIndex}`,
+          'target',
+          'sprite'
+        ),
+      },
+      allowedPropertyPaths: [{ surface: 'target', property: 'name' }],
+    },
+    {
+      scopeSubjectKind: 'entity',
+      operationKind: 'target.removeSprite',
+      entityKind: 'target',
+      entitySubtype: 'sprite',
+      locationScope: {
+        scopeKind: 'exactEntity',
+        entity: ref(
+          `target-${targetNamed('PeerB').targetIndex}`,
+          'target',
+          'sprite'
+        ),
+      },
+      allowedPropertyPaths: [],
+    },
+  ]
+  scopes.push({
+    scopeSubjectKind: 'entity',
+    operationKind: 'script.duplicate',
+    entityKind: 'script',
+    entitySubtype: 'unspecialized',
+    locationScope: { scopeKind: 'exactEntity', entity: importedRef },
+    allowedPropertyPaths: [],
+  })
+  const base = structuredClone(SEMANTICALLY_VALID_CHANGE_CONTRACT_SAMPLE)
+  base.sourceConstraint = { kind: 'exactArtifact', sourceArtifactSha256 }
+  base.entityBindings = bindings
+  base.allowedOperationKinds = scopes.map((scope) => scope.operationKind)
+  base.allowedSemanticScopes = scopes
+  base.allowedStructuralChanges = [
+    {
+      allowanceId: 'duplicate-imported-script',
+      kind: 'entityAddition',
+      candidate: {
+        contractRefKind: 'future',
+        entityKind: 'script',
+        entitySubtype: 'unspecialized',
+        bindingKey: 'duplicated-imported-script',
+      },
+      expectedAddedContentSha256: duplicatedContent,
+    },
+    {
+      allowanceId: 'duplicate-imported-root',
+      kind: 'entityAddition',
+      candidate: {
+        contractRefKind: 'future',
+        entityKind: 'block',
+        entitySubtype: 'unspecialized',
+        bindingKey: 'duplicated-imported-root',
+      },
+      expectedAddedContentSha256: duplicatedRootContent,
+    },
+    ...futureBindings.map((binding) => ({
+      allowanceId: `add-${binding.bindingKey}`,
+      kind: 'entityAddition',
+      candidate: {
+        contractRefKind: 'future',
+        entityKind: 'block',
+        entitySubtype: 'unspecialized',
+        bindingKey: binding.bindingKey,
+      },
+      expectedAddedContentSha256:
+        binding.expectedCreationContentFingerprintSha256,
+    })),
+    {
+      allowanceId: 'remove-dynamic',
+      kind: 'entityRemoval',
+      source: ref('dynamic', 'block', 'unspecialized'),
+      expectedRemovedContentSha256: productionEntityDeltaContentSha256V1({
+        state: 'value',
+        value: source.json.targets[actorIndex]!.blocks['dynamic']!,
+      }),
+    },
+    {
+      allowanceId: 'remove-peer',
+      kind: 'entityRemoval',
+      source: ref(
+        `target-${targetNamed('PeerB').targetIndex}`,
+        'target',
+        'sprite'
+      ),
+      expectedRemovedContentSha256: targetOwnedSurfaceSha256V1(
+        source.json.targets[targetNamed('PeerB').targetIndex]!
+      ),
+    },
+  ]
+  base.requiredStructuralChanges = [
+    {
+      objectiveId: 't03-required-object-edit',
+      kind: 'deltaContains',
+      direction: 'parent-child',
+      operationKind: 'block.setInput',
+      semanticScopeSha256: productionContractScopeSha256V1(scopes[0]!),
+      semanticChangeFingerprint: HASH_D,
+    },
+  ]
+  const policies = attachRetainedPolicyFixturesV1(
+    base as unknown as MutableRetainedPolicyContract
+  )
+  const parsed = parseSemanticChangeContractV1(base)
+  assert.equal(
+    parsed.ok,
+    true,
+    parsed.ok ? undefined : JSON.stringify(parsed.issues)
+  )
+  if (!parsed.ok) assert.fail('T03 focused contract failed admission')
+  const provenance = {
+    authorityId: 't03-sensing-authority',
+    hostConfigurationSha256: HASH_A,
+    provenanceArtifactSha256: HASH_B,
+    registeredAt: '2026-07-20T00:00:00.000Z',
+  }
+  const displayObjective = boundedDisplayStringV1(
+    'edit exact sensing property and object pairs without leaking menu ownership'
+  ) as EditChangeContractRegistrationV1['displayObjective']
+  const registration: EditChangeContractRegistrationV1 = {
+    schemaVersion: 1,
+    registrationId: 't03-sensing-contract',
+    semanticContract: parsed.value,
+    semanticContractSha256: semanticHashV1('change-contract', parsed.value),
+    bindingDisplayEvidence: [],
+    displayObjective,
+    provenance,
+    displayEvidenceSha256: sha256Hex(
+      canonicalJsonBytesV1({
+        bindingDisplayEvidence: [],
+        displayObjective,
+        provenance,
+      })
+    ),
+  }
+  const contracts = new EditChangeContractRegistryV1({
+    hostDefaultLimits: HOST_DEFAULT_LIMITS,
+    hostHardLimits: HOST_HARD_LIMITS,
+  })
+  const parsedRegistration =
+    parseContractDefinitionV1<EditChangeContractRegistrationV1>(
+      'EditChangeContractRegistrationV1',
+      registration
+    )
+  assert.equal(
+    parsedRegistration.ok,
+    true,
+    parsedRegistration.ok
+      ? undefined
+      : JSON.stringify(parsedRegistration.issues)
+  )
+  contracts.registerBytes(canonicalJsonBytesV1(registration), policies)
+  contracts.seal()
+  const bound = contracts.bind({
+    registrationId: registration.registrationId,
+    expectedSemanticContractSha256: registration.semanticContractSha256,
+    source: { kind: 'exactArtifact', sourceArtifactSha256 },
+    existingBindings: bindings.flatMap((binding) =>
+      binding.bindingKind === 'existing'
+        ? [
+            {
+              bindingKey: binding.bindingKey,
+              entityKind: binding.entityKind,
+              sourceLocationSha256: binding.sourceLocationSha256,
+            },
+          ]
+        : []
+    ),
+  })
+  const store = createEditArtifactStoreHostAdapter(root)
+  const dispatchers = [
+    ...scriptBlockProductionOperationDispatchersV1(),
+    new CommentProductionOperationDispatcherV1(),
+    new TargetProductionOperationDispatcherV1(),
+  ]
+  const registry = createEditSessionRegistryForExecutorV1(
+    {
+      artifactStore: store,
+      semanticAuthorityId: 'standard-v2',
+      changeContracts: contracts,
+      identity: {
+        realmSha256: HASH_A,
+        profileSha256: HASH_B,
+        pinnedScratchRuntimeSourceSha256: HASH_C,
+        retentionPolicySha256: HASH_D,
+        policyConfigVersion: 1,
+      },
+      clock: deterministicClock(1_753_056_000_000),
+      entropy: deterministicEntropy(211),
+      handleSecret: new Uint8Array(32).fill(0x71),
+    },
+    new ProductionTransactionExecutorV1(dispatchers)
+  )
+  const begun = await registry.begin(
+    {
+      schemaVersion: 1,
+      requestId: 'begin-t03',
+      baseline: {
+        kind: 'projectSession',
+        projectSessionId: 't03-sensing-project',
+        expectedSourceArtifactSha256: sourceArtifactSha256,
+      },
+      changeContractRegistrationId: 't03-sensing-contract',
+      expectedSemanticContractSha256: registration.semanticContractSha256,
+    },
+    {
+      bytes: sourceBytes,
+      displayName: 't03.sb3',
+      expectedArtifactSha256: sourceArtifactSha256,
+      provenance: {
+        kind: 'projectSession',
+        projectSessionId: 't03-sensing-project',
+        selectedDisplayName: 't03.sb3',
+        canonicalRealpath: '/virtual/t03.sb3',
+        device: 'test-device',
+        inode: 't03',
+        byteLength: sourceBytes.byteLength,
+        modifiedAtNanoseconds: '1753056000000000000',
+        sourceInspectionPolicySha256: HASH_A,
+        diagnosticPolicySha256: HASH_B,
+        runtimePolicySha256: HASH_C,
+        provenanceRegistrationSha256: HASH_D,
+      },
+      recheck: async () => ({
+        ok: true,
+        observedArtifactSha256: sourceArtifactSha256,
+      }),
+    },
+    invocation(1)
+  )
+  const session = registry.session(begun.sessionId)
+  const inspection = await session.inspect({ issueHandles: true })
+  let planner = await ProductionBatchPlannerV1.create({
+    source,
+    sourceBytes,
+    session,
+    store,
+    contract: bound,
+    inspection,
+  })
+  const currentBlock = (id: string) =>
+    blockEntityEvidenceSetV1(planner.candidate).find(
+      (entry) => entry.targetIndex === actorIndex && entry.blockId === id
+    )!
+  const currentTarget = (name: string) =>
+    targetEntityEvidenceSetV1(planner.candidate.json).find(
+      (entry) =>
+        planner.candidate.json.targets[entry.targetIndex]!.name === name
+    )!
+  const sense = () =>
+    planner.candidate.json.targets[actorIndex]!.blocks['sense'] as Block
+  const inputFingerprint = () =>
+    blockInputFingerprintV1(
+      actorIndex,
+      'sense',
+      'OBJECT',
+      sense().inputs!.OBJECT
+    )
+  const setInput = (
+    opId: string,
+    value: SemanticInputValueV1
+  ): UnplannedSemanticEditOperationV1 =>
+  {
+    if (value.valueKind === 'entity' && value.value.entityKind === 'target')
+    {
+      const reference = value.value
+      const prior = targets.find(
+        (entry) =>
+          JSON.stringify(exactTargetRef(entry)) === JSON.stringify(reference)
+      )
+      if (prior)
+        value = {
+          valueKind: 'entity',
+          value: exactTargetRef(
+            currentTarget(source.json.targets[prior.targetIndex]!.name)
+          ),
+        }
+    }
+    const active = sense().inputs!.OBJECT![1]
+    const activeBlock =
+      typeof active === 'string'
+        ? planner.candidate.json.targets[actorIndex]!.blocks[active]
+        : undefined
+    const plan =
+      activeBlock && !Array.isArray(activeBlock) && !activeBlock.shadow
+        ? planGraphClosureV1(
+            planner.candidate.json.targets[actorIndex]!,
+            'ownedBlock',
+            active as string
+          )
+        : null
+    return {
+      kind: 'block.setInput',
+      opId,
+      block: exactBlockRef(currentBlock('sense')),
+      inputName: 'OBJECT',
+      expectedInputFingerprint: inputFingerprint(),
+      value,
+      replacedInput: plan
+        ? {
+            kind: 'deleteExactOwnedClosure',
+            expectedClosureSha256: plan.closureSha256,
+            expectedOwnedBlockCount: plan.orderedBlockIds.length,
+            comments: { kind: 'rejectIfPresent' },
+          }
+        : { kind: 'requireNoOwnedBlock' },
+    }
+  }
+  const setField = (
+    opId: string,
+    value: Extract<SemanticEditOperationV1, { kind: 'block.setField' }>['value']
+  ): UnplannedSemanticEditOperationV1 => ({
+    kind: 'block.setField',
+    opId,
+    block: exactBlockRef(currentBlock('sense')),
+    fieldName: 'PROPERTY',
+    expectedValueFingerprint: blockFieldFingerprintV1(
+      actorIndex,
+      'sense',
+      'PROPERTY',
+      sense().fields!.PROPERTY
+    ),
+    value,
+  })
+  let call = 2
+  const commit = async (
+    operation: UnplannedSemanticEditOperationV1,
+    preceding?: UnplannedSemanticEditOperationV1
+  ): Promise<void> =>
+  {
+    if (preceding) planner.add(preceding)
+    planner.add(operation)
+    const preview = await session.preview(
+      {
+        requestId: `preview-${operation.opId}`,
+        expectedHead: session.head,
+        canonicalTransaction: planner.batch(),
+      },
+      invocation(call++)
+    )
+    const applied = await session.apply(
+      {
+        schemaVersion: 1,
+        sessionId: session.sessionId,
+        requestId: `apply-${operation.opId}`,
+        ...expectedHeadRequest(preview.preview.expectedHead),
+        previewId: preview.preview.previewId,
+        applyGuardSha256: preview.preview.applyGuardSha256,
+        expectedResolvedPlanSha256: preview.preview.resolvedPlanSha256,
+      },
+      invocation(call++)
+    )
+    assert.equal(
+      applied.head.candidateSha256,
+      preview.preview.predictedCandidateSha256
+    )
+    assert.deepEqual(applied.operationResults, preview.preview.operationResults)
+    for (const result of applied.operationResults as readonly {
+      postconditionSha256: string
+    }[])
+      assert.match(result.postconditionSha256, /^[a-f0-9]{64}$/u)
+    const inspection = await session.inspect({ issueHandles: true })
+    planner = await ProductionBatchPlannerV1.create({
+      source,
+      sourceBytes,
+      session,
+      store,
+      contract: bound,
+      inspection,
+    })
+  }
+  const refuse = async (
+    operation: UnplannedSemanticEditOperationV1,
+    code: string
+  ): Promise<void> =>
+  {
+    const baselineHead = structuredClone(session.head)
+    const baselineRevisionCount = session.revisions.length
+    const baselineAllocator = structuredClone(
+      session.revisions.at(-1)!.allocatorState
+    )
+    const beforePlanner = JSON.stringify(planner.candidate.toProjectJson())
+    const beforeAllocator = planner.candidate.uids.snapshot()
+    await assertEditRefusal(
+      () =>
+        session.preview(
+          {
+            requestId: `refuse-${operation.opId}`,
+            expectedHead: session.head,
+            canonicalTransaction: {
+              ...planner.batch(),
+              operations: [
+                ...planner.batch().operations,
+                planner.plan(operation),
+              ],
+            },
+          },
+          invocation(call++)
+        ),
+      code
+    )
+    assert.deepEqual(session.head, baselineHead)
+    assert.equal(session.revisions.length, baselineRevisionCount)
+    assert.deepEqual(
+      session.revisions.at(-1)!.allocatorState,
+      baselineAllocator
+    )
+    assert.equal(
+      JSON.stringify(planner.candidate.toProjectJson()),
+      beforePlanner
+    )
+    assert.deepEqual(planner.candidate.uids.snapshot(), beforeAllocator)
+  }
+  const dynamicPlan = planGraphClosureV1(
+    planner.candidate.json.targets[actorIndex]!,
+    'ownedBlock',
+    'dynamic'
+  )
+  await commit(
+    {
+      kind: 'block.remove',
+      opId: 'reveal-original-menu',
+      block: exactBlockRef(currentBlock('dynamic')),
+      expectedClosureSha256: dynamicPlan.closureSha256,
+      expectedOwnedBlockCount: dynamicPlan.orderedBlockIds.length,
+      comments: { kind: 'rejectIfPresent' },
+      sourceGap: {
+        kind: 'revealExistingShadow',
+        expectedCurrentInputFingerprint: inputFingerprint(),
+        expectedShadowFingerprint: inputShadowFingerprintV1(
+          actorIndex,
+          'sense',
+          'OBJECT',
+          'menu'
+        ),
+      },
+    },
+    duplicate
+  )
+  const copiedProperties = Object.values(
+    planner.candidate.json.targets[actorIndex]!.blocks
+  )
+    .filter(
+      (entry): entry is Block =>
+        !Array.isArray(entry) &&
+        entry.opcode === 'sensing_of' &&
+        entry.fields?.PROPERTY?.[0] === 'x position'
+    )
+    .map((entry) => entry.fields!.PROPERTY)
+  assert.deepEqual(copiedProperties, [
+    ['x position', null],
+    ['x position', null],
+  ])
+  assert.deepEqual(
+    (source.json.targets[actorIndex]!.blocks['imported-sense'] as Block).fields!
+      .PROPERTY,
+    ['x position', null]
+  )
+  assert.deepEqual(sense().inputs!.OBJECT, [1, 'menu'])
+  assert.equal(
+    Object.hasOwn(planner.candidate.json.targets[actorIndex]!.blocks, 'menu'),
+    true
+  )
+  await refuse(
+    setInput('comment-blocks-replacement', menuValues[0]!),
+    'edit.project_constraint'
+  )
+  await commit({
+    kind: 'comment.detach',
+    opId: 'detach-menu-note',
+    comment: exactCommentRefV1(
+      commentEntityEvidenceSetV1(planner.candidate).find(
+        (entry) => entry.commentId === 'note'
+      )!
+    ),
+    expectedBlock: exactBlockRef(currentBlock('menu')),
+  })
+  const expectedRemoved: string[] = ['dynamic']
+  const addMenu = async (index: number): Promise<void> =>
+  {
+    const prior =
+      sense().inputs!.OBJECT![0] === 3
+        ? sense().inputs!.OBJECT![2]
+        : sense().inputs!.OBJECT![1]
+    assert.equal(typeof prior, 'string')
+    const beforeCount = Object.keys(
+      planner.candidate.json.targets[actorIndex]!.blocks
+    ).length
+    await commit(setInput(`menu-${index}`, menuValues[index]!))
+    expectedRemoved.push(prior as string)
+    assert.equal(
+      Object.hasOwn(
+        planner.candidate.json.targets[actorIndex]!.blocks,
+        prior as string
+      ),
+      false
+    )
+    assert.equal(
+      Object.keys(planner.candidate.json.targets[actorIndex]!.blocks).length,
+      beforeCount
+    )
+  }
+  await addMenu(0)
+  await addMenu(1)
+  const declaration = (id: string) =>
+    declarationEntityEvidenceSetV1(planner.candidate).find(
+      (entry) => entry.rawRef.id === id
+    )!
+  await commit(
+    setField('select-b-score', {
+      valueKind: 'entity',
+      value: exactDeclarationRefV1(declaration('bScore')),
+    })
+  )
+  assert.deepEqual(sense().fields!.PROPERTY, ['score'])
+  await refuse(
+    setField('wrong-property-owner', {
+      valueKind: 'entity',
+      value: exactDeclarationRefV1(declaration('aScore')),
+    }),
+    'edit.schema_failed'
+  )
+  await refuse(
+    setField('wrong-kind-builtin', {
+      valueKind: 'enum',
+      value: 'backdrop name',
+    }),
+    'edit.schema_failed'
+  )
+  await refuse(
+    setInput('missing-property-owner', {
+      valueKind: 'entity',
+      value: exactTargetRef(currentTarget('Actor')),
+    }),
+    'edit.project_constraint'
+  )
+  await refuse(
+    setInput('ambiguous-property-owner', {
+      valueKind: 'entity',
+      value: exactTargetRef(currentTarget('Ambiguous')),
+    }),
+    'edit.project_constraint'
+  )
+  await refuse(
+    setInput('dynamic-variable-property', menuValues[4]!),
+    'edit.project_constraint'
+  )
+  await commit(
+    setField('return-to-volume', { valueKind: 'enum', value: 'volume' })
+  )
+  await addMenu(2)
+  await refuse(
+    setField('reserved-variable-volume', {
+      valueKind: 'entity',
+      value: exactDeclarationRefV1(declaration('reserved')),
+    }),
+    'edit.schema_failed'
+  )
+  await commit(
+    setField('stage-other-kind-variable', {
+      valueKind: 'entity',
+      value: exactDeclarationRefV1(declaration('otherKind')),
+    })
+  )
+  assert.deepEqual(sense().fields!.PROPERTY, ['x position'])
+  await commit(setField('stage-volume', { valueKind: 'enum', value: 'volume' }))
+  await addMenu(3)
+  const fallback = sense().inputs!.OBJECT![1]
+  assert.equal(typeof fallback, 'string')
+  await commit(setInput('menu-4', menuValues[4]!))
+  assert.equal(sense().inputs!.OBJECT![0], 3)
+  assert.equal(sense().inputs!.OBJECT![2], fallback)
+  assert.equal(
+    Object.hasOwn(
+      planner.candidate.json.targets[actorIndex]!.blocks,
+      fallback as string
+    ),
+    true
+  )
+  const hidden = sense().inputs!.OBJECT![1] as string
+  await commit(setInput('menu-5', menuValues[5]!))
+  expectedRemoved.push(hidden, fallback as string)
+  assert.equal(
+    Object.hasOwn(planner.candidate.json.targets[actorIndex]!.blocks, hidden),
+    false
+  )
+  assert.equal(
+    Object.hasOwn(
+      planner.candidate.json.targets[actorIndex]!.blocks,
+      fallback as string
+    ),
+    false
+  )
+  assert.equal(
+    Object.keys(planner.candidate.json.targets[actorIndex]!.blocks).length,
+    12
+  )
+  const peerAIndex = targetNamed('PeerA').targetIndex
+  const references = buildSemanticReferenceIndex(planner.candidate)
+  const inbound = targetInboundReferenceSetV1(
+    planner.candidate,
+    references,
+    peerAIndex
+  )
+  assert.equal(inbound.references.length, 0)
+  const activation = targetProspectiveNameActivationV1(
+    planner.candidate,
+    references,
+    'RenamedPeer'
+  )
+  await commit({
+    kind: 'target.renameSprite',
+    opId: 'rename-former-target',
+    target: exactTargetRef(currentTarget('PeerA')),
+    expectedName: targetExpectedStringIdentityV1('PeerA'),
+    newName: 'RenamedPeer',
+    expectedInboundReferenceSetSha256: inbound.referenceSetSha256,
+    newNameActivation: {
+      expectedActivationSetSha256: activation.activationSetSha256,
+      requireProspectiveActivationCount: 0,
+    },
+  })
+  const peerBIndex = targetNamed('PeerB').targetIndex
+  const peerB = planner.candidate.json.targets[peerBIndex]!
+  const order = targetDualOrderSnapshotV1(
+    planner.candidate.json,
+    session.revisions.at(-1)!.activeLineage as SemanticLineageSnapshot
+  )
+  const peerBInbound = targetInboundReferenceSetV1(
+    planner.candidate,
+    buildSemanticReferenceIndex(planner.candidate),
+    peerBIndex
+  )
+  assert.equal(peerBInbound.references.length, 0)
+  await commit({
+    kind: 'target.removeSprite',
+    opId: 'remove-former-target',
+    target: exactTargetRef(currentTarget('PeerB')),
+    expectedOwnedSurfaceSha256: targetOwnedSurfaceSha256V1(peerB),
+    expectedInboundReferenceSetSha256: peerBInbound.referenceSetSha256,
+    expectedSerializedTargetOrderSha256: order.serializedTargetOrderSha256,
+    expectedVisualLayerOrderSha256: order.visualLayerOrderSha256,
+    requireFinalInboundReferenceCount: 0,
+  })
+  const revision = session.revisions.at(-1)!
+  const removals = session.revisions
+    .slice(1)
+    .flatMap((accepted) =>
+      (accepted.parentDelta as ProjectDelta).targets
+        .filter((target) => target.targetIndex === actorIndex)
+        .flatMap((target) =>
+          target.blockChanges
+            .filter((block) => block.kind === 'removed')
+            .map((block) => block.blockId)
+        )
+    )
+  assert.deepEqual(
+    [...new Set(removals)].sort(),
+    [...new Set(expectedRemoved)].sort()
+  )
+  const history = revision.lineageHistory as {
+    records: readonly { status: string; rawIdentity: string }[]
+  }
+  for (const id of expectedRemoved)
+    assert.equal(
+      history.records.some(
+        (entry) =>
+          entry.rawIdentity === `block:${id}` && entry.status === 'tombstoned'
+      ),
+      true,
+      `missing removal lineage for ${id}`
+    )
+  const candidate = await ProjectIR.fromSb3(
+    await store.readImmutable(revision.candidateKey)
+  )
+  assert.equal(
+    Object.keys(candidate.json.targets[actorIndex]!.blocks).length,
+    12
+  )
+  assert.equal(
+    candidate.json.targets.some((entry) => entry.name === 'PeerB'),
+    false
+  )
+  assert.equal(
+    JSON.stringify(candidate.json.targets[actorIndex]!.blocks).includes(
+      'PeerA'
+    ),
+    false
+  )
+  assert.equal(
+    JSON.stringify(candidate.json.targets[actorIndex]!.blocks).includes(
+      'PeerB'
+    ),
+    false
+  )
+  for (const accepted of session.revisions.slice(1))
+  {
+    const occurrences = (
+      accepted.authorization as {
+        contractAuthorization: {
+          operationScopeEvidence: readonly {
+            opId: string
+            occurrenceId: string
+          }[]
+        }
+      }
+    ).contractAuthorization.operationScopeEvidence
+    const opIds = new Set(
+      (accepted.operationResults as readonly { opId: string }[]).map(
+        (result) => result.opId
+      )
+    )
+    const currentOccurrences = occurrences.filter((occurrence) =>
+      opIds.has(occurrence.opId)
+    )
+    assert.equal(currentOccurrences.length, opIds.size)
+    const attributed = operationIdArrays(accepted.parentDelta).flat()
+    for (const occurrence of currentOccurrences)
+      assert.equal(attributed.includes(occurrence.occurrenceId), true)
+  }
+  const beforeReplay = await store.listImmutable(
+    `sessions/${session.manifest.sessionKey}`
+  )
+  const capability = await store.capability()
+  const readonlyStore = createEditArtifactStoreHostAdapter(root, {
+    mode: 'read-only',
+    expectedStoreId: capability.storeId,
+    expectedOwnershipSha256: capability.ownershipSha256,
+  })
+  const replay = await verifyEditSessionReplayV1({
+    artifactStore: readonlyStore,
+    sessionKey: session.manifest.sessionKey,
+    boundChangeContract: bound,
+    transactionExecutor: new ProductionTransactionExecutorV1(dispatchers),
+  })
+  assert.equal(replay.ok, true, JSON.stringify(replay.failures))
+  assert.deepEqual(replay.finalHead, session.head)
+  assert.deepEqual(
+    await store.listImmutable(`sessions/${session.manifest.sessionKey}`),
+    beforeReplay
+  )
+  assert.equal(sha256Hex(sourceBytes), sourceArtifactSha256)
 })

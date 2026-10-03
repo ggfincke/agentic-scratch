@@ -20,8 +20,9 @@ import type {
   EditTransactionResourceLimitsV1,
   EditKernelTransactionResultV1,
 } from '../contracts/kernel-types.js'
+import type { EditSemanticAuthorityBindingV1 } from '../authority/semantic-authority.js'
 
-export interface EditTransactionInputV1
+export interface EditTransactionInputV1 extends EditSemanticAuthorityBindingV1
 {
   sessionId: string
   sourceBytes: Uint8Array

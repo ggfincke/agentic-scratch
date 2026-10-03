@@ -80,6 +80,7 @@ import {
 import { compareLexicalTextV1 as compareText } from '../support/lexical-order.js'
 import { ownRecordKeys, ownRecordValue } from '../support/own-record.js'
 import { TARGET_NAME_REFERENCE_DESCRIPTORS_V1 } from './target-reference-catalog.js'
+import { sensingPropertyIsBuiltinV1 } from './sensing-property-policy.js'
 
 interface MutableDeclaration<T extends VariableRef | ListRef>
 {
@@ -297,35 +298,6 @@ const FIXED_MEDIA_ORDER_OPERATIONS: ReadonlyMap<
     },
   ],
 ])
-
-const STAGE_SENSING_PROPERTY_TOKENS = new Set([
-  'background #',
-  'backdrop #',
-  'backdrop name',
-  'volume',
-])
-
-const SPRITE_SENSING_PROPERTY_TOKENS = new Set([
-  'x position',
-  'y position',
-  'direction',
-  'costume #',
-  'costume name',
-  'size',
-  'volume',
-])
-
-function sensingPropertyIsBuiltin(
-  target: TargetRef,
-  property: string
-): boolean
-{
-  return (
-    target.isStage
-      ? STAGE_SENSING_PROPERTY_TOKENS
-      : SPRITE_SENSING_PROPERTY_TOKENS
-  ).has(property)
-}
 
 function targetRef(target: Target, targetIndex: number): TargetRef
 {
@@ -1676,7 +1648,7 @@ export function buildSemanticReferenceIndex(
       const input = ownRecordValue(entry.inputs, site.inputName)
       const slot = input ? primaryInputSlot(input) : null
       let sourceBlock: BlockRef | null = null
-      let reason: DynamicSpriteReferenceReason | null = null
+      let reason: DynamicSpriteReferenceReason | null
       if (typeof slot === 'string')
       {
         const child = ownRecordValue(target.blocks, slot)
@@ -1787,7 +1759,7 @@ export function buildSemanticReferenceIndex(
         continue
       }
       const selectedTarget = candidateTargets[0]!
-      if (sensingPropertyIsBuiltin(selectedTarget, referencedName)) continue
+      if (sensingPropertyIsBuiltinV1(selectedTarget, referencedName)) continue
       const candidateRecords =
         declarationResolutionLookup.byTargetKindName.get(
           declarationResolutionKey(

@@ -34,10 +34,9 @@ import {
   parameterEntityEvidenceSetV1,
   PHASE_8_EDIT_LIMIT_AUTHORITY_V1,
   procedureEntityEvidenceSetV1,
-  unknownNameSemanticsEvidenceV1,
+  unknownNameSemanticsForAuthorityV2,
   REFUSAL_CODES,
   resolveMediaRefV1,
-  VANILLA_CORE_DESCRIPTORS,
   semanticHashV1,
   scriptBoundedLocationProjectionV1,
   scriptEntityEvidenceSetV1,
@@ -101,11 +100,18 @@ import {
 } from '../assets/asset-admission.js'
 import {
   buildEditCapabilitySnapshotV1,
-  buildGroupGCapabilityProfileV1,
   EDIT_EVALUATION_RUNNER_LANES_V1,
   validatedRunnerAvailabilityV1,
   type MediaTargetCapabilityProfileInputV1,
 } from '../contracts/capabilities.js'
+import {
+  buildSemanticAuthorityCapabilityProfileV1,
+  editSemanticAuthorityBindingV1,
+  retainedEditSemanticAuthorityV1,
+  resolveEditSemanticAuthorityV1,
+  editCapabilityAuthorityMatchesV1,
+  type EditSemanticAuthorityIdV1,
+} from '../authority/semantic-authority.js'
 import {
   type BoundChangeContractV1,
   type ChangeContractSourceBindingV1,
@@ -120,6 +126,9 @@ import {
   exactRevisionFromHeadV1,
   sameHeadV1,
 } from '../support/canonical.js'
+import {
+  containsRetainedHandleReferenceV1 as containsRetainedHandleRef,
+} from '../support/internal-values.js'
 import {
   editRestoreOccurrenceIdV1,
   singleOperationProjectDeltaAttributionV1,
@@ -343,6 +352,8 @@ export interface EditSessionRegistryIdentityV1
 export interface EditSessionRegistryOptionsV1
 {
   artifactStore: EditArtifactStorePort
+  // the host selects one finite authoring profile for every session it admits
+  semanticAuthorityId?: EditSemanticAuthorityIdV1
   // production hosts inject this authority; absent keeps the edit kernel usable
   // in isolated domain tests without claiming MCP resource availability
   resourceCatalogue?: EditRetainedResourceCataloguePortV1
@@ -658,6 +669,33 @@ export interface EditInspectDomainResultV1
   items: readonly EditInspectDomainItemV1[]
   handlesIssued: boolean
   querySha256: string
+}
+
+type HandleFreeEditInspectDomainItemV1<
+  Item extends EditInspectDomainItemV1 = EditInspectDomainItemV1,
+> = Item extends EditInspectDomainItemV1 ? Omit<Item, 'handle'> : never
+
+type PreparedEditInspectionItemV1 = HandleFreeEditInspectDomainItemV1 & {
+  readonly lineageSha256: string
+}
+
+interface CurrentEditInspectionSnapshotV1
+{
+  readonly revisionId: string
+  readonly revisionNumber: number
+  readonly candidateSha256: string
+  readonly handleEpoch: number
+  readonly items: readonly PreparedEditInspectionItemV1[]
+}
+
+interface PreparedCurrentEditInspectionV1
+{
+  readonly revisionId: string
+  readonly revisionNumber: number
+  readonly candidateSha256: string
+  readonly handleEpoch: number
+  readonly bytes: Uint8Array
+  readonly project: ProjectIR
 }
 
 type EditEvaluatePhaseV1 =
@@ -1240,26 +1278,6 @@ function retainedEvidenceIdsV1(value: unknown): readonly string[]
   return Object.freeze([...ids].sort())
 }
 
-function containsRetainedHandleRef(value: unknown): boolean
-{
-  const pending = [value]
-  const seen = new Set<object>()
-  while (pending.length > 0)
-  {
-    const current = pending.pop()
-    if (current === null || typeof current !== 'object') continue
-    if (seen.has(current)) continue
-    seen.add(current)
-    if (
-      !Array.isArray(current) &&
-      (current as Record<string, unknown>).refKind === 'handle'
-    )
-      return true
-    pending.push(...Object.values(current))
-  }
-  return false
-}
-
 // only the source identity decides the binding, so idempotency discovery can
 // reuse this without the bytes an intake carries
 function exactSourceBinding(
@@ -1592,24 +1610,29 @@ function canonicalMemberCollectionSha256V1(values: readonly unknown[]): string
 function capabilityAssessment(
   semanticSourceSha256: string,
   preflight: Awaited<ReturnType<typeof inspectSemanticEditArtifact>>,
-  pinnedScratchRuntimeSourceSha256: string
+  pinnedScratchRuntimeSourceSha256: string,
+  semanticAuthorityId: EditSemanticAuthorityIdV1 = 'a0-v1'
 ): MediaTargetCapabilityProfileInputV1
 {
+  const descriptors = resolveEditSemanticAuthorityV1(semanticAuthorityId).descriptors
   const admission = preflight.admission!
   const index = preflight.referenceIndex!
   const targetCapability = assessTargetOperationCapabilitiesV1(
-    preflight.project!
+    preflight.project!,
+    semanticAuthorityId
   )
   const declarationCapability = assessDeclarationCapabilitiesV1(
     preflight.project!
   )
   const procedureCapability = assessProcedureCapabilitiesV1(
     preflight.project!,
-    index
+    index,
+    semanticAuthorityId
   )
   const mediaCapability = assessMediaOperationCapabilitiesV1(
     preflight.project!,
-    index
+    index,
+    semanticAuthorityId
   )
   const commentAvailable =
     index.unresolvedBlockCommentReferences.length === 0 &&
@@ -1624,13 +1647,13 @@ function capabilityAssessment(
             comment.attachedBlock?.blockId
     )
   const authoredOpcodes = new Set<string>(
-    VANILLA_CORE_DESCRIPTORS.filter(
+    descriptors.filter(
       (descriptor) => descriptor.availability === 'supported'
     ).map((descriptor) => descriptor.opcode)
   )
   const scriptAvailable =
     preflight.project!.json.targets.some((target) =>
-      VANILLA_CORE_DESCRIPTORS.some(
+      descriptors.some(
         (descriptor) =>
           descriptor.availability === 'supported' &&
           descriptor.context.ownerTargets.includes(
@@ -1696,7 +1719,7 @@ function capabilityAssessment(
           (block) => block.opcode !== null && !authoredOpcodes.has(block.opcode)
         )
         .map((block) => ({ ref: block.ref, opcode: block.opcode })),
-      unknownNameSemantics: unknownNameSemanticsEvidenceV1(admission.project),
+      unknownNameSemantics: unknownNameSemanticsForAuthorityV2(admission.project, semanticAuthorityId),
     }),
     unsupportedMediaSha256: editCanonicalSha256V1(admission.media),
     unknownReferenceSurfacesSha256: editCanonicalSha256V1({
@@ -1760,7 +1783,8 @@ function capabilityAssessment(
 // provisional zero-contract head is discovery-only & cannot authorize mutation
 export async function discoverEditCapabilityFactsV1(
   bytes: Uint8Array,
-  identity: EditSessionRegistryIdentityV1
+  identity: EditSessionRegistryIdentityV1,
+  semanticAuthorityId: EditSemanticAuthorityIdV1 = 'a0-v1'
 ): Promise<EditRetainedCapabilityFactsV1>
 {
   const preflight = await inspectSemanticEditArtifact(bytes)
@@ -1776,12 +1800,14 @@ export async function discoverEditCapabilityFactsV1(
       `source is not editable: ${preflight.refusal?.code ?? 'preflight failed'}`
     )
   const semanticSourceSha256 = preflight.semanticSourceSha256
-  const profile = buildGroupGCapabilityProfileV1(
+  const profile = buildSemanticAuthorityCapabilityProfileV1(
     capabilityAssessment(
       semanticSourceSha256,
       preflight,
-      identity.pinnedScratchRuntimeSourceSha256
-    )
+      identity.pinnedScratchRuntimeSourceSha256,
+      semanticAuthorityId
+    ),
+    semanticAuthorityId
   )
   const sourceArtifactSha256 = sha256Hex(bytes)
   const changeContractSha256 = ZERO_SHA256
@@ -2395,6 +2421,7 @@ export class EditSessionV1
   readonly #contract: BoundChangeContractV1
   readonly #identity: EditSessionRegistryIdentityV1
   readonly #manifest: EditKernelSessionManifestV1
+  readonly #semanticAuthorityId: EditSemanticAuthorityIdV1
   readonly #revisions: EditKernelRevisionRecordV1[]
   readonly #previews = new Map<string, EditKernelPreviewV1>()
   readonly #checkpoints = new Map<string, EditKernelCheckpointV1>()
@@ -2409,6 +2436,7 @@ export class EditSessionV1
   #state: EditKernelStateV1 = 'active'
   #busyKind: string | null = null
   #handleEpoch = 0
+  #currentInspectionSnapshot: CurrentEditInspectionSnapshotV1 | null = null
   #evaluationState: EditEvaluationStateV1 = 'none'
   readonly #evaluationPorts: EditEvaluationPortsV1 | null
   readonly #certificates: EditRetainedCertificateV1[] = []
@@ -2474,6 +2502,9 @@ export class EditSessionV1
     this.#contract = input.contract
     this.#identity = input.identity
     this.#manifest = input.manifest
+    this.#semanticAuthorityId = retainedEditSemanticAuthorityV1(
+      input.manifest
+    ).semanticAuthorityId
     this.#revisions = [input.initialRevision]
     this.#events = [input.initialEvent]
     this.#reports = [input.initialReport]
@@ -2578,6 +2609,7 @@ export class EditSessionV1
     )
     // the close event is the semantic commit point. From here onward a failed
     // cleanup/report write must stop ordinary admission until recovery closes it.
+    this.#clearCurrentInspectionSnapshot()
     this.#state = 'recovery-required'
     const removed = new Set<string>()
     for (const preview of this.#previews.values())
@@ -3139,6 +3171,114 @@ export class EditSessionV1
     return this.#store.readImmutable(this.#revisions.at(-1)!.candidateKey)
   }
 
+  #clearCurrentInspectionSnapshot(): void
+  {
+    this.#currentInspectionSnapshot = null
+  }
+
+  #advanceHandleEpoch(): void
+  {
+    this.#handleEpoch += 1
+    this.#clearCurrentInspectionSnapshot()
+  }
+
+  async #readVerifiedRevisionBytes(
+    revision: EditKernelRevisionRecordV1
+  ): Promise<{
+    readonly bytes: Uint8Array
+    readonly candidateSha256: string
+  }>
+  {
+    const bytes = await this.#store.readImmutable(revision.candidateKey)
+    const candidateSha256 = sha256Hex(bytes)
+    if (candidateSha256 !== revision.head.candidateSha256)
+    {
+      if (revision === this.#revisions.at(-1))
+        this.#clearCurrentInspectionSnapshot()
+      throw new EditSessionErrorV1(
+        'edit.internal_invariant',
+        'retained revision bytes differ from their candidate identity'
+      )
+    }
+    return { bytes, candidateSha256 }
+  }
+
+  #matchingCurrentInspectionSnapshot(
+    revision: EditKernelRevisionRecordV1,
+    candidateSha256: string,
+    handleEpoch: number
+  ): CurrentEditInspectionSnapshotV1 | null
+  {
+    const snapshot = this.#currentInspectionSnapshot
+    const current = this.#revisions.at(-1)!
+    if (
+      snapshot !== null &&
+      current === revision &&
+      revision.head.revisionId === snapshot.revisionId &&
+      revision.head.revisionNumber === snapshot.revisionNumber &&
+      candidateSha256 === snapshot.candidateSha256 &&
+      handleEpoch === snapshot.handleEpoch &&
+      handleEpoch === this.#handleEpoch
+    )
+      return snapshot
+    if (snapshot !== null) this.#clearCurrentInspectionSnapshot()
+    return null
+  }
+
+  #renderInspectionSnapshot(
+    revision: EditKernelRevisionRecordV1,
+    snapshot: CurrentEditInspectionSnapshotV1,
+    input: {
+      readonly issueHandles: boolean
+      readonly entityKinds?: readonly EditInspectDomainItemV1['entityKind'][]
+    }
+  ): EditInspectDomainResultV1
+  {
+    const requestedEntityKinds =
+      input.entityKinds === undefined ? null : new Set(input.entityKinds)
+    const items = snapshot.items
+      .filter(
+        (prepared) =>
+          requestedEntityKinds === null ||
+          requestedEntityKinds.has(prepared.entityKind)
+      )
+      .map((prepared): EditInspectDomainItemV1 =>
+      {
+        const { lineageSha256, ...item } = prepared
+        const projection = structuredClone(
+          item
+        ) as HandleFreeEditInspectDomainItemV1
+        if (!input.issueHandles) return projection as EditInspectDomainItemV1
+        const binding: EditHandleBindingV1 = {
+          sessionId: this.sessionId,
+          revisionId: revision.head.revisionId,
+          revisionNumber: revision.head.revisionNumber,
+          entityKind: projection.entityKind,
+          entitySubtype: projection.entitySubtype,
+          lineageSha256,
+          semanticLocationSha256: projection.semanticLocationSha256,
+          semanticFingerprintSha256: projection.semanticFingerprintSha256,
+          handleEpoch: snapshot.handleEpoch,
+        }
+        return {
+          ...projection,
+          handle: issueEditHandleV1(binding, this.#handleSecret),
+        } as EditInspectDomainItemV1
+      })
+    const itemEvidence = items.map(({ handle: _handle, ...item }) => item)
+    return {
+      revision: structuredClone(revision.head),
+      items,
+      handlesIssued: input.issueHandles,
+      querySha256: editCanonicalSha256V1({
+        revision: revision.head,
+        issueHandles: input.issueHandles,
+        handleEpoch: input.issueHandles ? snapshot.handleEpoch : null,
+        itemEvidence,
+      }),
+    }
+  }
+
   #capabilitySnapshot(
     nextHead: HeadProjectionV1
   ): ReturnType<typeof buildEditCapabilitySnapshotV1>
@@ -3189,6 +3329,7 @@ export class EditSessionV1
     )
     return {
       sessionId: this.sessionId,
+      ...editSemanticAuthorityBindingV1(this.#semanticAuthorityId),
       sourceBytes: this.#sourceBytes,
       currentBytes: await this.#currentCandidateBytes(),
       semanticSourceSha256: this.semanticSourceSha256,
@@ -3367,7 +3508,8 @@ export class EditSessionV1
       {
         maximumBlockNodes:
           this.#manifest.transactionResourceLimits.describedBlockNodes,
-      }
+      },
+      this.#semanticAuthorityId
     )
     if (
       semanticInspection.metrics.describedBlockNodes >
@@ -3896,7 +4038,7 @@ export class EditSessionV1
     )
     await this.#store.reserveQuota(reservationId, estimatedBytes)
     let headCommitted = false
-    let retainedBytes = 0
+    let retainedBytes: number
     let preparedEvent: EditKernelSemanticEventV1 | null = null
     try
     {
@@ -3968,7 +4110,7 @@ export class EditSessionV1
       this.#assetMaterializationRevisionIds.add(record.head.revisionId)
       this.#revisions.push(record)
       this.#budget = postCommitBudget
-      this.#handleEpoch += 1
+      this.#advanceHandleEpoch()
       const removedPreviewKeys = new Set<string>()
       for (const preview of this.#previews.values())
       {
@@ -4032,7 +4174,7 @@ export class EditSessionV1
       if (this.#revisions.at(-1)?.head.revisionId !== record.head.revisionId)
       {
         this.#revisions.push(record)
-        this.#handleEpoch += 1
+        this.#advanceHandleEpoch()
       }
       if (!this.#assetMaterializationRevisionIds.has(record.head.revisionId))
       {
@@ -4058,7 +4200,9 @@ export class EditSessionV1
               intent:
                 total.intent +
                 inspectSemanticEditBatchV1(
-                  entry.transitionDescriptor.canonicalTransaction
+                  entry.transitionDescriptor.canonicalTransaction,
+                  undefined,
+                  this.#semanticAuthorityId
                 ).metrics.describedBlockNodes,
               impact: total.impact + usage.impact,
             }
@@ -4232,6 +4376,19 @@ export class EditSessionV1
     entityKinds?: readonly EditInspectDomainItemV1['entityKind'][]
   }): Promise<EditInspectDomainResultV1>
   {
+    return this.#inspectRevision(input)
+  }
+
+  async #inspectRevision(
+    input: {
+      revisionNumber?: number
+      revisionId?: string
+      issueHandles: boolean
+      entityKinds?: readonly EditInspectDomainItemV1['entityKind'][]
+    },
+    preparedCurrent?: PreparedCurrentEditInspectionV1
+  ): Promise<EditInspectDomainResultV1>
+  {
     if (
       (input.revisionNumber === undefined) !==
       (input.revisionId === undefined)
@@ -4259,6 +4416,7 @@ export class EditSessionV1
         }
       )
     const historical = revision !== this.#revisions.at(-1)
+    const cacheEligible = !historical && this.#state === 'active'
     if (historical && input.issueHandles)
       throw new EditSessionErrorV1(
         'edit.stale_revision',
@@ -4269,46 +4427,78 @@ export class EditSessionV1
           currentRevisionId: this.head.revisionId,
         }
       )
-    const bytes = await this.#store.readImmutable(revision.candidateKey)
-    const preflight = await inspectSemanticEditArtifact(bytes)
-    if (!preflight.ok || !preflight.project)
+    const handleEpoch = this.#handleEpoch
+    const preparedMatches =
+      !historical &&
+      preparedCurrent !== undefined &&
+      preparedCurrent.revisionId === revision.head.revisionId &&
+      preparedCurrent.revisionNumber === revision.head.revisionNumber &&
+      preparedCurrent.candidateSha256 === revision.head.candidateSha256 &&
+      preparedCurrent.handleEpoch === handleEpoch
+    if (preparedCurrent !== undefined && !preparedMatches)
       throw new EditSessionErrorV1(
-        'edit.internal_invariant',
-        'retained revision no longer passes semantic preflight'
+        'edit.stale_revision',
+        'current revision changed during prepared inspection',
+        false,
+        {
+          expectedRevisionId: preparedCurrent.revisionId,
+          currentRevisionId: this.head.revisionId,
+        }
       )
+    const verified = preparedMatches
+      ? {
+          bytes: preparedCurrent.bytes,
+          candidateSha256: preparedCurrent.candidateSha256,
+        }
+      : await this.#readVerifiedRevisionBytes(revision)
+    if (
+      !historical &&
+      (revision !== this.#revisions.at(-1) || handleEpoch !== this.#handleEpoch)
+    )
+      throw new EditSessionErrorV1(
+        'edit.stale_revision',
+        'current revision changed during inspection',
+        false,
+        {
+          expectedRevisionId: revision.head.revisionId,
+          currentRevisionId: this.head.revisionId,
+        }
+      )
+    if (cacheEligible)
+    {
+      const snapshot = this.#matchingCurrentInspectionSnapshot(
+        revision,
+        verified.candidateSha256,
+        handleEpoch
+      )
+      if (snapshot !== null)
+        return this.#renderInspectionSnapshot(revision, snapshot, input)
+    }
+    let project: ProjectIR
+    if (preparedMatches) project = preparedCurrent.project
+    else
+    {
+      const preflight = await inspectSemanticEditArtifact(verified.bytes)
+      if (!preflight.ok || !preflight.project)
+        throw new EditSessionErrorV1(
+          'edit.internal_invariant',
+          'retained revision no longer passes semantic preflight'
+        )
+      project = preflight.project
+    }
     const activeLineage = validateSemanticLineageSnapshot(
       revision.activeLineage as SemanticLineageSnapshot
     )
-    const issueHandle = (
-      entityKind: EditInspectDomainItemV1['entityKind'],
-      entitySubtype: string,
-      lineageSha256: string,
-      semanticLocationSha256: string,
-      semanticFingerprintSha256: string
-    ): { readonly handle: string } | Record<string, never> =>
-    {
-      if (!input.issueHandles) return {}
-      const binding: EditHandleBindingV1 = {
-        sessionId: this.sessionId,
-        revisionId: revision.head.revisionId,
-        revisionNumber: revision.head.revisionNumber,
-        entityKind,
-        entitySubtype,
-        lineageSha256,
-        semanticLocationSha256,
-        semanticFingerprintSha256,
-        handleEpoch: this.#handleEpoch,
-      }
-      return { handle: issueEditHandleV1(binding, this.#handleSecret) }
-    }
     const requestedEntityKinds =
       input.entityKinds === undefined ? null : new Set(input.entityKinds)
     const includesEntityKind = (
       entityKind: EditInspectDomainItemV1['entityKind']
     ): boolean =>
-      requestedEntityKinds === null || requestedEntityKinds.has(entityKind)
-    const targetEvidence = targetEntityEvidenceSetV1(preflight.project.json)
-    const targetItems: readonly EditInspectTargetDomainItemV1[] =
+      !historical ||
+      requestedEntityKinds === null ||
+      requestedEntityKinds.has(entityKind)
+    const targetEvidence = targetEntityEvidenceSetV1(project.json)
+    const targetItems: readonly PreparedEditInspectionItemV1[] =
       includesEntityKind('target')
         ? targetEvidence.map((evidence) =>
           {
@@ -4330,26 +4520,20 @@ export class EditSessionV1
               semanticLocationSha256: evidence.semanticLocationSha256,
               semanticFingerprintSha256: evidence.semanticFingerprintSha256,
               contextFingerprintSha256: evidence.contextFingerprintSha256,
-              ...issueHandle(
-                'target',
-                evidence.targetKind,
-                inspectionTargetLineageV1(
-                  preflight.project!,
-                  activeLineage,
-                  evidence.targetIndex
-                ).lineageId,
-                evidence.semanticLocationSha256,
-                evidence.semanticFingerprintSha256
-              ),
+              lineageSha256: inspectionTargetLineageV1(
+                project,
+                activeLineage,
+                evidence.targetIndex
+              ).lineageId,
             }
           })
         : []
     const declarationEvidence =
       includesEntityKind('declaration') ||
       includesEntityKind('topLevelPrimitive')
-        ? declarationEntityEvidenceSetV1(preflight.project)
+        ? declarationEntityEvidenceSetV1(project)
         : []
-    const declarationItems: readonly EditInspectDeclarationDomainItemV1[] =
+    const declarationItems: readonly PreparedEditInspectionItemV1[] =
       includesEntityKind('declaration')
         ? declarationEvidence.map((evidence) =>
           {
@@ -4371,30 +4555,24 @@ export class EditSessionV1
               semanticLocationSha256: evidence.semanticLocationSha256,
               semanticFingerprintSha256: evidence.semanticFingerprintSha256,
               contextFingerprintSha256: evidence.contextFingerprintSha256,
-              ...issueHandle(
+              lineageSha256: inspectionOwnedEntityLineageV1(
+                project,
+                activeLineage,
                 'declaration',
-                evidence.declarationKind,
-                inspectionOwnedEntityLineageV1(
-                  preflight.project!,
-                  activeLineage,
-                  'declaration',
-                  evidence.targetIndex,
-                  `${evidence.declarationKind}:${evidence.declarationId}`
-                ).lineageId,
-                evidence.semanticLocationSha256,
-                evidence.semanticFingerprintSha256
-              ),
+                evidence.targetIndex,
+                `${evidence.declarationKind}:${evidence.declarationId}`
+              ).lineageId,
             }
           })
         : []
     const procedureEvidence = includesEntityKind('procedure')
-      ? procedureEntityEvidenceSetV1(preflight.project)
+      ? procedureEntityEvidenceSetV1(project)
       : []
-    const procedureItems: readonly EditInspectProcedureDomainItemV1[] =
+    const procedureItems: readonly PreparedEditInspectionItemV1[] =
       procedureEvidence.map((evidence) =>
       {
         const targetLineage = inspectionTargetLineageV1(
-          preflight.project!,
+          project,
           activeLineage,
           evidence.targetIndex
         )
@@ -4424,21 +4602,15 @@ export class EditSessionV1
           semanticLocationSha256: evidence.semanticLocationSha256,
           semanticFingerprintSha256: evidence.semanticFingerprintSha256,
           contextFingerprintSha256: evidence.contextFingerprintSha256,
-          ...issueHandle(
-            'procedure',
-            'unspecialized',
-            procedureLineage.lineageId,
-            evidence.semanticLocationSha256,
-            evidence.semanticFingerprintSha256
-          ),
+          lineageSha256: procedureLineage.lineageId,
         }
       })
-    const parameterItems: readonly EditInspectParameterDomainItemV1[] =
+    const parameterItems: readonly PreparedEditInspectionItemV1[] =
       includesEntityKind('parameter')
-        ? parameterEntityEvidenceSetV1(preflight.project).map((evidence) =>
+        ? parameterEntityEvidenceSetV1(project).map((evidence) =>
           {
             const targetLineage = inspectionTargetLineageV1(
-              preflight.project!,
+              project,
               activeLineage,
               evidence.targetIndex
             )
@@ -4475,13 +4647,7 @@ export class EditSessionV1
               semanticLocationSha256: evidence.semanticLocationSha256,
               semanticFingerprintSha256: evidence.semanticFingerprintSha256,
               contextFingerprintSha256: evidence.contextFingerprintSha256,
-              ...issueHandle(
-                'parameter',
-                'unspecialized',
-                parameterLineage.lineageId,
-                evidence.semanticLocationSha256,
-                evidence.semanticFingerprintSha256
-              ),
+              lineageSha256: parameterLineage.lineageId,
             }
           })
         : []
@@ -4489,9 +4655,9 @@ export class EditSessionV1
       includesEntityKind('script') ||
       includesEntityKind('block') ||
       includesEntityKind('comment')
-        ? scriptEntityEvidenceSetV1(preflight.project)
+        ? scriptEntityEvidenceSetV1(project)
         : []
-    const scriptItems: readonly EditInspectScriptDomainItemV1[] =
+    const scriptItems: readonly PreparedEditInspectionItemV1[] =
       includesEntityKind('script')
         ? scriptEvidence.map((evidence) =>
           {
@@ -4511,27 +4677,21 @@ export class EditSessionV1
               semanticLocationSha256: evidence.semanticLocationSha256,
               semanticFingerprintSha256: evidence.semanticFingerprintSha256,
               contextFingerprintSha256: evidence.contextFingerprintSha256,
-              ...issueHandle(
+              lineageSha256: inspectionOwnedEntityLineageV1(
+                project,
+                activeLineage,
                 'script',
-                'unspecialized',
-                inspectionOwnedEntityLineageV1(
-                  preflight.project!,
-                  activeLineage,
-                  'script',
-                  evidence.targetIndex,
-                  `script:${evidence.topBlockId}`
-                ).lineageId,
-                evidence.semanticLocationSha256,
-                evidence.semanticFingerprintSha256
-              ),
+                evidence.targetIndex,
+                `script:${evidence.topBlockId}`
+              ).lineageId,
             }
           })
         : []
     const blockEvidence =
       includesEntityKind('block') || includesEntityKind('comment')
-        ? blockEntityEvidenceSetV1(preflight.project, undefined, scriptEvidence)
+        ? blockEntityEvidenceSetV1(project, undefined, scriptEvidence)
         : []
-    const blockItems: readonly EditInspectBlockDomainItemV1[] =
+    const blockItems: readonly PreparedEditInspectionItemV1[] =
       includesEntityKind('block')
         ? blockEvidence.map((evidence) =>
           {
@@ -4551,24 +4711,18 @@ export class EditSessionV1
               semanticLocationSha256: evidence.semanticLocationSha256,
               semanticFingerprintSha256: evidence.semanticFingerprintSha256,
               contextFingerprintSha256: evidence.contextFingerprintSha256,
-              ...issueHandle(
+              lineageSha256: inspectionOwnedEntityLineageV1(
+                project,
+                activeLineage,
                 'block',
-                'unspecialized',
-                inspectionOwnedEntityLineageV1(
-                  preflight.project!,
-                  activeLineage,
-                  'block',
-                  evidence.targetIndex,
-                  `block:${evidence.blockId}`
-                ).lineageId,
-                evidence.semanticLocationSha256,
-                evidence.semanticFingerprintSha256
-              ),
+                evidence.targetIndex,
+                `block:${evidence.blockId}`
+              ).lineageId,
             }
           })
         : []
     const primitiveCollections = includesEntityKind('topLevelPrimitive')
-      ? preflight.project.json.targets.map((target, targetIndex) =>
+      ? project.json.targets.map((target, targetIndex) =>
           Object.entries(target.blocks).flatMap(([blockId, raw]) =>
             {
             if (!Array.isArray(raw) || (raw[0] !== 12 && raw[0] !== 13))
@@ -4661,7 +4815,7 @@ export class EditSessionV1
           })
         )
       : []
-    const primitiveItems: readonly EditInspectTopLevelPrimitiveDomainItemV1[] =
+    const primitiveItems: readonly PreparedEditInspectionItemV1[] =
       primitiveCollections.flatMap((collection) =>
       {
         const collectionProjection = collection.map((entry) => ({
@@ -4693,70 +4847,56 @@ export class EditSessionV1
             semanticLocationSha256: evidence.semanticLocationSha256,
             semanticFingerprintSha256: evidence.semanticFingerprintSha256,
             contextFingerprintSha256,
-            ...issueHandle(
-              'topLevelPrimitive',
-              evidence.primitiveKind,
-              inspectionOwnedEntityLineageV1(
-                preflight.project!,
-                activeLineage,
-                'block',
-                evidence.targetIndex,
-                `block:${evidence.blockId}`
-              ).lineageId,
-              evidence.semanticLocationSha256,
-              evidence.semanticFingerprintSha256
-            ),
+            lineageSha256: inspectionOwnedEntityLineageV1(
+              project,
+              activeLineage,
+              'block',
+              evidence.targetIndex,
+              `block:${evidence.blockId}`
+            ).lineageId,
           }
         })
       })
-    const commentItems: readonly EditInspectCommentDomainItemV1[] =
+    const commentItems: readonly PreparedEditInspectionItemV1[] =
       includesEntityKind('comment')
-        ? commentEntityEvidenceSetV1(
-            preflight.project,
-            undefined,
-            blockEvidence
-          ).map((evidence) =>
-            {
-            const location = commentBoundedLocationProjectionV1(
-              evidence,
-              inspectionLocationArtifactIdV1(
-                'comment',
-                evidence.semanticLocationSha256
+        ? commentEntityEvidenceSetV1(project, undefined, blockEvidence).map(
+            (evidence) =>
+              {
+              const location = commentBoundedLocationProjectionV1(
+                evidence,
+                inspectionLocationArtifactIdV1(
+                  'comment',
+                  evidence.semanticLocationSha256
+                )
               )
-            )
-            return {
-              entityKind: 'comment',
-              entitySubtype: 'unspecialized',
-              location,
-              topologyStatus: evidence.topologyStatus,
-              attachmentStatus: evidence.location.attachedBlock
-                ? 'attached'
-                : 'detached',
-              semanticLocationSha256: evidence.semanticLocationSha256,
-              semanticFingerprintSha256: evidence.semanticFingerprintSha256,
-              contextFingerprintSha256: evidence.contextFingerprintSha256,
-              ...issueHandle(
-                'comment',
-                'unspecialized',
-                inspectionOwnedEntityLineageV1(
-                  preflight.project!,
+              return {
+                entityKind: 'comment',
+                entitySubtype: 'unspecialized',
+                location,
+                topologyStatus: evidence.topologyStatus,
+                attachmentStatus: evidence.location.attachedBlock
+                  ? 'attached'
+                  : 'detached',
+                semanticLocationSha256: evidence.semanticLocationSha256,
+                semanticFingerprintSha256: evidence.semanticFingerprintSha256,
+                contextFingerprintSha256: evidence.contextFingerprintSha256,
+                lineageSha256: inspectionOwnedEntityLineageV1(
+                  project,
                   activeLineage,
                   'comment',
                   evidence.targetIndex,
                   `comment:${evidence.commentId}`
                 ).lineageId,
-                evidence.semanticLocationSha256,
-                evidence.semanticFingerprintSha256
-              ),
+              }
             }
-          })
+          )
         : []
-    const mediaItems: readonly EditInspectMediaDomainItemV1[] =
+    const mediaItems: readonly PreparedEditInspectionItemV1[] =
       includesEntityKind('media')
-        ? mediaRecordEntityEvidenceSetV1(preflight.project).map((evidence) =>
+        ? mediaRecordEntityEvidenceSetV1(project).map((evidence) =>
           {
             const targetLineage = inspectionTargetLineageV1(
-              preflight.project!,
+              project,
               activeLineage,
               evidence.targetIndex
             )
@@ -4773,24 +4913,18 @@ export class EditSessionV1
               semanticLocationSha256: evidence.semanticLocationSha256,
               semanticFingerprintSha256: evidence.semanticFingerprintSha256,
               contextFingerprintSha256: evidence.contextFingerprintSha256,
-              ...issueHandle(
-                'media',
+              lineageSha256: inspectionMediaLineageV1(
+                activeLineage,
+                targetLineage.lineageId,
                 evidence.mediaKind,
-                inspectionMediaLineageV1(
-                  activeLineage,
-                  targetLineage.lineageId,
-                  evidence.mediaKind,
-                  evidence.assetId,
-                  evidence.dataFormat,
-                  evidence.ordinal
-                ).lineageId,
-                evidence.semanticLocationSha256,
-                evidence.semanticFingerprintSha256
-              ),
+                evidence.assetId,
+                evidence.dataFormat,
+                evidence.ordinal
+              ).lineageId,
             }
           })
         : []
-    const items: readonly EditInspectDomainItemV1[] = [
+    const items: readonly PreparedEditInspectionItemV1[] = [
       ...targetItems,
       ...declarationItems,
       ...procedureItems,
@@ -4801,18 +4935,32 @@ export class EditSessionV1
       ...commentItems,
       ...mediaItems,
     ]
-    const itemEvidence = items.map(({ handle: _handle, ...item }) => item)
-    return {
-      revision: structuredClone(revision.head),
-      items,
-      handlesIssued: input.issueHandles,
-      querySha256: editCanonicalSha256V1({
-        revision: revision.head,
-        issueHandles: input.issueHandles,
-        handleEpoch: input.issueHandles ? this.#handleEpoch : null,
-        itemEvidence,
-      }),
+    const snapshot: CurrentEditInspectionSnapshotV1 = Object.freeze({
+      revisionId: revision.head.revisionId,
+      revisionNumber: revision.head.revisionNumber,
+      candidateSha256: verified.candidateSha256,
+      handleEpoch,
+      items: Object.freeze(items.map((item) => Object.freeze(item))),
+    })
+    if (!historical)
+    {
+      if (
+        revision !== this.#revisions.at(-1) ||
+        handleEpoch !== this.#handleEpoch
+      )
+        throw new EditSessionErrorV1(
+          'edit.stale_revision',
+          'current revision changed during inspection',
+          false,
+          {
+            expectedRevisionId: revision.head.revisionId,
+            currentRevisionId: this.head.revisionId,
+          }
+        )
+      if (cacheEligible && this.#state === 'active')
+        this.#currentInspectionSnapshot = snapshot
     }
+    return this.#renderInspectionSnapshot(revision, snapshot, input)
   }
 
   // source-media admission resolves against retained current-revision bytes;
@@ -4823,14 +4971,25 @@ export class EditSessionV1
   }): Promise<Extract<EditAssetAdmitDomainSourceV1, { kind: 'sourceMedia' }>>
   {
     const current = this.#revisions.at(-1)!
-    const bytes = await this.#store.readImmutable(current.candidateKey)
-    const preflight = await inspectSemanticEditArtifact(bytes)
+    const handleEpoch = this.#handleEpoch
+    const verified = await this.#readVerifiedRevisionBytes(current)
+    const preflight = await inspectSemanticEditArtifact(verified.bytes)
     if (!preflight.ok || !preflight.project)
       throw new EditSessionErrorV1(
         'edit.internal_invariant',
         'retained revision no longer passes semantic preflight'
       )
-    const inspection = await this.inspect({ issueHandles: true })
+    const inspection = await this.#inspectRevision(
+      { issueHandles: true },
+      {
+        revisionId: current.head.revisionId,
+        revisionNumber: current.head.revisionNumber,
+        candidateSha256: verified.candidateSha256,
+        handleEpoch,
+        bytes: verified.bytes,
+        project: preflight.project,
+      }
+    )
     const handleIndex = <T extends { readonly semanticLocationSha256: string }>(
       token: string,
       entityKind: EditInspectDomainItemV1['entityKind'],
@@ -4908,6 +5067,9 @@ export class EditSessionV1
         await this.#store.readImmutable(this.#layout.capabilityProfile)
       )
     ) as SemanticEditCapabilityProfileEnvelopeV1
+    if (!editCapabilityAuthorityMatchesV1(profile, this.#manifest))
+      throw new EditSessionErrorV1('edit.stale_capability_profile',
+        'retained capability profile differs from its semantic authority')
     const revision = this.#revisions.at(-1)!
     const head = structuredClone(revision.head)
     const snapshot = structuredClone(
@@ -7698,7 +7860,6 @@ export class EditSessionV1
           }
           if (retainedPreparation !== null)
           {
-            preparationRetained = true
             this.#evaluationSequence = reservedEvaluationSequence + 1
             if (
               retainedPreparation.byteLength === preparationBytes.byteLength &&
@@ -9164,6 +9325,7 @@ export class EditSessionV1
   // returned, it is re-proven from the names themselves during recovery
   async #enterPublicationRecoveryV1(code: string): Promise<void>
   {
+    this.#clearCurrentInspectionSnapshot()
     this.#state = 'recovery-required'
     const pending = this.#pendingPublication
     if (pending !== null)
@@ -9233,6 +9395,7 @@ export class EditSessionV1
         pending.invocation
       ))
     pending.publishedEvent = event
+    this.#clearCurrentInspectionSnapshot()
     this.#state = 'closed-abandoned'
     const retained = await this.#retainReport(
       this.#buildReport('closed-abandoned'),
@@ -9542,6 +9705,7 @@ export class EditSessionV1
     // a successful export is terminal & singular; it does not implicitly
     // rewrite the candidate head
     this.#pendingPublication = null
+    this.#clearCurrentInspectionSnapshot()
     this.#state = 'closed-exported'
     return result
   }
@@ -9580,6 +9744,7 @@ export class EditSessionV1
         'edit.recovery_required',
         'only the originating recovery authority may roll this publication forward'
       )
+    this.#clearCurrentInspectionSnapshot()
     this.#busyKind = 'export-recovery'
     try
     {
@@ -9931,6 +10096,7 @@ export class EditSessionV1
           }),
         }
         await this.#finishAttempt(attempt.namespaceSha256, result, 'completed')
+        this.#clearCurrentInspectionSnapshot()
         this.#state = 'closed-unexported'
         return result
       }
@@ -9998,6 +10164,7 @@ export class EditSessionRegistryV1
   readonly #resourceCatalogue: EditRetainedResourceCataloguePortV1 | undefined
   readonly #contracts: EditChangeContractRegistryV1
   readonly #identity: EditSessionRegistryIdentityV1
+  readonly #semanticAuthorityId: EditSemanticAuthorityIdV1
   readonly #clock: EditClockPort
   readonly #entropy: EditEntropyPort
   readonly #handleSecret: Uint8Array
@@ -10044,6 +10211,9 @@ export class EditSessionRegistryV1
     this.#resourceCatalogue = options.resourceCatalogue
     this.#contracts = options.changeContracts
     this.#identity = options.identity
+    this.#semanticAuthorityId = resolveEditSemanticAuthorityV1(
+      options.semanticAuthorityId
+    ).semanticAuthorityId
     this.#clock = options.clock
     this.#entropy = options.entropy
     this.#handleSecret = new Uint8Array(options.handleSecret)
@@ -10927,13 +11097,17 @@ export class EditSessionRegistryV1
     const assessment = capabilityAssessment(
       semanticSourceSha256,
       preflight,
-      this.#identity.pinnedScratchRuntimeSourceSha256
+      this.#identity.pinnedScratchRuntimeSourceSha256,
+      this.#semanticAuthorityId
     )
     const runnerAvailability = evaluationRunnerAvailabilityV1(
       this.#evaluationPorts,
       bound.registration.semanticContract
     )
-    const profile = buildGroupGCapabilityProfileV1(assessment)
+    const profile = buildSemanticAuthorityCapabilityProfileV1(
+      assessment,
+      this.#semanticAuthorityId
+    )
     const openedAtEpochMs = this.#clock.nowEpochMs()
     const sessionId = editOpaqueIdV1(
       'edit-session',
@@ -11011,6 +11185,7 @@ export class EditSessionRegistryV1
     const boundChangeContractBytes = editCanonicalBytesV1(bound)
     const manifest: EditKernelSessionManifestV1 = {
       schemaVersion: 1,
+      ...editSemanticAuthorityBindingV1(this.#semanticAuthorityId),
       sessionId,
       sessionKey,
       state: 'active',

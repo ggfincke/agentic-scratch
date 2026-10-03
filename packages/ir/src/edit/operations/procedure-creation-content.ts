@@ -3,6 +3,7 @@
 
 import type {
   ContractEntityBindingV1,
+  BlockRefV1,
   ContractEntityRefV1,
   SemanticEditOperationProcedureAddV1,
   SemanticEditOperationProcedureRemoveV1,
@@ -17,7 +18,11 @@ import {
   type SemanticCreationNormalizationContextV1,
 } from './script-block-creation-content.js'
 import { semanticHashV1 } from '../contracts/hash-domains.js'
-import { canonicalProcedureSignatureV1 } from './procedure-operations.js'
+import {
+  canonicalProcedureSignatureV1,
+  standardProcedureSignatureSha256V2,
+} from './procedure-operations.js'
+import type { StandardProcedureScopeV2 } from '../standard-authoring/index.js'
 
 import type { Without } from '../support/internal-types.js'
 
@@ -60,6 +65,9 @@ interface ProcedureCreationContentInputV1 extends SemanticCreationNormalizationC
   readonly descriptor: ProcedureCreationBindingDescriptorV1
   readonly resultRole: ProcedureCreationResultRoleV1
   readonly selectedSource: ProcedureSelectedCreationSourceV1
+  readonly procedureScopeForCall?: (
+    reference: BlockRefV1
+  ) => StandardProcedureScopeV2 | undefined
 }
 
 function invalidCreationContent(message: string): never
@@ -315,6 +323,30 @@ function signatureContent(input: ProcedureCreationContentInputV1): unknown
   }
 }
 
+function procedureBodyContext(
+  input: ProcedureCreationContentInputV1
+): SemanticCreationNormalizationContextV1
+{
+  if (
+    input.semanticAuthorityId !== 'standard-v2' ||
+    input.operation.kind !== 'procedure.add'
+  )
+    return input
+  const decoded = canonicalProcedureSignatureV1(input.operation.signature)
+  return {
+    ...input,
+    procedureScope: {
+      proccode: decoded.proccode,
+      warp: decoded.warp,
+      signatureSha256: standardProcedureSignatureSha256V2(decoded),
+      parameters: decoded.parameters.map((parameter) => ({
+        ...parameter,
+        argumentId: parameter.localKey,
+      })),
+    },
+  }
+}
+
 // an authored block alias may live in the added body, in a replaced call
 // argument, or in the single call-argument value, depending on the operation
 function aliasContent(
@@ -327,25 +359,39 @@ function aliasContent(
   {
     if (operation.body === undefined)
       return invalidCreationContent('procedure add has no authored body')
-    return normalizedAlias(input, operation.body, alias)
+    return normalizedAlias(procedureBodyContext(input), operation.body, alias)
   }
   if (operation.kind === 'procedure.setCallArgument')
     return normalizedAlias(input, operation.value, alias)
   if (operation.kind === 'procedure.updateSignature')
   {
-    const authored: unknown[] = []
+    const authored: Array<{
+      readonly value: unknown
+      readonly scope?: StandardProcedureScopeV2
+    }> = []
     for (const call of operation.callSites)
       for (const argument of call.arguments)
         if (
           argument.source.kind === 'replaceParameter' ||
           argument.source.kind === 'initializeNewParameter'
         )
-          authored.push(argument.source.value)
-    const matches = authored.flatMap((value) =>
+          authored.push({
+            value: argument.source.value,
+            scope: input.procedureScopeForCall?.(call.call),
+          })
+    const matches = authored.flatMap(({ value, scope }) =>
     {
       try
       {
-        return [normalizedAlias(input, value, alias)]
+        return [
+          normalizedAlias(
+            input.semanticAuthorityId === 'standard-v2'
+              ? { ...input, procedureScope: scope }
+              : input,
+            value,
+            alias
+          ),
+        ]
       }
       catch
       {
@@ -376,7 +422,11 @@ function resultInitialContent(input: ProcedureCreationContentInputV1): unknown
       body:
         operation.body === undefined
           ? null
-          : normalizeSemanticSequence(input, operation.body, '/procedure/body'),
+          : normalizeSemanticSequence(
+              procedureBodyContext(input),
+              operation.body,
+              '/procedure/body'
+            ),
     }
   }
   if (resultRole.name === 'parameter')

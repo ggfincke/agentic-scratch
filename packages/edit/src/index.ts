@@ -19,6 +19,7 @@ import type {
   OperationResultSummaryV1,
   RefusalCode,
   StandaloneMediaRefV1,
+  SemanticAuthoringAuthorityIdV2,
 } from '@scratch-agent/ir/edit'
 import { parseEditToolInputV1 } from '@scratch-agent/ir/edit'
 
@@ -59,16 +60,24 @@ import {
 import type { EditSourceIntakeV1 } from './session/source-intake.js'
 import type { HostInvocationContextV1 } from './transaction/ports.js'
 import { ProductionTransactionExecutorV1 } from './transaction/production-transaction.js'
+import { retainedEditSemanticAuthorityV1 } from './authority/semantic-authority.js'
 
 export {
   PHASE_8_EDIT_LIMIT_AUTHORITY_V1,
   semanticAuthorityManifestV1,
 } from '@scratch-agent/ir/edit'
-export type { RunnerAvailabilityV1 } from '@scratch-agent/ir/edit'
+export type {
+  RunnerAvailabilityV1,
+  SemanticAuthoringAuthorityIdV2,
+} from '@scratch-agent/ir/edit'
 
 export * from './replay/replay-run.js'
+export * from './authority/extension-metadata.js'
 
-export { editCanonicalSha256V1 } from './support/canonical.js'
+export {
+  editCanonicalSha256V1,
+  exactRevisionFromHeadV1,
+} from './support/canonical.js'
 
 export { editOperationOccurrenceIdV1 } from './lineage/cumulative-attribution.js'
 
@@ -103,9 +112,7 @@ export {
   buildEditCapabilitySnapshotV1,
   buildGroupGCapabilityProfileV1,
 } from './contracts/capabilities.js'
-export type {
-  MediaTargetCapabilityProfileInputV1,
-} from './contracts/capabilities.js'
+export type { MediaTargetCapabilityProfileInputV1 } from './contracts/capabilities.js'
 
 export type { EditOperationPlanningChoiceSlotV1 } from './transaction/transaction.js'
 
@@ -115,9 +122,7 @@ export type {
   RetainedEditSessionInventoryV1,
 } from './session/retained-session-inventory.js'
 export { recoverRetainedEditSessionsV1 } from './session/retained-session-recovery.js'
-export type {
-  RecoveredRetainedEditAttemptV1,
-} from './session/retained-session-recovery.js'
+export type { RecoveredRetainedEditAttemptV1 } from './session/retained-session-recovery.js'
 
 export {
   CHANGE_CONTRACT_REGISTRATION_LIMITS_V1,
@@ -154,8 +159,6 @@ export {
 } from './evaluation/evaluation-ports.js'
 
 export { ProductionEditDeterministicEvaluationPortV1 } from './evaluation/production-evaluation.js'
-export type {
-} from './evaluation/production-evaluation.js'
 export { structuralObjectiveObservationsV1 } from './evaluation/evaluation-structural.js'
 export type {
   EditDeterministicEvaluationPort,
@@ -187,11 +190,7 @@ export type {
   EditRetainedCertificateV1,
 } from './evaluation/evaluation-certificate.js'
 
-export {
-  resolvePlannedNextIntentV1,
-} from './transaction/planning.js'
-export type {
-} from './transaction/planning.js'
+export { resolvePlannedNextIntentV1 } from './transaction/planning.js'
 
 export {
   admittedEditAssetV1,
@@ -218,8 +217,6 @@ export {
   GREENFIELD_TEMPLATE_VERSION_V1,
   PINNED_GREENFIELD_TEMPLATE_ARTIFACT_SHA256_V1,
   templateBackingIdentitiesV1,
-} from './assets/greenfield-template.js'
-export type {
 } from './assets/greenfield-template.js'
 
 export {
@@ -563,10 +560,11 @@ class EditRequestRefusalErrorV1 extends TypeError
 
 function exactToolRequest<Name extends EditToolName>(
   tool: Name,
-  request: EditToolRequestForV1<Name>
+  request: EditToolRequestForV1<Name>,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): EditToolRequestForV1<Name>
 {
-  const parsed = parseEditToolInputV1(tool, request)
+  const parsed = parseEditToolInputV1(tool, request, authorityId)
   if (!parsed.ok)
   {
     throw new EditRequestRefusalErrorV1(
@@ -606,7 +604,10 @@ class EditSessionLifecycleFacadeV1 implements EditSessionLifecycleV1
 {
   readonly #session: EditSessionV1
 
-  constructor(session: EditSessionV1)
+  constructor(
+    session: EditSessionV1,
+    private readonly authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
+  )
   {
     this.#session = session
   }
@@ -745,7 +746,7 @@ class EditSessionLifecycleFacadeV1 implements EditSessionLifecycleV1
     invocation: HostInvocationContextV1
   ): Promise<EditPreviewResultV1>
   {
-    const exact = exactToolRequest('edit_preview', request)
+    const exact = exactToolRequest('edit_preview', request, this.authorityId)
     this.#assertSession(exact.sessionId, 'edit_preview')
     const result = await this.#session.preview(
       {
@@ -941,14 +942,25 @@ class EditSessionRegistryLifecycleFacadeV1 implements EditSessionRegistryLifecyc
 
   session(sessionId: string): EditSessionLifecycleV1
   {
-    return new EditSessionLifecycleFacadeV1(this.#registry.session(sessionId))
+    const session = this.#registry.session(sessionId)
+    return new EditSessionLifecycleFacadeV1(
+      session,
+      retainedEditSemanticAuthorityV1(session.manifest).semanticAuthorityId
+    )
   }
 
   sessions(): readonly EditSessionLifecycleV1[]
   {
     return this.#registry
       .sessions()
-      .map((session) => new EditSessionLifecycleFacadeV1(session))
+      .map(
+        (session) =>
+          new EditSessionLifecycleFacadeV1(
+            session,
+            retainedEditSemanticAuthorityV1(session.manifest)
+              .semanticAuthorityId
+          )
+      )
   }
 }
 
@@ -1002,3 +1014,17 @@ export function replayEditSessionV1(
     transactionExecutor: new ProductionTransactionExecutorV1(),
   })
 }
+
+export {
+  STANDARD_AUTHORING_CATALOG_EVIDENCE_V2,
+  STANDARD_AUTHORING_DESCRIPTORS_V2,
+  STANDARD_AUTHORING_EXCLUSIONS_V2,
+  STANDARD_PROCEDURE_OPCODES_V2,
+  PINNED_NAME_SEMANTICS_CORE_OPCODES_V1,
+} from '@scratch-agent/ir/edit'
+export * from './authority/semantic-authority.js'
+export {
+  standardAuthoringToolOutputSchemaModelV2,
+  standardAuthoringToolReceiptFreeResultSchemaModelV2,
+  standardAuthoringSchemaOverlaySha256V2,
+} from '@scratch-agent/ir/edit'

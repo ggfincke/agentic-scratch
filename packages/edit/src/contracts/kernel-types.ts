@@ -16,6 +16,7 @@ import type {
 import type { EditRuntimeProjectionAuthorizationsV1 } from '@scratch-agent/eval'
 
 import type { EditSourceProvenanceV1 } from '../session/source-intake.js'
+import type { EditSemanticAuthorityBindingV1 } from '../authority/semantic-authority.js'
 
 export type EditKernelStateV1 =
   | 'opening'
@@ -214,7 +215,7 @@ export interface EditKernelReportV1
   generatedAtEpochMs: number
 }
 
-export interface EditKernelSessionManifestV1
+export interface EditKernelSessionManifestV1 extends EditSemanticAuthorityBindingV1
 {
   schemaVersion: 1
   sessionId: string

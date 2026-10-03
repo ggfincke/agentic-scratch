@@ -289,6 +289,35 @@ export function futureBindingKeySha256V1(
   })
 }
 
+export function realizedFutureBindingKeysForLineageV1(
+  changeContractSha256: string,
+  bindings: readonly ContractEntityBindingV1[],
+  ledger: FutureBindingLedgerV1,
+  lineageId: string
+): readonly string[]
+{
+  return Object.freeze(
+    [
+      ...new Set(
+        bindings.flatMap((binding) =>
+          binding.bindingKind === 'future' &&
+          ledger.realizations.some(
+            (realization) =>
+              realization.resultLineageId === lineageId &&
+              realization.bindingKeySha256 ===
+                futureBindingKeySha256V1(
+                  changeContractSha256,
+                  binding.bindingKey
+                )
+          )
+            ? [binding.bindingKey]
+            : []
+        )
+      ),
+    ].sort()
+  )
+}
+
 export function futureBindingDescriptorSha256V1(
   binding: FutureContractBindingV1
 ): string

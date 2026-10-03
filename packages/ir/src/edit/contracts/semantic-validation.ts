@@ -28,6 +28,7 @@ import {
   PROCEDURE_PARAMETER_ENCODING_BY_TYPE_V1,
   type ProcedureParameterTypeV1,
 } from './procedure-parameter-catalog.js'
+import { standardProcedureArgumentShapeFitsV2 } from '../standard-authoring/connection-policy.js'
 
 const UTF8 = new TextEncoder()
 
@@ -216,6 +217,13 @@ type BlockContext = 'any' | 'statement' | 'reporter' | 'boolean' | 'eventHat'
 // corpus uses %n heavily & canonicalizing it to %s would rewrite the proccode
 type ProcedureParameterType = ProcedureParameterTypeV1
 
+import type { SemanticAuthoringAuthorityIdV2 } from './authority-selection.js'
+import {
+  standardAuthoringDescriptorV2,
+  validateStandardSemanticTreeV2,
+  validateStandardSemanticSequenceV2,
+} from '../standard-authoring/index.js'
+
 interface ValidationState
 {
   issues: SemanticValidationIssue[]
@@ -224,6 +232,7 @@ interface ValidationState
   limits: SemanticBatchValidationLimits
   procedureParameters: ReadonlyMap<string, ProcedureParameterType>
   ownerTargetKind: 'stage' | 'sprite' | null
+  authorityId?: SemanticAuthoringAuthorityIdV2
 }
 
 interface DynamicDeclaration
@@ -1946,7 +1955,8 @@ function collectOperationMetadata(
   operation: JsonObject,
   path: string,
   issues: SemanticValidationIssue[],
-  limits: SemanticBatchValidationLimits
+  limits: SemanticBatchValidationLimits,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): OperationMetadata
 {
   const row =
@@ -2199,7 +2209,7 @@ function collectOperationMetadata(
     }
   }
 
-  validateProcedureMappings(operation, path, parameters, issues)
+  validateProcedureMappings(operation, path, parameters, issues, authorityId)
 
   return {
     operation,
@@ -2234,7 +2244,8 @@ function validateProcedureMappings(
   operation: JsonObject,
   path: string,
   parameters: ReadonlyMap<string, ProcedureParameterType>,
-  issues: SemanticValidationIssue[]
+  issues: SemanticValidationIssue[],
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): void
 {
   if (operation.kind !== 'procedure.updateSignature') return
@@ -2468,7 +2479,8 @@ function validateProcedureMappings(
         !procedureArgumentValueMatches(
           authoredValue,
           parameters.get(argument.parameterLocalKey),
-          parameters
+          parameters,
+          authorityId
         )
       )
       {
@@ -2617,7 +2629,8 @@ function parameterTypesInterchangeable(
 function procedureArgumentValueMatches(
   value: unknown,
   parameterType: ProcedureParameterType | undefined,
-  localParameters: ReadonlyMap<string, ProcedureParameterType>
+  localParameters: ReadonlyMap<string, ProcedureParameterType>,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): boolean
 {
   if (parameterType === undefined || !isObject(value)) return true
@@ -2625,7 +2638,12 @@ function procedureArgumentValueMatches(
   const block = value.value
   if (block.nodeKind === 'ordinary' && typeof block.opcode === 'string')
   {
-    const shape = DESCRIPTOR_BY_OPCODE.get(block.opcode)?.shape
+    const shape =
+      authorityId === 'standard-v2'
+        ? standardAuthoringDescriptorV2(block.opcode)?.shape
+        : DESCRIPTOR_BY_OPCODE.get(block.opcode)?.shape
+    if (authorityId === 'standard-v2')
+      return standardProcedureArgumentShapeFitsV2(parameterType, shape)
     return parameterType === 'boolean'
       ? shape === 'boolean'
       : shape === 'reporter'
@@ -2637,6 +2655,17 @@ function procedureArgumentValueMatches(
     typeof block.parameter.localKey === 'string'
   )
   {
+    if (authorityId === 'standard-v2')
+    {
+      const sourceType = localParameters.get(block.parameter.localKey)
+      return (
+        sourceType !== undefined &&
+        standardProcedureArgumentShapeFitsV2(
+          parameterType,
+          sourceType === 'boolean' ? 'boolean' : 'reporter'
+        )
+      )
+    }
     return parameterTypesInterchangeable(
       localParameters.get(block.parameter.localKey),
       parameterType
@@ -3421,6 +3450,86 @@ function validateDescriptorInputValue(
   }
 }
 
+// standard validation shares batch limits while its compiler owns palette semantics
+function inspectStandardTree(
+  value: JsonObject,
+  path: string,
+  context: BlockContext,
+  state: ValidationState,
+  depth: number,
+  sequence: boolean
+): void
+{
+  const options = {
+    ...(state.ownerTargetKind === null
+      ? {}
+      : { targetKind: state.ownerTargetKind }),
+    procedureParameters: state.procedureParameters,
+    placement: context,
+  }
+  const result = sequence
+    ? validateStandardSemanticSequenceV2(
+        value as unknown as Parameters<
+          typeof validateStandardSemanticSequenceV2
+        >[0],
+        options
+      )
+    : validateStandardSemanticTreeV2(
+        value as unknown as Parameters<
+          typeof validateStandardSemanticTreeV2
+        >[0],
+        options
+      )
+  for (const issue of result.issues)
+    addIssue(
+      state.issues,
+      'block.context_invalid',
+      path + issue.path,
+      `${issue.code}: ${issue.message}`
+    )
+  state.blockNodes += result.blockCount
+  if (
+    state.blockNodes > state.limits.maximumBlockNodes &&
+    !state.blockLimitReported
+  )
+  {
+    state.blockLimitReported = true
+    addIssue(
+      state.issues,
+      'block.node_limit',
+      path,
+      `described block nodes exceed ${state.limits.maximumBlockNodes}`
+    )
+  }
+  const stack: { value: unknown; depth: number }[] = [{ value, depth }]
+  while (stack.length > 0)
+  {
+    const item = stack.pop()!
+    if (Array.isArray(item.value))
+    {
+      for (const member of item.value)
+        stack.push({ value: member, depth: item.depth })
+    }
+    else if (isObject(item.value))
+    {
+      const nextDepth =
+        item.depth + (typeof item.value.nodeKind === 'string' ? 1 : 0)
+      if (nextDepth > state.limits.maximumBlockTreeDepth + 1)
+      {
+        addIssue(
+          state.issues,
+          'block.tree_depth_exceeded',
+          path,
+          `semantic block tree depth exceeds ${state.limits.maximumBlockTreeDepth}`
+        )
+        break
+      }
+      for (const member of Object.values(item.value))
+        stack.push({ value: member, depth: nextDepth })
+    }
+  }
+}
+
 function validateBlockTree(
   value: unknown,
   path: string,
@@ -3430,6 +3539,11 @@ function validateBlockTree(
 ): void
 {
   if (!isObject(value)) return
+  if (state.authorityId === 'standard-v2')
+  {
+    inspectStandardTree(value, path, context, state, depth, false)
+    return
+  }
   state.blockNodes += 1
   if (
     state.blockNodes > state.limits.maximumBlockNodes &&
@@ -3601,7 +3715,8 @@ function validateBlockTree(
         !procedureArgumentValueMatches(
           argument.value,
           state.procedureParameters.get(parameter.localKey),
-          state.procedureParameters
+          state.procedureParameters,
+          state.authorityId
         )
       )
       {
@@ -3701,6 +3816,11 @@ function validateStatementSequence(
 ): void
 {
   if (!isObject(value) || !Array.isArray(value.blocks)) return
+  if (state.authorityId === 'standard-v2')
+  {
+    inspectStandardTree(value, path, 'statement', state, depth, true)
+    return
+  }
   for (let index = 0; index < value.blocks.length; index += 1)
   {
     const block = value.blocks[index]
@@ -3744,7 +3864,10 @@ function validateExpressionRoot(
     typeof value.opcode === 'string'
   )
   {
-    const descriptor = DESCRIPTOR_BY_OPCODE.get(value.opcode)
+    const descriptor =
+      state.authorityId === 'standard-v2'
+        ? standardAuthoringDescriptorV2(value.opcode)
+        : DESCRIPTOR_BY_OPCODE.get(value.opcode)
     validateBlockTree(
       value,
       path,
@@ -3906,7 +4029,8 @@ function validateMediaPlacement(
 
 export function inspectSemanticEditBatchV1(
   value: unknown,
-  limitOverrides?: Partial<SemanticBatchValidationLimits>
+  limitOverrides?: Partial<SemanticBatchValidationLimits>,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): SemanticBatchInspectionV1
 {
   const issues: SemanticValidationIssue[] = []
@@ -3959,7 +4083,13 @@ export function inspectSemanticEditBatchV1(
       createdReferences.push([])
       continue
     }
-    const item = collectOperationMetadata(operation, path, issues, limits)
+    const item = collectOperationMetadata(
+      operation,
+      path,
+      issues,
+      limits,
+      authorityId
+    )
     metadata.push(item)
     if (item.row === null && typeof operation.kind === 'string')
     {
@@ -3981,6 +4111,7 @@ export function inspectSemanticEditBatchV1(
       limits,
       procedureParameters: item.procedureParameters,
       ownerTargetKind: inferredTargetKind(operation.target),
+      authorityId,
     }
     scanSemanticSurfaces(operation, path, state)
     batchBlockNodes = state.blockNodes
@@ -4012,16 +4143,20 @@ export function inspectSemanticEditBatchV1(
 
 export function validateSemanticEditBatch(
   value: unknown,
-  limitOverrides?: Partial<SemanticBatchValidationLimits>
+  limitOverrides?: Partial<SemanticBatchValidationLimits>,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): SemanticValidationResult
 {
-  return inspectSemanticEditBatchV1(value, limitOverrides).validation
+  return inspectSemanticEditBatchV1(value, limitOverrides, authorityId)
+    .validation
 }
 
 export function validateSemanticBlockTree(
   value: unknown,
   context: BlockContext = 'any',
-  limitOverrides?: Partial<SemanticBatchValidationLimits>
+  limitOverrides?: Partial<SemanticBatchValidationLimits>,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1',
+  procedureParameters: ReadonlyMap<string, ProcedureParameterType> = new Map()
 ): SemanticValidationResult
 {
   const issues: SemanticValidationIssue[] = []
@@ -4032,8 +4167,9 @@ export function validateSemanticBlockTree(
     blockNodes: 0,
     blockLimitReported: false,
     limits,
-    procedureParameters: new Map(),
+    procedureParameters,
     ownerTargetKind: null,
+    authorityId,
   }
   validateBlockTree(value, '', context, state, 1)
   return finish(issues)
@@ -4041,7 +4177,9 @@ export function validateSemanticBlockTree(
 
 export function validateSemanticStatementSequence(
   value: unknown,
-  limitOverrides?: Partial<SemanticBatchValidationLimits>
+  limitOverrides?: Partial<SemanticBatchValidationLimits>,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1',
+  procedureParameters: ReadonlyMap<string, ProcedureParameterType> = new Map()
 ): SemanticValidationResult
 {
   const issues: SemanticValidationIssue[] = []
@@ -4052,8 +4190,9 @@ export function validateSemanticStatementSequence(
     blockNodes: 0,
     blockLimitReported: false,
     limits,
-    procedureParameters: new Map(),
+    procedureParameters,
     ownerTargetKind: null,
+    authorityId,
   }
   validateStatementSequence(value, '', state, 1)
   return finish(issues)

@@ -14,14 +14,12 @@ import {
   parseSemanticChangeContractV1,
   resolveBlockRefV1,
   resolveTargetRefV1,
-  scenarioPolicyValueSemanticSha256V1,
   semanticHashV1,
   type EditApplyRequestV1,
   type EditBeginRequestV1,
   type EditChangeContractRegistrationV1,
   type EditCloseRequestV1,
   type EditLimitKeyV1,
-  type EditScenarioPolicyV1,
   type EditUndoRequestV1,
   type HeadProjectionV1,
 } from '@scratch-agent/ir/edit'
@@ -46,7 +44,9 @@ import { DurableArtifactStoreError, EditArtifactStoreHostError, createDurableArt
 import {
   HOST_DEFAULT_LIMITS,
   HOST_HARD_LIMITS,
+  attachRetainedPolicyFixturesV1,
   expectedHeadRequest,
+  type MutableRetainedPolicyContract,
 } from '../../helpers/edit-host.js'
 
 const HASH_A = 'a'.repeat(64)
@@ -55,58 +55,6 @@ const HASH_C = 'c'.repeat(64)
 const HASH_D = 'd'.repeat(64)
 const HASH_E = 'e'.repeat(64)
 const HASH_F = 'f'.repeat(64)
-
-const RETAINED_SCENARIO_POLICY = Object.freeze({
-  scenarioId: 'scenario',
-  applicability: 'baselineAndCandidate',
-  seed: 0,
-  fixedDateMs: 0,
-  maxTicks: 1,
-  steps: Object.freeze([{ do: 'greenFlag' as const }]),
-}) satisfies EditScenarioPolicyV1
-
-type MutableRetainedPolicyContract = {
-  policyBindings: Array<{
-    kind: string
-    semanticSha256: string
-    retainedArtifactSha256: string
-  }>
-  evaluationPlans: Array<{ scenarioPolicySha256s: string[] }>
-}
-
-function attachRetainedPolicyFixturesV1(
-  contract: MutableRetainedPolicyContract
-): readonly Uint8Array[]
-{
-  const scenarioBytes = canonicalJsonBytesV1(RETAINED_SCENARIO_POLICY)
-  const runtimeBytes = canonicalJsonBytesV1({
-    policyKind: 'runtime',
-    schemaVersion: 1,
-  })
-  const lensBytes = canonicalJsonBytesV1({
-    policyKind: 'lens',
-    schemaVersion: 1,
-  })
-  const bytesByKind = new Map<string, Uint8Array>([
-    ['scenario', scenarioBytes],
-    ['runtime', runtimeBytes],
-    ['lens', lensBytes],
-  ])
-  const scenarioSemanticSha256 = scenarioPolicyValueSemanticSha256V1(
-    RETAINED_SCENARIO_POLICY
-  )
-  for (const binding of contract.policyBindings)
-  {
-    const bytes = bytesByKind.get(binding.kind)
-    assert.ok(bytes, `test policy bytes are missing for ${binding.kind}`)
-    binding.retainedArtifactSha256 = sha256Hex(bytes)
-    if (binding.kind === 'scenario')
-      binding.semanticSha256 = scenarioSemanticSha256
-  }
-  for (const plan of contract.evaluationPlans)
-    plan.scenarioPolicySha256s = [scenarioSemanticSha256]
-  return Object.freeze([scenarioBytes, runtimeBytes, lensBytes])
-}
 
 const REGISTRY_IDENTITY = Object.freeze({
   realmSha256: HASH_A,

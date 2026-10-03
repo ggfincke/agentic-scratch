@@ -27,6 +27,7 @@ import {
   type EditStructuralObjectiveObservationV1,
 } from '@scratch-agent/eval'
 import { ProjectIR } from '@scratch-agent/ir'
+import { retainedEditSemanticAuthorityV1, editSemanticAuthorityBindingV1, editCapabilityAuthorityMatchesV1 } from '../authority/semantic-authority.js'
 import {
   semanticHashV1,
   type EditExportRequestV1,
@@ -87,6 +88,9 @@ import {
   exactRevisionFromHeadV1,
   sameHeadV1,
 } from '../support/canonical.js'
+import {
+  containsRetainedHandleReferenceV1 as containsHandleReference,
+} from '../support/internal-values.js'
 import {
   editRestoreOccurrenceIdV1,
   singleOperationProjectDeltaAttributionV1,
@@ -180,26 +184,6 @@ function decode<T>(bytes: Uint8Array): T
 function sameCanonical(left: unknown, right: unknown): boolean
 {
   return editCanonicalSha256V1(left) === editCanonicalSha256V1(right)
-}
-
-function containsHandleReference(value: unknown): boolean
-{
-  const pending = [value]
-  const seen = new Set<object>()
-  while (pending.length > 0)
-  {
-    const current = pending.pop()
-    if (current === null || typeof current !== 'object') continue
-    if (seen.has(current)) continue
-    seen.add(current)
-    if (
-      !Array.isArray(current) &&
-      (current as Record<string, unknown>).refKind === 'handle'
-    )
-      return true
-    pending.push(...Object.values(current))
-  }
-  return false
 }
 
 function revisionKey(revisionNumber: number, revisionId: string): string
@@ -5138,6 +5122,7 @@ export async function verifyEditSessionReplayV1(
     options.artifactStore,
     layout.session
   )
+  const semanticAuthority = retainedEditSemanticAuthorityV1(manifest)
   const headPointer = await readJson<HeadPointerV1>(
     options.artifactStore,
     layout.head
@@ -5270,6 +5255,9 @@ export async function verifyEditSessionReplayV1(
   )
     failures.push('retained capability profile authority has the wrong hash')
 
+  if (!editCapabilityAuthorityMatchesV1(profile, manifest))
+    failures.push('retained capability profile differs from its semantic authority')
+
   const resolveAdmittedAsset = await retainedAssetResolver(
     options.artifactStore,
     layout,
@@ -5399,6 +5387,7 @@ export async function verifyEditSessionReplayV1(
             revisions.slice(0, index)
           )
           const reconstructed = await options.transactionExecutor.execute({
+            ...editSemanticAuthorityBindingV1(semanticAuthority.semanticAuthorityId),
             sessionId: manifest.sessionId,
             sourceBytes,
             currentBytes: await options.artifactStore.readImmutable(
@@ -5653,7 +5642,7 @@ export async function verifyEditSessionReplayV1(
   )
   // plan activation is the retained contract's own authority; if it refuses,
   // every certificate rebuild refuses w/ it rather than falling back
-  let plans: ActivatedEvaluationPlanSetV1 | null = null
+  let plans: ActivatedEvaluationPlanSetV1 | null
   try
   {
     plans = activateEvaluationPlanSetV1(

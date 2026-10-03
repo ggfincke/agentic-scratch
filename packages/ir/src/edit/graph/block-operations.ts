@@ -8,6 +8,7 @@ import {
   scratchRecordValue,
   type Block,
   type BlockField,
+  type Mutation,
   type BlockInput,
   type Target,
 } from '@scratch-agent/sb3'
@@ -168,6 +169,13 @@ export interface LoweredSemanticInputV1
 
 export interface BlockOperationCatalogAdapterV1
 {
+  readonly disposeObsoleteGeneratedInputShadows?: boolean
+  readonly validateEditedBlock?: (
+    project: ProjectIR,
+    targetIndex: number,
+    blockId: string,
+    stagedTarget: Target
+  ) => void
   readonly validateExistingBlock: (block: Block) => ExistingGraphBlockEvidenceV1
   readonly lowerStatementSequence: (
     project: ProjectIR,
@@ -188,6 +196,11 @@ export interface BlockOperationCatalogAdapterV1
     currentInput: BlockInput | undefined,
     preservedObscuredShadow: BlockInput[2] | undefined
   ) => LoweredSemanticInputV1
+  readonly fieldMutationConsequence?: (
+    block: Block,
+    fieldName: string,
+    value: BlockField
+  ) => Mutation | null | undefined
   readonly lowerFieldValue: (
     project: ProjectIR,
     targetIndex: number,
@@ -233,6 +246,7 @@ class BlockStructuralOperationErrorV1 extends Error
       | 'edit.invalid_owner'
       | 'edit.invalid_shape'
       | 'edit.planning_facts_mismatch'
+      | 'edit.project_constraint'
       | 'edit.selector_no_match'
       | 'edit.shadow_invariant'
       | 'edit.unsupported_opcode'
@@ -1383,6 +1397,12 @@ function applySetInput(
     operation.expectedInputFingerprint
   )
   const activeId = currentActiveOwnedBlockId(target, current)
+  const priorShadow =
+    current?.[0] === 1
+      ? current[1]
+      : current?.[0] === 3
+        ? current[2]
+        : undefined
   let removed: readonly string[] = []
   if (operation.replacedInput.kind === 'requireNoOwnedBlock')
   {
@@ -1448,6 +1468,13 @@ function applySetInput(
     lowered,
     adapter
   )
+  adapter.validateEditedBlock?.(project, targetIndex, blockId, target)
+  if (
+    adapter.disposeObsoleteGeneratedInputShadows &&
+    typeof priorShadow === 'string' &&
+    disposeObsoleteInputShadow(target, blockId, priorShadow, adapter)
+  )
+    removed = [...removed, priorShadow]
   commitGraphAllocatorV1(project.uids, lowered.closure)
   return operationResult(
     operation,
@@ -1463,6 +1490,49 @@ function applySetInput(
     lowered.closure?.creationKeyByBlockId ?? {},
     lowered.closure?.tailId ?? null
   )
+}
+
+function disposeObsoleteInputShadow(
+  target: Target,
+  ownerId: string,
+  shadowId: string,
+  adapter: BlockOperationCatalogAdapterV1
+): boolean
+{
+  const shadow = scratchRecordValue(target.blocks, shadowId)
+  if (
+    !isBlockEntry(shadow) ||
+    shadow.shadow !== true ||
+    shadow.parent !== ownerId ||
+    typeof shadow.next === 'string' ||
+    Object.keys(shadow.inputs ?? {}).length !== 0
+  )
+    return false
+  const validation = adapter.validateExistingBlock(shadow)
+  if (
+    !validation.safeForStructuralEdit ||
+    validation.descriptor?.shape !== 'menuReporter'
+  )
+    return false
+  for (const entry of Object.values(target.blocks))
+  {
+    if (!isBlockEntry(entry)) continue
+    if (entry.next === shadowId || entry.parent === shadowId) return false
+    for (const input of Object.values(entry.inputs ?? {}))
+      if (input.slice(1).includes(shadowId)) return false
+  }
+  if (
+    typeof shadow.comment === 'string' ||
+    Object.values(target.comments ?? {}).some(
+      (comment) => comment.blockId === shadowId
+    )
+  )
+    return editError(
+      'edit.project_constraint',
+      'obsolete generated input shadow has an attached comment requiring explicit handling'
+    )
+  deleteScratchRecordValue(target.blocks, shadowId)
+  return true
 }
 
 function operationResult(
@@ -1638,7 +1708,29 @@ export function applyBlockStructuralOperationV1(
       operation.value
     )
     setField(staged, fieldResolved.blockId, operation.fieldName, value)
-    descriptorFor(staged, fieldResolved.blockId, adapter)
+    const mutation = adapter.fieldMutationConsequence?.(
+      raw,
+      operation.fieldName,
+      value
+    )
+    if (mutation === null) delete raw.mutation
+    else if (mutation !== undefined) raw.mutation = mutation
+    const updatedDescriptor = descriptorFor(
+      staged,
+      fieldResolved.blockId,
+      adapter
+    )
+    if (typeof raw.next === 'string' && !updatedDescriptor?.acceptsSuccessor)
+      return editError(
+        'edit.invalid_shape',
+        'field change forbids the existing successor'
+      )
+    adapter.validateEditedBlock?.(
+      project,
+      targetIndex,
+      fieldResolved.blockId,
+      staged
+    )
     project.json.targets[targetIndex] = staged
     return complete(
       operationResult(
@@ -1723,6 +1815,13 @@ export function applyBlockStructuralOperationV1(
       replaceResolved.comments,
       adapter
     )
+    if (plan.rootInboundEdge)
+      adapter.validateEditedBlock?.(
+        project,
+        targetIndex,
+        plan.rootInboundEdge.ownerBlockId,
+        staged
+      )
     commitGraphAllocatorV1(project.uids, lowered)
     project.json.targets[targetIndex] = staged
     return complete(
@@ -1775,6 +1874,13 @@ export function applyBlockStructuralOperationV1(
         adapter
       )
     deleteGraphClosureV1(staged, plan)
+    if (plan.rootInboundEdge)
+      adapter.validateEditedBlock?.(
+        project,
+        targetIndex,
+        plan.rootInboundEdge.ownerBlockId,
+        staged
+      )
     commitGraphAllocatorV1(project.uids, sourceGap)
     project.json.targets[targetIndex] = staged
     return complete(
@@ -1858,6 +1964,20 @@ export function applyBlockStructuralOperationV1(
       'moved block closure changed membership'
     )
   assertCuratedOwnedClosure(staged, movedPlan, adapter)
+  if (plan.rootInboundEdge)
+    adapter.validateEditedBlock?.(
+      project,
+      targetIndex,
+      plan.rootInboundEdge.ownerBlockId,
+      staged
+    )
+  if (moveResolved.destination.blockId)
+    adapter.validateEditedBlock?.(
+      project,
+      targetIndex,
+      moveResolved.destination.blockId,
+      staged
+    )
   commitGraphAllocatorV1(project.uids, sourceGap)
   project.json.targets[targetIndex] = staged
   return complete(

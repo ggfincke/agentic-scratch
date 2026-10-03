@@ -67,12 +67,15 @@ import {
   cloneDispatcherProjectV1 as cloneProject,
   completedPlanningFactV1 as completedPlanningFactV1,
   createProductionLineageV1,
-  exactContractRefV1 as resolveExactContractRef,
+  exactContractRefV1 as exactContractRef,
   futureBindingAlreadyRealizedV1 as futureBindingAlreadyRealized,
   productionOperationResultV1,
   targetPlanningProjectionV1 as planningTarget,
 } from './dispatcher-primitives.js'
-import { futureBindingKeySha256V1 } from '../lineage/future-binding-ledger.js'
+import {
+  futureBindingKeySha256V1,
+  realizedFutureBindingKeysForLineageV1 as realizedFutureBindingKeys,
+} from '../lineage/future-binding-ledger.js'
 import type { FutureContractBindingV1 } from '../lineage/future-binding-ledger.js'
 import { editJsonPointerPartV1 as pointerPart } from '../support/internal-values.js'
 import type { CreatedSemanticLineageV1 } from '../lineage/lineage.js'
@@ -686,7 +689,9 @@ function productionGroupFPlanningFactProjectionV1(
   operation: MediaTargetOperationV1
 ): MediaTargetPlanningFactProjectionV1
 {
-  return mediaTargetPlanningFactProjection(resolveMediaTargetDispatch(context, operation))
+  return mediaTargetPlanningFactProjection(
+    resolveMediaTargetDispatch(context, operation)
+  )
 }
 
 export function productionMediaTargetPlanningFactSetSha256V1(
@@ -836,10 +841,8 @@ export function productionMediaTargetSpritePlanningCompletionV1(
     SemanticEditOperationV1,
     { readonly kind: 'target.addSprite' }
   >
-  const planningFactSetSha256 = productionMediaTargetSpritePlanningFactSetSha256V1(
-    context,
-    operation
-  )
+  const planningFactSetSha256 =
+    productionMediaTargetSpritePlanningFactSetSha256V1(context, operation)
   return Object.freeze({
     operation: Object.freeze({
       ...operation,
@@ -999,7 +1002,11 @@ export function productionMediaTargetMediaPlanningCompletionV1(
         newNameActivation,
       } as MediaTargetOperationV1
       facts = Object.freeze([
-        completedPlanningFactV1('/expectedName', 'stringIdentity', expectedName),
+        completedPlanningFactV1(
+          '/expectedName',
+          'stringIdentity',
+          expectedName
+        ),
         completedPlanningFactV1(
           '/expectedReferenceSetSha256',
           'sha256',
@@ -1766,32 +1773,6 @@ function creationContentFingerprint(
 // contract scope & authorization
 // ---------------------------------------------------------------------------
 
-function exactContractRef(
-  context: ProductionOperationContextV1,
-  bindingKeys: readonly string[],
-  expectedEntityKind: ContractEntityRefV1['entityKind'],
-  expectedEntitySubtype: ContractEntityRefV1['entitySubtype'],
-  semanticPath: string
-): ContractEntityRefV1
-{
-  return resolveExactContractRef(
-    context.contract.entityBindings,
-    bindingKeys,
-    expectedEntityKind,
-    expectedEntitySubtype,
-    () =>
-      fail(
-        'edit.unauthorized_change',
-        `${semanticPath} does not resolve one exact contract binding`
-      ),
-    () =>
-      fail(
-        'edit.unauthorized_change',
-        `${semanticPath} contract binding kind or subtype differs`
-      )
-  )
-}
-
 // the exact contract binding one media reference resolves to; Group D & E call
 // this for the curated media selectors their own operations carry
 export function mediaContractEntityRefV1(
@@ -1859,7 +1840,7 @@ export function curatedMediaEntityV1(
 
 // the binding keys a media record carries: its exact source binding plus any
 // future binding this batch already realized onto its lineage
-function mediaContractBindingKeys(
+export function mediaContractBindingKeys(
   context: ProductionOperationContextV1,
   evidence: MediaRecordEntityEvidenceV1,
   lineageId: string
@@ -1887,21 +1868,11 @@ function mediaContractBindingKeys(
               candidate.ordinal
             ) === record.rawIdentity
         ) ?? null)
-  const future = uniqueSorted(
-    context.contract.entityBindings.flatMap((binding) =>
-      binding.bindingKind === 'future' &&
-      context.futureBindingLedger.realizations.some(
-        (realization) =>
-          realization.resultLineageId === lineageId &&
-          realization.bindingKeySha256 ===
-            futureBindingKeySha256V1(
-              context.input.changeContractSha256,
-              binding.bindingKey
-            )
-      )
-        ? [binding.bindingKey]
-        : []
-    )
+  const future = realizedFutureBindingKeys(
+    context.input.changeContractSha256,
+    context.contract.entityBindings,
+    context.futureBindingLedger,
+    lineageId
   )
   return uniqueSorted([
     ...mediaBindingKeys(context, source, evidence.mediaKind),
@@ -2495,10 +2466,14 @@ class SpriteCreationProductionOperationDispatcherV1 implements ProductionOperati
     const creationSourceProject = cloneProject(context.candidate)
     // every state precondition is enforced inside `applyTargetAddSpriteV1`, which
     // refuses before it mutates anything
-    const applied = applyTargetAddSpriteV1(context.candidate, {
-      operation,
-      activeLineage: context.activeLineage,
-    })
+    const applied = applyTargetAddSpriteV1(
+      context.candidate,
+      {
+        operation,
+        activeLineage: context.activeLineage,
+      },
+      context.input.semanticAuthorityId
+    )
     // a target lineage is owned by the project itself, so its owner is null & its
     // canonical ordinal is the serialized position the append just took
     const created = createLineage(

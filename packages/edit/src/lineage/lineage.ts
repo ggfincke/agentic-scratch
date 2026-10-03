@@ -56,7 +56,7 @@ export function createSemanticLineageV1(
     ...input.activeLineage.records.map((record) => record.lineageId),
   ])
   let collisionNonce = 0
-  let lineageId = ''
+  let lineageId: string
   do
   {
     lineageId = semanticHashV1('lineage', {
@@ -87,6 +87,95 @@ export function createSemanticLineageV1(
     collisionNonce: collisionNonce - 1,
     creationKey: input.creationKey,
   }
+}
+
+type ActiveDispatchLineageKindV1 = Extract<
+  SemanticLineageKind,
+  'script' | 'block' | 'comment' | 'procedure' | 'parameter'
+>
+
+type OrderedDispatchLineageKindV1 = Extract<
+  ActiveDispatchLineageKindV1,
+  'script' | 'comment' | 'parameter'
+>
+
+export function activeLineageRecordV1(
+  lineage: SemanticLineageSnapshot,
+  kind: ActiveDispatchLineageKindV1,
+  ownerLineageId: string,
+  rawIdentity: string
+): SemanticLineageRecord
+{
+  const matches = lineage.records.filter(
+    (record) =>
+      record.status === 'active' &&
+      record.kind === kind &&
+      record.ownerLineageId === ownerLineageId &&
+      record.rawIdentity === rawIdentity
+  )
+  if (matches.length !== 1)
+    throw Object.assign(
+      new Error(
+        `active ${kind} lineage is absent or ambiguous for ${rawIdentity}`
+      ),
+      { code: 'edit.internal_invariant', context: {} }
+    )
+  return matches[0]!
+}
+
+export function replaceLineageRawIdentityV1(
+  active: SemanticLineageSnapshot,
+  lineageId: string,
+  rawIdentity: string
+): SemanticLineageSnapshot
+{
+  return validateSemanticLineageSnapshot({
+    version: SEMANTIC_LINEAGE_VERSION_V1,
+    records: active.records.map((record) =>
+      record.lineageId === lineageId ? { ...record, rawIdentity } : record
+    ),
+  })
+}
+
+export function reindexOwnerLineagesV1(
+  active: SemanticLineageSnapshot,
+  kind: OrderedDispatchLineageKindV1,
+  ownerLineageId: string,
+  orderedRawIdentities: readonly string[]
+): SemanticLineageSnapshot
+{
+  const ordinalByRawIdentity = new Map(
+    orderedRawIdentities.map((rawIdentity, ordinal) => [rawIdentity, ordinal])
+  )
+  const siblings = active.records.filter(
+    (record) =>
+      record.status === 'active' &&
+      record.kind === kind &&
+      record.ownerLineageId === ownerLineageId
+  )
+  if (
+    siblings.length !== orderedRawIdentities.length ||
+    siblings.some((record) => !ordinalByRawIdentity.has(record.rawIdentity))
+  )
+    throw Object.assign(
+      new Error(
+        `active ${kind} lineage does not match post-operation evidence`
+      ),
+      { code: 'edit.internal_invariant', context: {} }
+    )
+  return validateSemanticLineageSnapshot({
+    version: SEMANTIC_LINEAGE_VERSION_V1,
+    records: active.records.map((record) =>
+      record.status === 'active' &&
+      record.kind === kind &&
+      record.ownerLineageId === ownerLineageId
+        ? {
+            ...record,
+            canonicalOrdinal: ordinalByRawIdentity.get(record.rawIdentity)!,
+          }
+        : record
+    ),
+  })
 }
 
 interface LineageBuilder

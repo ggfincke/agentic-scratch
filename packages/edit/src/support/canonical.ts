@@ -48,7 +48,7 @@ export function editOpaqueIdV1(
 }
 
 export function exactRevisionFromHeadV1(
-  head: HeadProjectionV1
+  head: Pick<HeadProjectionV1, keyof ExactRevisionIdentityV1>
 ): ExactRevisionIdentityV1
 {
   return {

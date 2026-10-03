@@ -1,6 +1,9 @@
 // packages/edit/src/transaction/production-transaction.ts
 // production semantic transaction foundation w/ target-family dispatch
 
+import { retainedEditSemanticAuthorityV1, type EditSemanticAuthorityIdV1 } from '../authority/semantic-authority.js'
+import { deriveStandardExtensionMetadataV2, standardExtensionMetadataSequenceMatchesV2, type DerivedStandardExtensionMetadataV2 } from '../authority/extension-metadata.js'
+
 import {
   inspectSemanticEditArtifact,
   type DiagnosticEvidenceLocation,
@@ -28,6 +31,7 @@ import {
   activeOrderedSemanticLineages,
   applyTargetOperationV1,
   assertCreatedTargetsAreCostumedV1,
+  assertStandardProcedureGraphOwnershipV2,
   blockBoundedLocationProjectionV1,
   boundedDisplayStringV1,
   blockEntityEvidenceSetV1,
@@ -299,6 +303,7 @@ interface ProductionOperationAuthorizationEvidenceV1
     readonly beforeReferenceSetSha256: string
     readonly afterReferenceSetSha256: string
   }
+  readonly derivedExtensions?: DerivedStandardExtensionMetadataV2
   readonly groupDGraph?: {
     readonly publicRemovalPaths: readonly string[]
   }
@@ -976,7 +981,7 @@ function projectOperationResultSummariesV1(
   return summaries
 }
 
-function parsedBatch(value: unknown): SemanticEditBatchV1
+function parsedBatch(value: unknown, authorityId: EditSemanticAuthorityIdV1): SemanticEditBatchV1
 {
   if (
     value !== null &&
@@ -1002,7 +1007,8 @@ function parsedBatch(value: unknown): SemanticEditBatchV1
   }
   const parsed = parseContractDefinitionV1<SemanticEditBatchV1>(
     'SemanticEditBatchV1',
-    value
+    value,
+    authorityId
   )
   if (!parsed.ok)
     return fail(
@@ -1916,7 +1922,7 @@ export class TargetProductionOperationDispatcherV1 implements ProductionOperatio
       operation: canonicalOperation as TargetOperationV1,
       targetIndex: candidateTargetIndexForLineage(context, selectedLineageId),
       activeLineage: context.activeLineage,
-    })
+    }, retainedEditSemanticAuthorityV1(context.input).semanticAuthorityId)
     const result = Object.freeze({
       opId: targetOperation.opId,
       operationKind: targetOperation.kind,
@@ -3226,7 +3232,10 @@ function entityObservationLineageId(
     applied.operation.kind === 'block.replace' ||
     applied.operation.kind === 'block.move' ||
     applied.operation.kind === 'block.remove' ||
-    applied.operation.kind === 'block.setInput'
+    applied.operation.kind === 'block.setInput' ||
+    applied.operation.kind === 'procedure.add' ||
+    applied.operation.kind === 'procedure.updateSignature' ||
+    applied.operation.kind === 'procedure.setCallArgument'
   )
   {
     const result = applied.result as {
@@ -3284,6 +3293,9 @@ function addedEntityContentMatches(
     operation.kind === 'block.move' ||
     operation.kind === 'block.remove' ||
     operation.kind === 'block.setInput' ||
+    operation.kind === 'procedure.add' ||
+    operation.kind === 'procedure.updateSignature' ||
+    operation.kind === 'procedure.setCallArgument' ||
     // a media record's content is bound by the creation-content fingerprint the
     // allowance already compares, which covers the parsed payload identity the
     // caller could not have forged
@@ -4647,6 +4659,15 @@ function preservationResult(
         ]
       : []),
   ])
+  const allowsDerivedExtensions = standardExtensionMetadataSequenceMatchesV2(
+    current,
+    candidate,
+    operations.flatMap((operation) =>
+      operation.authorizationEvidence?.derivedExtensions
+        ? [operation.authorizationEvidence.derivedExtensions]
+        : []
+    )
+  )
   const allowedViolation = (
     violation: (typeof checked.violations)[number]
   ): boolean =>
@@ -4656,6 +4677,9 @@ function preservationResult(
         violation.code === 'existing-script-layout-changed') &&
       scriptBlockOwnsExactScriptViolation(violation.path)
     )
+      return true
+    if (violation.code === 'extensions-changed' &&
+        violation.path === '/extensions' && allowsDerivedExtensions)
       return true
     if (violation.code === 'comments-changed' && allowsScriptBlockComments)
       return true
@@ -5227,7 +5251,42 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
             futureBindingLedger,
             [preBatchReferenceIndexKey]: preBatchReferenceIndex,
           }
-          return dispatcher.execute(context, operation)
+          const standardGraphOperation = (
+            operation.kind.startsWith('script.') || operation.kind.startsWith('block.') ||
+            operation.kind.startsWith('procedure.')
+          ) && retainedEditSemanticAuthorityV1(input).semanticAuthorityId === 'standard-v2'
+          const priorGraph = standardGraphOperation
+            ? ProjectIR.fromProjectJsonWithUidSnapshot(
+                structuredClone(cloned.project.toProjectJson()),
+                cloned.project.assets,
+                cloned.allocator.snapshot()
+              )
+            : undefined
+          const dispatched = dispatcher.execute(context, operation)
+          if (priorGraph) assertStandardProcedureGraphOwnershipV2(cloned.project, priorGraph)
+          const derivedExtensions = standardGraphOperation
+            ? deriveStandardExtensionMetadataV2(cloned.project)
+            : undefined
+          if (!derivedExtensions) return dispatched
+          const paths = (values: readonly string[]) => Object.freeze(
+            [...new Set([...values, '/extensions'])].sort()
+          )
+          return {
+            ...dispatched,
+            attribution: {
+              ...dispatched.attribution,
+              projectPaths: paths(dispatched.attribution.projectPaths ?? []),
+              pathPrefixes: paths(dispatched.attribution.pathPrefixes ?? []),
+            },
+            structuralAuthorization: {
+              exactPaths: paths(dispatched.structuralAuthorization.exactPaths),
+              pathPrefixes: paths(dispatched.structuralAuthorization.pathPrefixes),
+            },
+            authorizationEvidence: {
+              ...dispatched.authorizationEvidence,
+              derivedExtensions,
+            },
+          }
         }
         catch (error)
         {
@@ -5311,11 +5370,13 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
     request: EditOperationPlanningRequestV1
   ): Promise<EditOperationPlanningResultV1>
   {
+    const authorityId = retainedEditSemanticAuthorityV1(input).semanticAuthorityId
     const goal = (() =>
     {
       const parsed = parseContractDefinitionV1<SemanticEditOperationGoalV1>(
         'SemanticEditOperationGoalV1',
-        request.goal
+        request.goal,
+        authorityId
       )
       if (!parsed.ok)
         return fail(
@@ -5329,7 +5390,8 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
     {
       const parsed = parseContractDefinitionV1<SemanticEditOperationV1>(
         'SemanticEditOperationV1',
-        operation
+        operation,
+        authorityId
       )
       if (!parsed.ok)
         return fail(
@@ -5569,7 +5631,8 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
     input: EditTransactionInputV1
   ): Promise<EditTransactionExecutionPlanV1>
   {
-    const batch = parsedBatch(input.canonicalTransaction)
+    const authorityId = retainedEditSemanticAuthorityV1(input).semanticAuthorityId
+    const batch = parsedBatch(input.canonicalTransaction, authorityId)
     assertExactHead(input, batch)
     assertOperationOrder(batch.operations)
     const contract = parsedContract(input.changeContract)
@@ -5762,8 +5825,15 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
         'edit.unauthorized_change',
         `exact delta authorization failed with ${deltaAuthorization.violations.length} violation(s)`
       )
+    const derivedExtensions = applied.flatMap((entry) =>
+      entry.authorizationEvidence?.derivedExtensions
+        ? [{opId: entry.operation.opId, occurrenceId: entry.occurrenceId,
+            proof: entry.authorizationEvidence.derivedExtensions}]
+        : []
+    )
     const authorization = {
       ...deltaAuthorization,
+      ...(derivedExtensions.length > 0 ? {derivedExtensions} : {}),
       contractAuthorization,
       conflictProof,
       futureBindingLedger,
