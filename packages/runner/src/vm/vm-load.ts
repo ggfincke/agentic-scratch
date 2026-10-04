@@ -15,10 +15,7 @@ import {
   createRunIssue,
   toRunIssue,
 } from '../policy/issues.js'
-import {
-  captureScratchVmLoadLogs,
-  emptyRuntimeLogSummary,
-} from '../policy/runtime-log.js'
+import { captureScratchVmLoadLogs } from '../policy/runtime-log.js'
 import type { RuntimeLogSummary } from '../policy/types.js'
 import type { RuntimeLineageAdapterResultV1 } from '../lineage/runtime-lineage.js'
 import {
@@ -142,7 +139,7 @@ export async function createVmWithEvidence(
 {
   let vm: ScratchVm | undefined
   let initialized = false
-  let runtimeLog = emptyRuntimeLogSummary()
+  let runtimeLog: RuntimeLogSummary
   let seam: RuntimeLineageSeamHandle | null = null
   let loaded: Awaited<ReturnType<typeof captureScratchVmLoadLogs<void>>>
   try

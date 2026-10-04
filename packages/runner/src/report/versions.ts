@@ -17,6 +17,7 @@ import {
   RENDERED_BROWSER_VIEWPORT,
 } from '../browser/browser-config.js'
 import type { RunVersions } from '../policy/types.js'
+import { DETERMINISTIC_TIMER_POLICY_V2 } from '../policy/determinism.js'
 import {
   hashRuntimeConfiguration,
   identityForBytes,
@@ -92,9 +93,10 @@ function descriptorEnvironment(): RuntimeDescriptorV1['environment']
   }
 }
 
-function networkAccess(
-  options: { allowNetwork?: boolean; allowedOrigins?: readonly string[] }
-): RuntimeDescriptorV1['network']
+function networkAccess(options: {
+  allowNetwork?: boolean
+  allowedOrigins?: readonly string[]
+}): RuntimeDescriptorV1['network']
 {
   return options.allowNetwork === true ||
     (options.allowedOrigins?.length ?? 0) > 0
@@ -114,6 +116,7 @@ export function nodeRuntimeDescriptor(options: {
   const configuration = {
     clock: 'manual-60-tps',
     deterministicTimers: true,
+    deterministicTimerPolicy: DETERMINISTIC_TIMER_POLICY_V2,
     seedSource: 'scenario',
     fixedDateSource: 'scenario',
     locale: RENDERED_BROWSER_LOCALE,
@@ -154,6 +157,7 @@ export function turboWarpRuntimeDescriptor(options: {
   const configuration = {
     clock: 'manual-60-tps',
     deterministicTimers: true,
+    deterministicTimerPolicy: DETERMINISTIC_TIMER_POLICY_V2,
     renderer: 'swiftshader-webgl',
     viewport: RENDERED_BROWSER_VIEWPORT,
     locale: RENDERED_BROWSER_LOCALE,
@@ -205,7 +209,10 @@ export function officialScratchRuntimeDescriptor(options: {
       '@scratch/scratch-render',
       options.rendererBundle
     ),
-    componentIdentityForBytes('scratch-storage', options.storageBundle),
+    componentIdentityForBytes(
+      '@scratch/scratch-storage',
+      options.storageBundle
+    ),
     componentIdentityForBytes(
       '@scratch/scratch-svg-renderer',
       options.svgBundle
@@ -216,6 +223,7 @@ export function officialScratchRuntimeDescriptor(options: {
   const configuration = {
     clock: 'manual-60-tps',
     deterministicTimers: true,
+    deterministicTimerPolicy: DETERMINISTIC_TIMER_POLICY_V2,
     renderer: 'scratch-render-swiftshader-webgl',
     viewport: RENDERED_BROWSER_VIEWPORT,
     locale: RENDERED_BROWSER_LOCALE,

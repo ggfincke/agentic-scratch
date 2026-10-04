@@ -9,11 +9,14 @@ import {
   PHASE_8_EDIT_LIMIT_AUTHORITY_V1,
   REFUSAL_CODES,
   VANILLA_CORE_DESCRIPTORS,
+  STANDARD_AUTHORING_DESCRIPTORS_V2,
   EditSessionErrorV1,
+  exactRevisionFromHeadV1 as exactRevision,
   parseEditToolInputV1,
   semanticHashV1,
   type BudgetProjectionV1,
   type CapabilityItemV1,
+  type StandardCapabilityItemV2,
   type CurrentInspectionEntityItemV1,
   type EditApplyDomainResultV1,
   type EditArtifactStorePort,
@@ -48,7 +51,6 @@ import {
   type EditToolName,
   type EditTransportOutcomeTargetV1,
   type EditUndoRequestV1,
-  type ExactRevisionIdentityV1,
   type HistoricalInspectionEntityItemV1,
   type HostInvocationContextV1,
   type OperationResultSummaryV1,
@@ -138,6 +140,7 @@ export interface EditHostArtifactResourcesPortV1
 
 interface HostOptionsV1
 {
+  readonly semanticAuthorityId?: 'a0-v1' | 'standard-v2'
   readonly lifecycle: EditHostLifecycleAuthorityV1
   readonly intake: EditTrustedIntakePortV1
   readonly cursors: EditPaginationCursorAuthorityV1
@@ -168,7 +171,9 @@ function exactTransportResultKeyV1(
     !LOWERCASE_SHA256_PATTERN.test(target.requestSha256) ||
     !LOWERCASE_SHA256_PATTERN.test(target.namespaceSha256) ||
     target.invocationCorrelation.boundaryKind !== 'mcp' ||
-    !LOWERCASE_SHA256_PATTERN.test(target.invocationCorrelation.invocationSha256)
+    !LOWERCASE_SHA256_PATTERN.test(
+      target.invocationCorrelation.invocationSha256
+    )
   )
     throw new McpBoundaryError(
       'mcp.edit-transport-recovery-required',
@@ -438,27 +443,6 @@ function requestSessionId(request: unknown): string | null
   if (request === null || typeof request !== 'object') return null
   const value = (request as { readonly sessionId?: unknown }).sessionId
   return typeof value === 'string' ? value : null
-}
-
-function exactRevision(head: {
-  readonly sourceArtifactSha256: string
-  readonly revisionNumber: number
-  readonly revisionId: string
-  readonly candidateSha256: string
-  readonly assetManifestSha256: string
-  readonly changeContractSha256: string
-  readonly capabilityProfileSha256: string
-}): ExactRevisionIdentityV1
-{
-  return {
-    sourceArtifactSha256: head.sourceArtifactSha256,
-    revisionNumber: head.revisionNumber,
-    revisionId: head.revisionId,
-    candidateSha256: head.candidateSha256,
-    assetManifestSha256: head.assetManifestSha256,
-    changeContractSha256: head.changeContractSha256,
-    capabilityProfileSha256: head.capabilityProfileSha256,
-  }
 }
 
 function budgetProjection(value: {
@@ -1240,6 +1224,11 @@ export class DirectEditToolHostV1 implements EditToolHostV1
 {
   readonly #options: HostOptionsV1
 
+  get semanticAuthorityId(): 'a0-v1' | 'standard-v2'
+  {
+    return this.#options.semanticAuthorityId ?? 'a0-v1'
+  }
+
   constructor(options: HostOptionsV1)
   {
     this.#options = options
@@ -1393,7 +1382,11 @@ export class DirectEditToolHostV1 implements EditToolHostV1
     const requestId = requestRecord?.requestId
     if (typeof requestId !== 'string')
     {
-      assertEditToolReceiptFreeResponseV1(name, response)
+      assertEditToolReceiptFreeResponseV1(
+        name,
+        response,
+        this.semanticAuthorityId
+      )
       return response
     }
     let retainedBegin: RetainedEditBeginOutcomeAuthorityV1 | null = null
@@ -1441,7 +1434,11 @@ export class DirectEditToolHostV1 implements EditToolHostV1
       : (beginOutcome ?? retainedSessionFacts?.outcome ?? null)
     if (outcome === null)
     {
-      assertEditToolReceiptFreeResponseV1(name, response)
+      assertEditToolReceiptFreeResponseV1(
+        name,
+        response,
+        this.semanticAuthorityId
+      )
       return response
     }
     if (retainedBegin === null && retainedSessionFacts !== null)
@@ -1461,8 +1458,7 @@ export class DirectEditToolHostV1 implements EditToolHostV1
           request,
           retainedSession,
           retainedSessionFacts,
-          retainedSessionFacts.outcome.classification as
-            'completed' | 'refused'
+          retainedSessionFacts.outcome.classification as 'completed' | 'refused'
         ),
         this.#responseProjectionAuthorityV1()
       )
@@ -1483,7 +1479,11 @@ export class DirectEditToolHostV1 implements EditToolHostV1
     {
       // validate before transport retention: after a semantic terminal exists,
       // an invalid projection is recovery-required, never a generic audit fail
-      assertEditToolReceiptFreeResponseV1(name, response)
+      assertEditToolReceiptFreeResponseV1(
+        name,
+        response,
+        this.semanticAuthorityId
+      )
       if (name === 'edit_begin')
       {
         if (retainedBegin === null)
@@ -1906,7 +1906,7 @@ export class DirectEditToolHostV1 implements EditToolHostV1
         value,
       ])
     )
-    let items: CapabilityItemV1[]
+    let items: (CapabilityItemV1 | StandardCapabilityItemV2)[]
     if (query.kind === 'operations' || query.kind === 'summary')
       items = OPERATION_REVIEW_ROWS.filter(
         (row) =>
@@ -1934,32 +1934,42 @@ export class DirectEditToolHostV1 implements EditToolHostV1
         }
       })
     else if (query.kind === 'blockDescriptors')
-      items = VANILLA_CORE_DESCRIPTORS.filter(
-        (row) =>
-          query.opcodePrefix === undefined ||
-          row.opcode.startsWith(query.opcodePrefix)
-      ).map((row) => ({
-        itemKind: 'blockDescriptor',
-        opcode: row.opcode,
-        category: row.category,
-        shape: row.shape,
-        availability: 'supported',
-        descriptorSha256: semanticHashV1('capability-profile', {
-          kind: 'block-descriptor',
-          row,
-        }),
-        fieldContractSha256: semanticHashV1('capability-profile', {
-          kind: 'block-field-contract',
-          required: row.requiredFields,
-          optional: row.optionalFields,
-        }),
-        inputContractSha256: semanticHashV1('capability-profile', {
-          kind: 'block-input-contract',
-          required: row.requiredInputs,
-          optional: row.optionalInputs,
-        }),
-        limitationCodes: [],
-      }))
+      items = (
+        this.semanticAuthorityId === 'standard-v2'
+          ? STANDARD_AUTHORING_DESCRIPTORS_V2
+          : VANILLA_CORE_DESCRIPTORS
+      )
+        .filter(
+          (row) =>
+            query.opcodePrefix === undefined ||
+            row.opcode.startsWith(query.opcodePrefix)
+        )
+        .map((row) => ({
+          itemKind: 'blockDescriptor',
+          opcode: row.opcode,
+          category: row.category,
+          shape: row.shape,
+          availability:
+            this.semanticAuthorityId === 'standard-v2' &&
+            row.availability !== 'supported'
+              ? 'preservationOnly'
+              : 'supported',
+          descriptorSha256: semanticHashV1('capability-profile', {
+            kind: 'block-descriptor',
+            row,
+          }),
+          fieldContractSha256: semanticHashV1('capability-profile', {
+            kind: 'block-field-contract',
+            required: row.requiredFields,
+            optional: row.optionalFields,
+          }),
+          inputContractSha256: semanticHashV1('capability-profile', {
+            kind: 'block-input-contract',
+            required: row.requiredInputs,
+            optional: row.optionalInputs,
+          }),
+          limitationCodes: [],
+        }))
     else if (query.kind === 'limits')
       items = Object.values(PHASE_8_EDIT_LIMIT_AUTHORITY_V1).map((limit) => ({
         itemKind: 'limit',

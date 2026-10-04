@@ -3,6 +3,14 @@
 
 import { deepFreeze } from '../support/immutable.js'
 
+export const RESERVED_TARGET_NAMES_V1 = deepFreeze([
+  '_edge_',
+  '_mouse_',
+  '_myself_',
+  '_random_',
+  '_stage_',
+])
+
 type TargetNameReferenceKindV1 =
   | 'touching'
   | 'distance-to'

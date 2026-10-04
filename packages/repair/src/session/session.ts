@@ -449,7 +449,7 @@ function inputArtifactReport(
   }
 }
 
-function executionSettings(repairCase: RepairCase, recordVideo: boolean)
+function executionSettings(repairCase: RepairCase)
 {
   const origins = new Set<string>()
   for (const test of repairCase.tests)
@@ -470,7 +470,6 @@ function executionSettings(repairCase: RepairCase, recordVideo: boolean)
     })),
     browser: {
       enabled: browserEnabled,
-      recordVideo,
       executable: browserEnabled ? browserRuntimeIdentity() : null,
       networkAllowed: repairCase.tests.some(
         (test) => test.scenario.allowNetwork === true
@@ -682,7 +681,6 @@ export class RepairSession
   private readonly baselineArtifactSha256: string
   private readonly createdAt: string
   private readonly sourceRevision: string | null
-  private readonly recordVideo: boolean
   private readonly multimodalEvaluator: RepairMultimodalEvaluator | null
   private cachedAcceptance!: AcceptanceContract
   private cachedPolicy!: RepairPolicy
@@ -735,7 +733,6 @@ export class RepairSession
     this.sourceRevision = input.sourceRevision
       ? `host:${input.sourceRevision};${detected}`
       : detected
-    this.recordVideo = input.recordVideo ?? false
     this.multimodalEvaluator = input.multimodalEvaluator ?? null
     let store: RepairArtifactStore | null = null
     let inputIdentity: ArtifactIdentity
@@ -1126,7 +1123,6 @@ export class RepairSession
           this.repairCase.tests,
           {
             artifactDir: this.store.baselineScreenshotsDirectory(),
-            recordVideo: this.recordVideo,
           }
         )
       }
@@ -1273,7 +1269,7 @@ export class RepairSession
           : {}),
       },
       versions: replayVersions(),
-      execution: executionSettings(this.repairCase, this.recordVideo),
+      execution: executionSettings(this.repairCase),
       input: inputArtifactReport(this.inputIdentity, this.baselineProject),
       baseline: createRepairBaselineReport(
         this.baselineEvaluation,
@@ -1599,7 +1595,6 @@ export class RepairSession
         diagnostics: this.policy.diagnostics,
         run: {
           artifactDir: this.store.attemptScreenshotsDirectory(pending.number),
-          recordVideo: this.recordVideo,
         },
       }
     )

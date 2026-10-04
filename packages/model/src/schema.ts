@@ -105,18 +105,57 @@ function toStorage(
   return out
 }
 
+function assertUniqueIds(
+  kind: 'model' | 'node' | 'edge',
+  ids: readonly string[],
+  modelId?: string
+): void
+{
+  const seen = new Set<string>()
+  for (const id of ids)
+  {
+    if (seen.has(id))
+    {
+      const context = modelId ? `model "${modelId}": ` : ''
+      throw new Error(`${context}duplicate ${kind} id "${id}"`)
+    }
+    seen.add(id)
+  }
+}
+
 function buildModel(json: ModelJson): Model
 {
-  const nodes = new Map<string, ModelNode>()
-  for (const n of json.nodes)
-  {
-    nodes.set(n.id, { id: n.id, label: n.label, outgoing: [], isStop: true })
-  }
-  if (!nodes.has(json.startNodeId))
+  assertUniqueIds(
+    'node',
+    json.nodes.map((node) => node.id),
+    json.id
+  )
+  const nodeIds = new Set(json.nodes.map((node) => node.id))
+  if (!nodeIds.has(json.startNodeId))
   {
     throw new Error(
       `model "${json.id}": startNodeId "${json.startNodeId}" is not a declared node`
     )
+  }
+  for (const stopAllNodeId of json.stopAllNodeIds)
+  {
+    if (!nodeIds.has(stopAllNodeId))
+    {
+      throw new Error(
+        `model "${json.id}": stopAllNodeId "${stopAllNodeId}" is not a declared node`
+      )
+    }
+  }
+  assertUniqueIds(
+    'edge',
+    json.edges.map((edge) => edge.id),
+    json.id
+  )
+
+  const nodes = new Map<string, ModelNode>()
+  for (const n of json.nodes)
+  {
+    nodes.set(n.id, { id: n.id, label: n.label, outgoing: [], isStop: true })
   }
 
   const edges: ModelEdge[] = []
@@ -197,6 +236,10 @@ function buildModel(json: ModelJson): Model
 // validate + lower a parsed model file into its program/end/user roles
 export function loadModels(json: ModelJson[]): LoadedModels
 {
+  assertUniqueIds(
+    'model',
+    json.map((model) => model.id)
+  )
   const models = json.map(buildModel)
   return {
     programModels: models.filter((m) => m.usage === 'program'),

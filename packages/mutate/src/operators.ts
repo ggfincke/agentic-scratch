@@ -8,6 +8,7 @@ import type {
   InputPrimitive,
   Target,
 } from '@scratch-agent/sb3'
+import { hasScratchRecordKey } from '@scratch-agent/sb3'
 import { deletableStatementIds, deleteStatement } from '@scratch-agent/ir'
 
 export type MutationOperator = 'op-swap' | 'const' | 'delete' | 'negate'
@@ -135,6 +136,17 @@ function deleteSite(
   }
 }
 
+function freshNegationBlockId(target: Target, ownerId: string): string
+{
+  const base = `${ownerId}~not`
+  if (!hasScratchRecordKey(target.blocks, base)) return base
+  for (let suffix = 1; ; suffix++)
+  {
+    const candidate = `${base}~${suffix}`
+    if (!hasScratchRecordKey(target.blocks, candidate)) return candidate
+  }
+}
+
 function negateSite(
   targetIndex: number,
   targetName: string,
@@ -156,7 +168,7 @@ function negateSite(
       if (!b || !cond) return
       const condSlot = cond[1]
       if (typeof condSlot !== 'string') return
-      const notId = `${id}~not`
+      const notId = freshNegationBlockId(target, id)
       target.blocks[notId] = {
         opcode: 'operator_not',
         next: null,
@@ -182,16 +194,7 @@ function hasStringCondition(block: Block): boolean
 // every applicable mutation site in one target, in a stable block-map order
 function sitesForTarget(target: Target, targetIndex: number): MutationSite[]
 {
-  const deletionCandidates: string[] = []
-  for (const entry of Object.values(target.blocks))
-  {
-    const block = asBlock(entry)
-    if (block?.next && asBlock(target.blocks[block.next]))
-    {
-      deletionCandidates.push(block.next)
-    }
-  }
-  const deletable = deletableStatementIds(target, deletionCandidates)
+  const deletable = deletableStatementIds(target, Object.keys(target.blocks))
   const sites: MutationSite[] = []
   for (const [id, entry] of Object.entries(target.blocks))
   {
@@ -212,12 +215,8 @@ function sitesForTarget(target: Target, targetIndex: number): MutationSite[]
     if (hasStringCondition(b))
       sites.push(negateSite(targetIndex, target.name, id, b.opcode))
 
-    if (b.next)
-    {
-      const nb = asBlock(target.blocks[b.next])
-      if (nb && deletable.has(b.next))
-        sites.push(deleteSite(targetIndex, target.name, b.next, nb.opcode))
-    }
+    if (deletable.has(id))
+      sites.push(deleteSite(targetIndex, target.name, id, b.opcode))
   }
   return sites
 }

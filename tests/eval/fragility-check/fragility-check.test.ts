@@ -33,6 +33,8 @@ import {
   type BlockInput,
 } from '@scratch-agent/sb3'
 
+import { sharedProcedureDagProject } from '../../static/fragility-positive-fixtures.js'
+
 const PROBE_PATH = resolve('scripts/project/fragility-probe.ts')
 
 class FailJsonInstallOnceStore extends ProjectArtifactStore
@@ -125,6 +127,57 @@ test('fragility check retains reports & gates findings only when requested', asy
     })
     assert.ok(success.report.findings.length >= 1)
     assert.equal(success.report.overall.status, 'passed')
+    assert.equal(success.report.analysis.completion, 'complete')
+    assert.equal(success.report.analysis.budget.exhaustedBy, null)
+    const bounded = await runFragilityCheck({
+      input: {
+        bytes: await packSb3(JSON.stringify(sharedProcedureDagProject(16)), []),
+        displayName: 'shared-procedure-dag.sb3',
+      },
+      runRoot: join(temp, 'bounded-analysis'),
+      runId: 'bounded-analysis',
+      failOn: null,
+      probeScriptPath: PROBE_PATH,
+    })
+    assert.equal(bounded.report.overall.status, 'failed')
+    assert.equal(bounded.report.overall.gatedFindingCount, 0)
+    assert.equal(bounded.report.analysis.completion, 'incomplete')
+    assert.equal(
+      bounded.report.analysis.budget.exhaustedBy,
+      'expanded-occurrences'
+    )
+    assert.equal(
+      bounded.report.analysis.budget.usage.expandedOccurrences,
+      65536
+    )
+    assert.ok(bounded.report.analysis.budget.usage.depth <= 128)
+    assert.ok(bounded.report.analysis.budget.usage.workUnits <= 1048576)
+    assert.ok(bounded.report.analysis.budget.partialExecution.length > 0)
+    assert.ok(bounded.report.analysis.budget.partialExecution.length <= 32)
+    assert.equal(
+      bounded.report.issues[0]?.code,
+      FRAGILITY_CHECK_ISSUE_CODES.analysisBudgetExhausted
+    )
+    assert.equal(
+      bounded.report.boundaryModel.boundaryTableSha256,
+      success.report.boundaryModel.boundaryTableSha256
+    )
+    assert.equal(
+      bounded.report.analysis.budget.policySha256,
+      success.report.analysis.budget.policySha256
+    )
+    assert.match(fragilityCheckReportMarkdown(bounded.report), /incomplete/)
+    const corruptPass = structuredClone(bounded.report)
+    corruptPass.overall.status = 'passed'
+    corruptPass.issues = []
+    assert.throws(
+      () =>
+        writeFragilityCheckCheckpoint(
+          new ProjectArtifactStore(join(temp, 'incomplete-pass')),
+          corruptPass
+        ),
+      /PASS checkpoint violates report invariants/
+    )
     const persisted = JSON.parse(
       readFileSync(join(successRoot, 'fragility-check.json'), 'utf-8')
     ) as typeof success.report
@@ -263,7 +316,7 @@ test('fragility provenance classifies meta.vm rather than project semver', async
       input: {
         bytes: await fragilityFixture('native', {
           semver: '0.1.0',
-          vm: '14.1.0',
+          vm: '15.1.0',
         }),
         displayName: 'native.sb3',
       },

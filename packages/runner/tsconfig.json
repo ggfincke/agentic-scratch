@@ -15,7 +15,17 @@
     "src/browser/semantic-hash.ts",
     "src/browser/visual.ts",
     "src/browser/official-runtime.d.ts",
-    "src/browser/scaffolding.d.ts"
+    "src/browser/scaffolding.d.ts",
+    "src/browser/debug-page-entry.ts",
+    "src/browser/official-debug-page-entry.ts",
+    "src/browser/debug-runtime-page.ts",
+    "src/browser/debug-physical-input.ts",
+    "src/browser/debug-devices.ts",
+    "src/browser/debug-diagnostics.ts"
   ],
-  "references": [{ "path": "../sb3" }]
+  "references": [
+    {
+      "path": "../sb3"
+    }
+  ]
 }

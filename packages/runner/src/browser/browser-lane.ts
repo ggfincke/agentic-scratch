@@ -10,15 +10,8 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 
-import {
-  chromium,
-  type Browser,
-  type BrowserContextOptions,
-  type Locator,
-  type Page,
-} from 'playwright'
+import { chromium, type Browser, type Locator, type Page } from 'playwright'
 import { PNG } from 'pngjs'
 
 import {
@@ -28,16 +21,18 @@ import {
 } from './browser-issues.js'
 import {
   OFFICIAL_BROWSER_LINEAGE_IDENTITY,
-  OFFICIAL_SCRATCH_SCRIPT_ORDER,
-  RENDERED_BROWSER_COLOR_SCHEME,
-  RENDERED_BROWSER_DEVICE_SCALE_FACTOR,
   RENDERED_BROWSER_GL_ARGS,
-  RENDERED_BROWSER_LOCALE,
-  RENDERED_BROWSER_REDUCED_MOTION,
-  RENDERED_BROWSER_TIMEZONE,
-  RENDERED_BROWSER_VIEWPORT,
   TURBOWARP_LINEAGE_IDENTITY,
 } from './browser-config.js'
+import {
+  fallbackRenderedRuntimeDescriptor,
+  openRenderedPageHost,
+  renderedRuntimeDescriptorBeforeLaunch,
+  renderedRuntimeId,
+  type RenderedBrowserRuntime,
+  type RenderedPageHost,
+} from './browser-host.js'
+export { installBrowserWebSocketPolicy } from './browser-host.js'
 import { errorMessage } from '../error-message.js'
 import { withRunnerExecution } from '../policy/execution-coordinator.js'
 import {
@@ -54,7 +49,6 @@ import {
   hashObservationPlan,
   verifyMediaManifest,
   writeMediaFileExclusive,
-  identityForBytes,
 } from '../observation/observation-host.js'
 import {
   defaultObservationPlan,
@@ -70,7 +64,6 @@ import {
 } from '../observation/observation.js'
 import type { BrowserRuntimeObservationV1 } from './browser-api.js'
 import type { RuntimeObservationRecordV1 } from '../observation/runtime-observation.js'
-import { resolvePackageManifest } from '../report/package-manifest.js'
 import {
   BrowserConsoleCollector,
   emptyBrowserConsoleSummary,
@@ -105,6 +98,7 @@ import { STAGE_HEIGHT, STAGE_WIDTH } from '../scenario/stage.js'
 import type {
   BrowserLaneResult,
   BrowserTrace,
+  DiagnosticVideoRef,
   RunScenario,
   Scenario,
   ScreenshotRef,
@@ -117,29 +111,12 @@ import {
   type RuntimeIdentityFacetV1,
   type RuntimeLineageManifestV1,
 } from '../lineage/runtime-lineage.js'
-import {
-  officialScratchRuntimeDescriptor,
-  turboWarpRuntimeDescriptor,
-} from '../report/versions.js'
 import { snapshotSteps } from '../vm/vm-lane.js'
-
-const TURBOWARP_RUNTIME_ID = '@turbowarp/scaffolding (chromium)'
-const OFFICIAL_RUNTIME_ID = '@scratch/scratch-vm + scratch-render (chromium)'
-
-type RenderedBrowserRuntime = 'turbowarp' | 'scratch-official'
-
-// host page & project bytes are served from this routed origin so the page can
-// same-origin fetch the .sb3 (large projects never cross the page.evaluate boundary)
-const ORIGIN = 'https://spike.local'
-const PROJECT_PATH = '/project.sb3'
-const LINEAGE_MANIFEST_PATH = '/lineage-manifest.json'
 
 export interface BrowserScenarioOptions
 {
   // directory to write per-snapshot stage screenshots into
   screenshotDir: string
-  // when set, record a run video into this dir; the caller keeps or discards it
-  videoDir?: string
   // authoritative Multimodal media root; required when the observation plan is temporal
   mediaDir?: string
   observationPlan?: ObservationPlanV1
@@ -153,8 +130,11 @@ export interface BrowserScenarioOptions
   runtimeObservation?: RuntimeObservationCellOptionsV1
 }
 
-// real-time hold per snapshot so the recorder captures a distinct frame (video runs only)
-const VIDEO_HOLD_MS = 150
+// per-image hold for failure diagnostics so the recorder captures distinct frames (~6 fps)
+const DIAGNOSTIC_FRAME_HOLD_MS = 150
+
+// hard cap for a derived failure-diagnostic video; larger outputs are skipped
+const DIAGNOSTIC_MAX_BYTES = 25 * 1024 * 1024
 
 // legacy single-screenshot option shape kept for the spike report
 interface BrowserLaneOptions
@@ -162,154 +142,6 @@ interface BrowserLaneOptions
   screenshotPath: string
   allowNetwork?: boolean
   allowedOrigins?: readonly string[]
-}
-
-interface ServedRuntimeAsset
-{
-  routePath: string
-  bytes: Buffer
-}
-
-interface RenderedRuntimeAssets
-{
-  runtimeId: string
-  bundle: Buffer
-  scripts: string[]
-  served: ServedRuntimeAsset[]
-  descriptor(browserVersion: string): RuntimeDescriptorV1
-}
-
-function bundlePath(kind: RenderedBrowserRuntime): string
-{
-  const name = kind === 'turbowarp' ? 'page.js' : 'official-page.js'
-  return fileURLToPath(new URL(`./${name}`, import.meta.url))
-}
-
-function packageBytes(name: string, relativePath: string): Buffer
-{
-  return readFileSync(join(resolvePackageManifest(name).root, relativePath))
-}
-
-function loadRuntimeAssets(
-  kind: RenderedBrowserRuntime,
-  options: Pick<BrowserScenarioOptions, 'allowNetwork' | 'allowedOrigins'>
-): RenderedRuntimeAssets
-{
-  const bundle = readFileSync(bundlePath(kind))
-  if (kind === 'turbowarp')
-    return {
-      runtimeId: TURBOWARP_RUNTIME_ID,
-      bundle,
-      scripts: ['/runtime.js'],
-      served: [{ routePath: '/runtime.js', bytes: bundle }],
-      descriptor(browserVersion: string): RuntimeDescriptorV1
-      {
-        return turboWarpRuntimeDescriptor({
-          bundle,
-          browserVersion,
-          ...options,
-        })
-      },
-    }
-
-  const vmBundle = packageBytes('@scratch/scratch-vm', 'dist/web/scratch-vm.js')
-  const rendererBundle = packageBytes(
-    '@scratch/scratch-render',
-    'dist/web/scratch-render.js'
-  )
-  const storageBundle = packageBytes(
-    'scratch-storage',
-    'dist/web/scratch-storage.js'
-  )
-  const svgBundle = packageBytes(
-    '@scratch/scratch-svg-renderer',
-    'dist/web/scratch-svg-renderer.js'
-  )
-  const audioBundle = packageBytes('scratch-audio', 'dist.js')
-  const extensionWorker = packageBytes(
-    '@scratch/scratch-vm',
-    'dist/web/extension-worker.js'
-  )
-  const storageWorkerPath = 'chunks/fetch-worker.7298f079654fee093ceb.js'
-  const storageWorker = packageBytes(
-    'scratch-storage',
-    'dist/web/chunks/fetch-worker.7298f079654fee093ceb.js'
-  )
-  const workers = [
-    identityForBytes('extension-worker.js', extensionWorker),
-    identityForBytes(storageWorkerPath, storageWorker),
-  ]
-  const scripts = [...OFFICIAL_SCRATCH_SCRIPT_ORDER]
-  return {
-    runtimeId: OFFICIAL_RUNTIME_ID,
-    bundle,
-    scripts,
-    served: [
-      { routePath: '/vendor/scratch-vm.js', bytes: vmBundle },
-      { routePath: '/vendor/scratch-render.js', bytes: rendererBundle },
-      { routePath: '/vendor/scratch-storage.js', bytes: storageBundle },
-      { routePath: '/vendor/scratch-svg-renderer.js', bytes: svgBundle },
-      { routePath: '/runtime.js', bytes: bundle },
-      { routePath: '/extension-worker.js', bytes: extensionWorker },
-      { routePath: `/${storageWorkerPath}`, bytes: storageWorker },
-    ],
-    descriptor(browserVersion: string): RuntimeDescriptorV1
-    {
-      return officialScratchRuntimeDescriptor({
-        bundle,
-        browserVersion,
-        vmBundle,
-        rendererBundle,
-        storageBundle,
-        svgBundle,
-        audioBundle,
-        workers,
-        ...options,
-      })
-    },
-  }
-}
-
-function bundleBytesForIdentity(kind: RenderedBrowserRuntime): Buffer
-{
-  try
-  {
-    return readFileSync(bundlePath(kind))
-  }
-  catch
-  {
-    return Buffer.alloc(0)
-  }
-}
-
-function hostHtml(runtime: RenderedRuntimeAssets): string
-{
-  const scripts = runtime.scripts
-    .map((path) => `<script src="${path}"></script>`)
-    .join('')
-  return (
-    '<!DOCTYPE html><html><head><meta charset="utf-8">' +
-    '<link rel="icon" href="data:,"></head>' +
-    `<body><div id="app" style="width:${STAGE_WIDTH}px;height:${STAGE_HEIGHT}px"></div>` +
-    `${scripts}</body></html>`
-  )
-}
-
-function allowedExternalRequest(
-  url: string,
-  options: { allowNetwork?: boolean; allowedOrigins?: readonly string[] }
-): boolean
-{
-  if (options.allowNetwork === true) return true
-  const allowedOrigins = new Set(options.allowedOrigins ?? [])
-  try
-  {
-    return allowedOrigins.has(new URL(url).origin)
-  }
-  catch
-  {
-    return false
-  }
 }
 
 function addBlockedNetworkError(
@@ -329,25 +161,6 @@ function addBlockedNetworkError(
       message,
     })
   )
-}
-
-export async function installBrowserWebSocketPolicy(
-  page: Page,
-  onDenied: (url: string) => void,
-  options: { allowNetwork?: boolean; allowedOrigins?: readonly string[] }
-): Promise<void>
-{
-  await page.routeWebSocket(/.*/, async (webSocket) =>
-  {
-    const url = webSocket.url()
-    if (allowedExternalRequest(url, options))
-    {
-      webSocket.connectToServer()
-      return
-    }
-    onDenied(url)
-    await webSocket.close({ code: 1008, reason: 'network disabled' })
-  })
 }
 
 function screenshotName(tick: number, label: string): string
@@ -432,19 +245,22 @@ function observationError(
   )
 }
 
-async function createDerivedVideo(
-  browser: Browser,
-  mediaRoot: string,
-  frames: readonly MediaFrameRefV1[],
-  plan: ObservationPlanV1
-): Promise<DerivedVideoRefV1>
+// one source frame for a derived recording: raw bytes or a filesystem path plus its hold time
+interface DerivedVideoSource
 {
-  const temporal = plan.temporal
-  if (!temporal || frames.length === 0)
-    throw observationError(
-      RUN_ISSUE_CODES.observationCaptureFailed,
-      'cannot derive a video without authoritative temporal frames'
-    )
+  bytes?: Uint8Array
+  path?: string
+  holdMs: number
+}
+
+// record PNG sources into a webm via a throwaway recording context; the only wall-clock use left
+async function deriveVideoFromPngs(
+  browser: Browser,
+  sources: readonly DerivedVideoSource[]
+): Promise<Buffer>
+{
+  if (sources.length === 0)
+    throw new Error('cannot derive a video without source frames')
   const recordingDir = mkdtempSync(
     join(tmpdir(), 'agentic-scratch-multimodal-video-')
   )
@@ -465,10 +281,9 @@ async function createDerivedVideo(
         `img{display:block;width:${STAGE_WIDTH}px;height:${STAGE_HEIGHT}px}</style>` +
         '<img id="frame">'
     )
-    const holdMs = 1000 / temporal.playbackFps
-    for (const frame of frames)
+    for (const source of sources)
     {
-      const bytes = readFileSync(join(mediaRoot, frame.relativePath))
+      const bytes = source.bytes ?? readFileSync(source.path!)
       const src = `data:image/png;base64,${bytes.toString('base64')}`
       await page.evaluate(
         async (input: { src: string; holdMs: number }) =>
@@ -479,43 +294,152 @@ async function createDerivedVideo(
           await new Promise<void>((done) => requestAnimationFrame(() => done()))
           await new Promise<void>((done) => setTimeout(done, input.holdMs))
         },
-        { src, holdMs }
+        { src, holdMs: source.holdMs }
       )
     }
     await context.close()
     context = undefined
     if (!video)
-      throw observationError(
-        RUN_ISSUE_CODES.observationCaptureFailed,
-        'Playwright did not create the derived video recorder'
-      )
+      throw new Error('Playwright did not create the derived video recorder')
     const sourcePath = await video.path()
-    const bytes = readFileSync(sourcePath)
-    if (bytes.byteLength > temporal.maxBytes)
-      throw observationError(
-        RUN_ISSUE_CODES.observationBudgetExceeded,
-        `derived video uses ${bytes.byteLength} bytes, exceeding ${temporal.maxBytes}`
-      )
-    const relativePath = 'derived/temporal.webm'
-    const identity = writeMediaFileExclusive(mediaRoot, relativePath, bytes)
-    return {
-      id: 'derived-temporal-video',
-      relativePath,
-      mimeType: 'video/webm',
-      width: STAGE_WIDTH,
-      height: STAGE_HEIGHT,
-      durationMs: Math.round((frames.length * 1000) / temporal.playbackFps),
-      playbackFps: temporal.playbackFps,
-      bytes: identity.byteLength,
-      sha256: identity.sha256,
-      authoritative: false,
-      sourceFrameIds: frames.map((frame) => frame.id),
-    }
+    return readFileSync(sourcePath)
   }
   finally
   {
     if (context) await context.close().catch(() => undefined)
     rmSync(recordingDir, { recursive: true, force: true })
+  }
+}
+
+async function createDerivedVideo(
+  browser: Browser,
+  mediaRoot: string,
+  frames: readonly MediaFrameRefV1[],
+  plan: ObservationPlanV1
+): Promise<DerivedVideoRefV1>
+{
+  const temporal = plan.temporal
+  if (!temporal || frames.length === 0)
+    throw observationError(
+      RUN_ISSUE_CODES.observationCaptureFailed,
+      'cannot derive a video without authoritative temporal frames'
+    )
+  const holdMs = 1000 / temporal.playbackFps
+  const bytes = await deriveVideoFromPngs(
+    browser,
+    frames.map((frame) => ({
+      path: join(mediaRoot, frame.relativePath),
+      holdMs,
+    }))
+  )
+  if (bytes.byteLength > temporal.maxBytes)
+    throw observationError(
+      RUN_ISSUE_CODES.observationBudgetExceeded,
+      `derived video uses ${bytes.byteLength} bytes, exceeding ${temporal.maxBytes}`
+    )
+  const relativePath = 'derived/temporal.webm'
+  const identity = writeMediaFileExclusive(mediaRoot, relativePath, bytes)
+  return {
+    id: 'derived-temporal-video',
+    relativePath,
+    mimeType: 'video/webm',
+    width: STAGE_WIDTH,
+    height: STAGE_HEIGHT,
+    durationMs: Math.round((frames.length * 1000) / temporal.playbackFps),
+    playbackFps: temporal.playbackFps,
+    bytes: identity.byteLength,
+    sha256: identity.sha256,
+    authoritative: false,
+    sourceFrameIds: frames.map((frame) => frame.id),
+  }
+}
+
+// failure-only diagnostic video assembled from labeled snapshots then temporal frames by tick;
+// best-effort: never part of MediaManifestV1, never evidence, never affects the lane result
+async function createDiagnosticVideo(
+  browser: Browser,
+  root: string,
+  screenshots: readonly ScreenshotRef[],
+  frames: readonly MediaFrameRefV1[],
+  mediaRoot: string | null
+): Promise<DiagnosticVideoRef | null>
+{
+  const entries = [
+    ...screenshots.map((screenshot) => ({
+      tick: screenshot.tick,
+      path: screenshot.path,
+    })),
+    ...(mediaRoot
+      ? frames.map((frame) => ({
+          tick: frame.tick,
+          path: join(mediaRoot, frame.relativePath),
+        }))
+      : []),
+  ].sort((a, b) => a.tick - b.tick)
+  if (entries.length === 0) return null
+  const bytes = await deriveVideoFromPngs(
+    browser,
+    entries.map((entry) => ({
+      path: entry.path,
+      holdMs: DIAGNOSTIC_FRAME_HOLD_MS,
+    }))
+  )
+  if (bytes.byteLength > DIAGNOSTIC_MAX_BYTES) return null
+  const identity = writeMediaFileExclusive(
+    root,
+    'derived/diagnostics.webm',
+    bytes
+  )
+  return {
+    relativePath: identity.path,
+    sha256: identity.sha256,
+    byteLength: identity.byteLength,
+  }
+}
+
+// derive a diagnostic after a higher-level evaluator has classified the run as failed
+export async function deriveDiagnosticVideoFromScreenshots(
+  root: string,
+  screenshots: readonly ScreenshotRef[]
+): Promise<DiagnosticVideoRef | null>
+{
+  if (screenshots.length === 0) return null
+  try
+  {
+    return await withRunnerExecution(async () =>
+    {
+      let browser: Browser | undefined
+      try
+      {
+        browser = await chromium.launch({
+          headless: true,
+          args: [...RENDERED_BROWSER_GL_ARGS],
+        })
+        return await createDiagnosticVideo(browser, root, screenshots, [], null)
+      }
+      catch
+      {
+        return null
+      }
+      finally
+      {
+        if (browser)
+        {
+          try
+          {
+            await browser.close()
+          }
+          catch
+          {
+            // a failed cleanup only loses a best-effort diagnostic
+          }
+        }
+      }
+    })
+  }
+  catch
+  {
+    return null
   }
 }
 
@@ -547,8 +471,6 @@ class BrowserEngine implements ScenarioEngine, IdentityBoundScenarioEngine
     private readonly maxTicks: number,
     private readonly observationPlan: ObservationPlanV1,
     private readonly mediaRoot: string | null,
-    // >0 holds real time after each snapshot so the video recorder captures the frame
-    private readonly videoHoldMs: number,
     private readonly runtimeObservation?: RuntimeObservationCellOptionsV1
   )
   {
@@ -790,8 +712,6 @@ class BrowserEngine implements ScenarioEngine, IdentityBoundScenarioEngine
           ...this.frames[frameIndex]!,
           snapshotLabel: label,
         }
-      // hold real time so this frame lands in the recording (frame-exact stepping is instant)
-      if (this.videoHoldMs > 0) await this.page.waitForTimeout(this.videoHoldMs)
     }
     catch (error)
     {
@@ -905,19 +825,21 @@ class BrowserEngine implements ScenarioEngine, IdentityBoundScenarioEngine
   {
     try
     {
-      const read = cloneRead ?? await this.page.evaluate(
-        (input: {
-          tick: number
-          scenarioStepIndex: number
-          label: string | null
-        }) =>
-          window.__spike!.readCloneCounts(
-            input.tick,
-            input.scenarioStepIndex,
-            input.label
-          ),
-        { tick: this.tick, scenarioStepIndex: this.scenarioStepIndex, label }
-      )
+      const read =
+        cloneRead ??
+        (await this.page.evaluate(
+          (input: {
+            tick: number
+            scenarioStepIndex: number
+            label: string | null
+          }) =>
+            window.__spike!.readCloneCounts(
+              input.tick,
+              input.scenarioStepIndex,
+              input.label
+            ),
+          { tick: this.tick, scenarioStepIndex: this.scenarioStepIndex, label }
+        ))
       const existingIndex = this.cloneSampleIndexes.get(this.tick)
       if (existingIndex === undefined)
       {
@@ -1057,8 +979,7 @@ class BrowserEngine implements ScenarioEngine, IdentityBoundScenarioEngine
       catch (error)
       {
         complete = false
-        incompleteReason =
-          errorMessage(error)
+        incompleteReason = errorMessage(error)
         this.observationIssues.push(
           error instanceof RunnerIssueError
             ? error.issue
@@ -1112,87 +1033,6 @@ class BrowserEngine implements ScenarioEngine, IdentityBoundScenarioEngine
   }
 }
 
-async function installOfflineRoute(
-  page: Page,
-  sb3: Uint8Array,
-  runtime: RenderedRuntimeAssets,
-  issues: RunIssue[],
-  blockedUrls: string[],
-  options: {
-    allowNetwork?: boolean
-    allowedOrigins?: readonly string[]
-    lineageManifest?: RuntimeLineageManifestV1
-  }
-): Promise<void>
-{
-  const host = hostHtml(runtime)
-  const projectBody = Buffer.from(sb3)
-  const manifestBody = options.lineageManifest
-    ? Buffer.from(JSON.stringify(options.lineageManifest), 'utf8')
-    : null
-  const runtimeAssets = new Map(
-    runtime.served.map((asset) => [asset.routePath, asset.bytes])
-  )
-  await page.route('**/*', async (route) =>
-  {
-    const url = route.request().url()
-    const parsed = new URL(url)
-    if (parsed.origin === ORIGIN && parsed.pathname === PROJECT_PATH)
-    {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/octet-stream',
-        body: projectBody,
-      })
-      return
-    }
-    if (
-      manifestBody &&
-      parsed.origin === ORIGIN &&
-      parsed.pathname === LINEAGE_MANIFEST_PATH
-    )
-    {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json; charset=utf-8',
-        body: manifestBody,
-      })
-      return
-    }
-    if (parsed.origin === ORIGIN && parsed.pathname === '/')
-    {
-      await route.fulfill({
-        status: 200,
-        contentType: 'text/html; charset=utf-8',
-        body: host,
-      })
-      return
-    }
-    const runtimeAsset = runtimeAssets.get(parsed.pathname)
-    if (parsed.origin === ORIGIN && runtimeAsset)
-    {
-      await route.fulfill({
-        status: 200,
-        contentType: 'text/javascript; charset=utf-8',
-        body: runtimeAsset,
-      })
-      return
-    }
-    if (allowedExternalRequest(url, options))
-    {
-      await route.continue()
-      return
-    }
-    addBlockedNetworkError(issues, blockedUrls, url)
-    await route.abort('blockedbyclient')
-  })
-  await installBrowserWebSocketPolicy(
-    page,
-    (url) => addBlockedNetworkError(issues, blockedUrls, url),
-    options
-  )
-}
-
 async function runBrowserScenarioScoped(
   runtimeKind: RenderedBrowserRuntime,
   sb3: Uint8Array,
@@ -1208,8 +1048,10 @@ async function runBrowserScenarioScoped(
   const observationPlan = planValidation.ok
     ? planValidation.value
     : defaultObservationPlan()
-  const runtimeAssets = loadRuntimeAssets(runtimeKind, options)
-  let runtimeDescriptor = runtimeAssets.descriptor('not-launched')
+  let runtimeDescriptor = renderedRuntimeDescriptorBeforeLaunch(
+    runtimeKind,
+    options
+  )
   const observations = identityBound
     ? createIdentityBoundObservationTrace(sb3, identityBound, observationPlan)
     : createObservationTrace(sb3, scenario, observationPlan)
@@ -1222,10 +1064,9 @@ async function runBrowserScenarioScoped(
   const blockedUrls: string[] = []
   const console = new BrowserConsoleCollector()
   let consoleFailureStage: BrowserRunStage | undefined
-  let browser: Browser | undefined
-  let context: Awaited<ReturnType<Browser['newContext']>> | undefined
+  let host: RenderedPageHost | undefined
   let engine: BrowserEngine | undefined
-  let video: ReturnType<Page['video']> | null = null
+  let diagnosticVideo: DiagnosticVideoRef | null = null
   let stage: BrowserRunStage = 'launch'
   let lineage: RuntimeLineageAdapterResultV1 | null = null
   let identityBoundDrive: IdentityBoundDriveResultV1 | null = null
@@ -1255,63 +1096,53 @@ async function runBrowserScenarioScoped(
           message: 'a temporal observation plan requires options.mediaDir',
         })
       )
-    browser = await chromium.launch({
-      headless: true,
-      args: [...RENDERED_BROWSER_GL_ARGS],
-    })
-    runtimeDescriptor = runtimeAssets.descriptor(browser.version())
-    stage = 'setup'
-    const contextOptions: BrowserContextOptions = {
-      viewport: RENDERED_BROWSER_VIEWPORT,
-      locale: RENDERED_BROWSER_LOCALE,
-      timezoneId: RENDERED_BROWSER_TIMEZONE,
-      deviceScaleFactor: RENDERED_BROWSER_DEVICE_SCALE_FACTOR,
-      colorScheme: RENDERED_BROWSER_COLOR_SCHEME,
-      reducedMotion: RENDERED_BROWSER_REDUCED_MOTION,
-    }
-    if (options.videoDir)
-    {
-      mkdirSync(options.videoDir, { recursive: true })
-      contextOptions.recordVideo = { dir: options.videoDir }
-    }
-    context = await browser.newContext(contextOptions)
-    const page = await context.newPage()
-    if (options.videoDir) video = page.video()
-    // only uncaught page errors fail the run; console output is captured, not a failure signal
-    page.on('pageerror', (error) =>
-      issues.push(browserPageIssue(error, stage))
-    )
-    page.on('console', (message) =>
-    {
-      const classified = console.add(message.type(), message.text())
-      if (classified.disposition === 'failure' && !consoleFailureStage)
-      {
-        consoleFailureStage = stage
-      }
-    })
-
-    await installOfflineRoute(
-      page,
+    host = await openRenderedPageHost({
+      runtimeKind,
       sb3,
-      runtimeAssets,
-      issues,
-      blockedUrls,
-      options
-    )
-    await page.goto(`${ORIGIN}/`, { waitUntil: 'load' })
-    await page.waitForFunction(
-      "window.__spike && typeof window.__spike.load === 'function'",
-      null,
-      { timeout: 20000 }
-    )
+      lineageManifest: options.lineageManifest,
+      headless: true,
+      allowNetwork: options.allowNetwork,
+      allowedOrigins: options.allowedOrigins,
+      onBrowserLaunched(descriptor): void
+      {
+        // record version only; stage stays launch until the host is fully ready
+        runtimeDescriptor = descriptor
+      },
+      // only uncaught page errors fail the run; console output is retained
+      onPageError(error): void
+      {
+        issues.push(browserPageIssue(error, stage))
+      },
+      onConsole(type, text): void
+      {
+        const classified = console.add(type, text)
+        if (classified.disposition === 'failure' && !consoleFailureStage)
+          consoleFailureStage = stage
+      },
+      onNetworkDenied(url): void
+      {
+        addBlockedNetworkError(issues, blockedUrls, url)
+      },
+      onCleanupError(error): void
+      {
+        issues.push(
+          toRunIssue(error, {
+            code: RUN_ISSUE_CODES.browserCleanupFailed,
+            kind: 'internal',
+            responsibility: 'infrastructure',
+          })
+        )
+      },
+    })
+    const page = host.page
 
     mkdirSync(options.screenshotDir, { recursive: true })
     stage = 'project-load'
     await page.evaluate(
       (input) => window.__spike!.load(input.project, input.manifest),
       {
-        project: PROJECT_PATH,
-        manifest: options.lineageManifest ? LINEAGE_MANIFEST_PATH : null,
+        project: host.projectPath,
+        manifest: host.lineageManifestPath,
       }
     )
     if (options.lineageManifest)
@@ -1337,7 +1168,6 @@ async function runBrowserScenarioScoped(
         : (scenario.maxTicks ?? DEFAULT_MAX_TICKS),
       observationPlan,
       mediaRoot,
-      options.videoDir ? VIDEO_HOLD_MS : 0,
       options.runtimeObservation
     )
     await engine.startObservations()
@@ -1362,13 +1192,13 @@ async function runBrowserScenarioScoped(
   }
   finally
   {
-    if (engine && browser)
+    if (engine && host)
     {
       observations.cloneCounts = structuredClone(engine.cloneCounts)
       try
       {
         observations.media = await engine.finalizeObservations(
-          browser,
+          host.browser,
           runtimeDescriptor
         )
       }
@@ -1384,63 +1214,34 @@ async function runBrowserScenarioScoped(
       }
       issues.push(...engine.observationIssues)
     }
-    // close the context first so the video finalizes, then the browser; neither teardown
-    // may throw out of finally or it would discard the assembled trace & abort the suite
-    if (context)
+    // failure-only diagnostics: replicate the post-teardown issue pushes exactly, then derive
+    const consoleHasFailure = console
+      .summary()
+      .categories.some((category) => category.disposition === 'failure')
+    const loweringIncomplete =
+      identityBoundDrive !== null && identityBoundDrive.status !== 'complete'
+    if (
+      host &&
+      engine &&
+      (issues.length > 0 || consoleHasFailure || loweringIncomplete)
+    )
     {
       try
       {
-        await context.close()
-      }
-      catch (error)
-      {
-        issues.push(
-          toRunIssue(error, {
-            code: RUN_ISSUE_CODES.browserCleanupFailed,
-            kind: 'internal',
-            responsibility: 'infrastructure',
-          })
+        diagnosticVideo = await createDiagnosticVideo(
+          host.browser,
+          mediaRoot ?? options.screenshotDir,
+          engine.screenshots,
+          engine.frames,
+          mediaRoot
         )
       }
-    }
-    if (browser)
-    {
-      try
+      catch
       {
-        await browser.close()
-      }
-      catch (error)
-      {
-        issues.push(
-          toRunIssue(error, {
-            code: RUN_ISSUE_CODES.browserCleanupFailed,
-            kind: 'internal',
-            responsibility: 'infrastructure',
-          })
-        )
+        // a failed derivation only loses a debug artifact; the lane result is already set
       }
     }
-  }
-
-  // video path is only resolvable once the context has closed
-  let videoPath: string | null = null
-  if (video)
-  {
-    try
-    {
-      videoPath = await video.path()
-    }
-    catch (error)
-    {
-      videoPath = null
-      issues.push(
-        toRunIssue(error, {
-          code: RUN_ISSUE_CODES.browserCleanupFailed,
-          kind: 'internal',
-          responsibility: 'infrastructure',
-        })
-      )
-    }
+    if (host) await host.close()
   }
 
   if (blockedUrls.length > 0)
@@ -1494,14 +1295,14 @@ async function runBrowserScenarioScoped(
   // page errors captured during teardown stay authoritative in the final issue list
   return {
     ok: issues.length === 0,
-    runtime: runtimeAssets.runtimeId,
+    runtime: renderedRuntimeId(runtimeKind),
     runtimeDescriptor,
     observations,
     mediaRoot,
     snapshots: engine ? engine.snapshots : [],
     finalSnapshot: engine?.finalSnapshot ?? null,
     screenshots: engine ? engine.screenshots : [],
-    video: videoPath,
+    diagnosticVideo,
     errors: runIssueMessages(issues),
     issues,
     consoleLog: console.entries,
@@ -1513,31 +1314,6 @@ async function runBrowserScenarioScoped(
       : Object.freeze([]),
     runtimeIdentityFacet,
   }
-}
-
-function fallbackRuntimeDescriptor(
-  kind: RenderedBrowserRuntime,
-  options: BrowserScenarioOptions
-): RuntimeDescriptorV1
-{
-  const bundle = bundleBytesForIdentity(kind)
-  if (kind === 'turbowarp')
-    return turboWarpRuntimeDescriptor({
-      bundle,
-      browserVersion: 'not-launched',
-      ...options,
-    })
-  return officialScratchRuntimeDescriptor({
-    bundle,
-    browserVersion: 'not-launched',
-    vmBundle: new Uint8Array(),
-    rendererBundle: new Uint8Array(),
-    storageBundle: new Uint8Array(),
-    svgBundle: new Uint8Array(),
-    audioBundle: new Uint8Array(),
-    workers: [],
-    ...options,
-  })
 }
 
 async function runRenderedBrowserScenario(
@@ -1568,9 +1344,8 @@ async function runRenderedBrowserScenario(
       : defaultObservationPlan()
     return {
       ok: false,
-      runtime:
-        kind === 'turbowarp' ? TURBOWARP_RUNTIME_ID : OFFICIAL_RUNTIME_ID,
-      runtimeDescriptor: fallbackRuntimeDescriptor(kind, options),
+      runtime: renderedRuntimeId(kind),
+      runtimeDescriptor: fallbackRenderedRuntimeDescriptor(kind, options),
       observations: createObservationTrace(sb3, scenario, observationPlan),
       mediaRoot:
         observationPlan.temporal && options.mediaDir
@@ -1579,7 +1354,7 @@ async function runRenderedBrowserScenario(
       snapshots: [],
       finalSnapshot: null,
       screenshots: [],
-      video: null,
+      diagnosticVideo: null,
       errors: runIssueMessages(issues),
       issues,
       consoleLog: [],

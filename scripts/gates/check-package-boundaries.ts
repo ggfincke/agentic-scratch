@@ -198,6 +198,15 @@ function verifyEdges(packages: PackageFacts[]): string[]
         )
       }
     }
+    for (const target of entry.referenceEdges)
+    {
+      if (!entry.manifestEdges.has(target))
+      {
+        problems.push(
+          `${entry.shortName} references ${target} without a manifest dependency`
+        )
+      }
+    }
   }
   return problems
 }
@@ -273,9 +282,15 @@ function main(): void
     (count, entry) => count + entry.importEdges.size,
     0
   )
+  const referenceEdgeCount = packages.reduce(
+    (count, entry) => count + entry.referenceEdges.size,
+    0
+  )
   process.stdout.write(
     `package boundaries ok: ${packages.length} packages, ` +
-      `${manifestEdgeCount} manifest edges, ${importEdgeCount} import edges, ` +
+      `${manifestEdgeCount} manifest edges, ` +
+      `${referenceEdgeCount} reference edges, ` +
+      `${importEdgeCount} import edges, ` +
       '0 cycles, 0 violations\n'
   )
 }

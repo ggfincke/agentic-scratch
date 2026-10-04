@@ -10,9 +10,10 @@ import {
   blockEntityEvidenceSetV1,
   blockInputFingerprintV1,
   canonicalProcedureSignatureV1,
-  commentEntityEvidenceSetV1,
   commentSetSha256V1,
   createCuratedCoreOperationAdaptersV1,
+  createStandardAuthoringGraphAdaptersV2,
+  STANDARD_AUTHORING_CATALOG_EVIDENCE_V2,
   declarationEntityEvidenceSetV1,
   externalArgumentReporterIdsV1,
   procedureCreationContentFingerprintForResultV1,
@@ -31,11 +32,7 @@ import {
   semanticHashV1,
   targetEntityEvidenceSetV1,
   validateOrderedCollectionCorrespondence,
-  SEMANTIC_LINEAGE_VERSION_V1,
-  validateSemanticLineageSnapshot,
   type AppliedProcedureOperationV1,
-  type BlockEntityEvidenceV1,
-  type BlockRefV1,
   type CommentEntityEvidenceV1,
   type CommentRefV1,
   type ContractEntityRefV1,
@@ -44,9 +41,7 @@ import {
   type CuratedEntityResolverV1,
   type CuratedResolvedEntityV1,
   type DecodedProcedureSignatureV1,
-  type DeclarationRefV1,
   type ScriptBlockContractEntityResolutionRequestV1,
-  type MediaRefV1,
   type OperationPlanningChoiceV1,
   type ProcedureCreationOperationV1,
   type ProcedureCreationResultRoleV1,
@@ -58,37 +53,47 @@ import {
   type ProcedureEntityEvidenceV1,
   type ProcedureRecordV1,
   type ResolvedProcedureOperationV1,
-  type ScriptEntityEvidenceV1,
   type SemanticEditOperationProcedureAddV1,
   type SemanticEditOperationProcedureRemoveV1,
   type SemanticEditOperationProcedureSetCallArgumentV1,
   type SemanticEditOperationProcedureUpdateSignatureV1,
   type SemanticEditOperationGoalV1,
   type SemanticEditOperationV1,
-  type SemanticLineageRecord,
   type SemanticLineageSnapshot,
+  type StandardProcedureScopeV2,
   type TargetEntityEvidenceV1,
 } from '@scratch-agent/ir/edit'
 
 import {
   bindingRealizationCandidatesV1 as bindingRealizationCandidates,
+  assertExactPlanningChoiceSetV1,
   blockPlanningProjectionV1 as planningBlock,
   cloneDispatcherProjectV1 as cloneProject,
   completedPlanningFactV1,
   createProductionLineageV1,
   exactCommentRefV1 as exactCommentRef,
-  exactContractRefV1 as resolveExactContractRef,
-  exactDeclarationRefV1 as exactDeclarationRef,
+  exactContractRefV1 as exactContractRef,
+  exactPlanningChoiceValueV1,
   futureBindingAlreadyRealizedV1 as futureBindingAlreadyRealized,
   productionOperationResultV1,
+  resultBlockEvidenceV1 as resultBlockEvidence,
+  resultScriptEvidenceV1 as resultScriptEvidence,
+  targetCommentRawIdentitiesV1 as targetCommentRawIdentities,
   targetPlanningProjectionV1 as planningTarget,
+  targetScriptRawIdentitiesV1 as targetScriptRawIdentities,
 } from './dispatcher-primitives.js'
-import { futureBindingKeySha256V1 } from '../lineage/future-binding-ledger.js'
+import { realizedFutureBindingKeysForLineageV1 as realizedFutureBindingKeys } from '../lineage/future-binding-ledger.js'
 import type { FutureContractBindingV1 } from '../lineage/future-binding-ledger.js'
 import { editJsonPointerPartV1 as pointerPart } from '../support/internal-values.js'
-import type { CreatedSemanticLineageV1 } from '../lineage/lineage.js'
 import {
-  blockBindingKeys,
+  activeLineageRecordV1 as activeRecord,
+  reindexOwnerLineagesV1 as reindexOwnerLineages,
+  replaceLineageRawIdentityV1 as replaceLineageRawIdentity,
+  type CreatedSemanticLineageV1,
+} from '../lineage/lineage.js'
+import {
+  allBlockBindingKeys,
+  allScriptBindingKeys,
   entityLineageIn,
   exactBlockRef,
   exactTargetRef,
@@ -96,7 +101,7 @@ import {
   resolveBlockSelectionRef,
   resolveTargetSelection,
   resolverAdapters,
-  scriptBindingKeys,
+  scriptBindingKeysByLineage,
   targetBindingKeys,
   targetLineageAt,
   tombstoneLineage,
@@ -104,13 +109,18 @@ import {
   type PlanningEntityProjectionV1,
   type ProductionResultSlotV1,
 } from './target-dispatchers.js'
-import { declarationContractBindingKeys } from './script-block-dispatchers.js'
+import {
+  declarationContractBindingKeys,
+  standardRawNamedContractRefV2,
+} from './script-block-dispatchers.js'
 import {
   curatedMediaEntityV1,
-  exactMediaRefV1,
   mediaContractEntityRefV1,
-  resolveMediaReferenceV1,
 } from './media-target-dispatchers.js'
+import {
+  canonicalBlockRefV1 as canonicalBlockRef,
+  canonicalizeSemanticValueV1 as canonicalizeSemanticValue,
+} from './reference-canonicalization.js'
 import {
   canonicalParameterRefV1 as canonicalParameterRef,
   canonicalProcedureRefV1 as canonicalProcedureRef,
@@ -135,6 +145,11 @@ import type {
   EditOperationPlanningFactV1,
   EditOperationPlanningResultV1,
 } from '../transaction/transaction.js'
+import {
+  standardProcedureContractRefV2,
+  standardProcedureResolversV2,
+  standardProcedureScopeForBlockV2,
+} from './standard-procedure-resolution.js'
 
 type ProcedureLifecycleOperationV1 =
   | SemanticEditOperationProcedureAddV1
@@ -186,7 +201,9 @@ interface ProcedurePlanningFactProjectionV1
   readonly opId: string
   readonly selectedEntities: readonly PlanningEntityProjectionV1[]
   readonly selectedLineageIds: readonly string[]
-  readonly catalogEvidence: typeof CURATED_CORE_BLOCK_CATALOG_EVIDENCE_V1
+  readonly catalogEvidence:
+    | typeof CURATED_CORE_BLOCK_CATALOG_EVIDENCE_V1
+    | typeof STANDARD_AUTHORING_CATALOG_EVIDENCE_V2
   readonly facts: unknown
 }
 
@@ -230,17 +247,6 @@ function fail(
 ): never
 {
   throw Object.assign(new Error(message), { code, context })
-}
-
-// a same-batch created ref has no exact location in the predecessor revision, so
-// canonicalizing it away makes the retained batch unreplayable. keep it verbatim
-// & canonicalize every other selector, matching the Group D graph rule.
-function canonicalBlockRef(
-  reference: BlockRefV1,
-  evidence: BlockEntityEvidenceV1
-): BlockRefV1
-{
-  return reference.refKind === 'created' ? reference : exactBlockRef(evidence)
 }
 
 function exactCurrentTarget(
@@ -301,49 +307,6 @@ function externalArgumentReporterIdsFor(
     new Set(procedureOwnedBlockIdsV1(target, record.definitionBlockId)),
     new Set(record.argumentNames)
   )
-}
-
-function canonicalizeSemanticValue(
-  context: ProductionOperationContextV1,
-  value: unknown
-): unknown
-{
-  if (Array.isArray(value))
-    return value.map((entry) => canonicalizeSemanticValue(context, entry))
-  if (value === null || typeof value !== 'object') return value
-  const record = value as Readonly<Record<string, unknown>>
-  if (
-    record['entityKind'] === 'target' &&
-    typeof record['refKind'] === 'string'
-  )
-  {
-    const evidence = resolveTargetRefV1(
-      context.candidate,
-      record as unknown as Parameters<typeof resolveTargetRefV1>[1],
-      resolverAdapters(context).target
-    )
-    return exactTargetRef(evidence)
-  }
-  if (
-    record['entityKind'] === 'declaration' &&
-    typeof record['refKind'] === 'string'
-  )
-  {
-    const evidence = resolveDeclarationRefV1(
-      context.candidate,
-      record as unknown as DeclarationRefV1,
-      resolverAdapters(context)
-    )
-    return exactDeclarationRef(evidence)
-  }
-  if (record['entityKind'] === 'media' && typeof record['refKind'] === 'string')
-    return exactMediaRefV1(
-      resolveMediaReferenceV1(context, record as unknown as MediaRefV1).current
-    )
-  const canonical: Record<string, unknown> = Object.create(null)
-  for (const [key, entry] of Object.entries(record))
-    canonical[key] = canonicalizeSemanticValue(context, entry)
-  return canonical
 }
 
 function resolveCommentSelection(
@@ -900,7 +863,8 @@ function resolveProcedureDispatch(
 }
 
 function procedurePlanningFactProjection(
-  resolved: ResolvedProcedureDispatchV1
+  resolved: ResolvedProcedureDispatchV1,
+  semanticAuthorityId: 'a0-v1' | 'standard-v2' = 'a0-v1'
 ): ProcedurePlanningFactProjectionV1
 {
   return {
@@ -910,7 +874,10 @@ function procedurePlanningFactProjection(
     opId: resolved.operation.opId,
     selectedEntities: resolved.planningEntities,
     selectedLineageIds: resolved.selectedLineageIds,
-    catalogEvidence: CURATED_CORE_BLOCK_CATALOG_EVIDENCE_V1,
+    catalogEvidence:
+      semanticAuthorityId === 'standard-v2'
+        ? STANDARD_AUTHORING_CATALOG_EVIDENCE_V2
+        : CURATED_CORE_BLOCK_CATALOG_EVIDENCE_V1,
     facts: resolved.facts,
   }
 }
@@ -920,7 +887,10 @@ function productionProcedurePlanningFactProjectionV1(
   operation: ProcedureOperationV1
 ): ProcedurePlanningFactProjectionV1
 {
-  return procedurePlanningFactProjection(resolveProcedureDispatch(context, operation))
+  return procedurePlanningFactProjection(
+    resolveProcedureDispatch(context, operation),
+    context.input.semanticAuthorityId
+  )
 }
 
 export function productionProcedurePlanningFactSetSha256V1(
@@ -932,50 +902,6 @@ export function productionProcedurePlanningFactSetSha256V1(
     'resolved-plan',
     productionProcedurePlanningFactProjectionV1(context, operation)
   )
-}
-
-function exactPlanningChoiceValueV1(
-  choices: readonly OperationPlanningChoiceV1[],
-  operationKind: SemanticEditOperationGoalV1['kind'],
-  destination: string
-): unknown
-{
-  const matches = choices.filter(
-    (choice) =>
-      choice.operationKind === operationKind &&
-      choice.destination === destination
-  )
-  if (matches.length !== 1)
-    return fail(
-      'edit.cardinality_mismatch',
-      `planning requires one exact ${destination} choice`,
-      { matchCount: matches.length }
-    )
-  return matches[0]!.selection.value
-}
-
-function assertExactPlanningChoiceSetV1(
-  choices: readonly OperationPlanningChoiceV1[],
-  operationKind: SemanticEditOperationGoalV1['kind'],
-  destinations: readonly string[]
-): void
-{
-  if (
-    choices.length !== destinations.length ||
-    destinations.some(
-      (destination) =>
-        choices.filter(
-          (choice) =>
-            choice.operationKind === operationKind &&
-            choice.destination === destination
-        ).length !== 1
-    )
-  )
-    fail(
-      'edit.cardinality_mismatch',
-      `planning choices do not exactly cover ${operationKind}`,
-      { matchCount: choices.length }
-    )
 }
 
 function completedPlanningResultV1(
@@ -2000,11 +1926,14 @@ function curatedEntityResolver(
           'edit.invalid_shape',
           `${request.semanticPath} does not contain a target reference`
         )
-      const target = resolveTargetRefV1(
-        context.candidate,
-        request.reference,
-        resolverAdapters(context).target
-      )
+      const target =
+        context.input.semanticAuthorityId === 'standard-v2'
+          ? resolveTargetSelection(context, request.reference).current
+          : resolveTargetRefV1(
+              context.candidate,
+              request.reference,
+              resolverAdapters(context).target
+            )
       if (target.targetKind !== request.expectedEntitySubtype)
         return fail(
           'edit.invalid_shape',
@@ -2079,105 +2008,6 @@ function createLineage(
     canonicalOrdinal,
     creationKey,
     activeLineage
-  )
-}
-
-function activeRecord(
-  lineage: SemanticLineageSnapshot,
-  kind: 'script' | 'block' | 'comment' | 'procedure' | 'parameter',
-  ownerLineageId: string,
-  rawIdentity: string
-): SemanticLineageRecord
-{
-  const matches = lineage.records.filter(
-    (record) =>
-      record.status === 'active' &&
-      record.kind === kind &&
-      record.ownerLineageId === ownerLineageId &&
-      record.rawIdentity === rawIdentity
-  )
-  if (matches.length !== 1)
-    return fail(
-      'edit.internal_invariant',
-      `active ${kind} lineage is absent or ambiguous for ${rawIdentity}`
-    )
-  return matches[0]!
-}
-
-function replaceLineageRawIdentity(
-  active: SemanticLineageSnapshot,
-  lineageId: string,
-  rawIdentity: string
-): SemanticLineageSnapshot
-{
-  return validateSemanticLineageSnapshot({
-    version: SEMANTIC_LINEAGE_VERSION_V1,
-    records: active.records.map((record) =>
-      record.lineageId === lineageId ? { ...record, rawIdentity } : record
-    ),
-  })
-}
-
-function reindexOwnerLineages(
-  active: SemanticLineageSnapshot,
-  kind: 'script' | 'comment' | 'parameter',
-  ownerLineageId: string,
-  orderedRawIdentities: readonly string[]
-): SemanticLineageSnapshot
-{
-  const ordinalByRawIdentity = new Map(
-    orderedRawIdentities.map((rawIdentity, ordinal) => [rawIdentity, ordinal])
-  )
-  const siblings = active.records.filter(
-    (record) =>
-      record.status === 'active' &&
-      record.kind === kind &&
-      record.ownerLineageId === ownerLineageId
-  )
-  if (
-    siblings.length !== orderedRawIdentities.length ||
-    siblings.some((record) => !ordinalByRawIdentity.has(record.rawIdentity))
-  )
-    return fail(
-      'edit.internal_invariant',
-      `active ${kind} lineage does not match post-operation evidence`
-    )
-  return validateSemanticLineageSnapshot({
-    version: SEMANTIC_LINEAGE_VERSION_V1,
-    records: active.records.map((record) =>
-      record.status === 'active' &&
-      record.kind === kind &&
-      record.ownerLineageId === ownerLineageId
-        ? {
-            ...record,
-            canonicalOrdinal: ordinalByRawIdentity.get(record.rawIdentity)!,
-          }
-        : record
-    ),
-  })
-}
-
-function targetScriptRawIdentities(
-  project: ProjectIR,
-  targetIndex: number
-): readonly string[]
-{
-  return Object.freeze(
-    scriptEntityEvidenceSetV1(project)
-      .filter((script) => script.targetIndex === targetIndex)
-      .map((script) => `script:${script.topBlockId}`)
-  )
-}
-
-function targetCommentRawIdentities(
-  project: ProjectIR,
-  targetIndex: number
-): readonly string[]
-{
-  return Object.freeze(
-    commentEntityEvidenceSetV1(project)
-      .filter((comment) => comment.targetIndex === targetIndex)
-      .map((comment) => `comment:${comment.commentId}`)
   )
 }
 
@@ -2455,29 +2285,6 @@ function reconcileProcedureLineage(
   }
 }
 
-function realizedFutureBindingKeys(
-  context: ProductionOperationContextV1,
-  lineageId: string
-): readonly string[]
-{
-  return uniqueSorted(
-    context.contract.entityBindings.flatMap((binding) =>
-      binding.bindingKind === 'future' &&
-      context.futureBindingLedger.realizations.some(
-        (realization) =>
-          realization.resultLineageId === lineageId &&
-          realization.bindingKeySha256 ===
-            futureBindingKeySha256V1(
-              context.input.changeContractSha256,
-              binding.bindingKey
-            )
-      )
-        ? [binding.bindingKey]
-        : []
-    )
-  )
-}
-
 // a procedure binding is matched on its exact source evidence triple, exactly
 // like every other existing entity binding in the contract
 function procedureBindingKeys(
@@ -2508,31 +2315,12 @@ function procedureBindingKeys(
     : []
   return uniqueSorted([
     ...existing,
-    ...realizedFutureBindingKeys(context, lineageId),
-  ])
-}
-
-function allScriptBindingKeys(
-  context: ProductionOperationContextV1,
-  evidence: ScriptEntityEvidenceV1,
-  lineageId: string
-): readonly string[]
-{
-  return uniqueSorted([
-    ...scriptBindingKeys(context, evidence),
-    ...realizedFutureBindingKeys(context, lineageId),
-  ])
-}
-
-function allBlockBindingKeys(
-  context: ProductionOperationContextV1,
-  evidence: BlockEntityEvidenceV1,
-  lineageId: string
-): readonly string[]
-{
-  return uniqueSorted([
-    ...blockBindingKeys(context, evidence),
-    ...realizedFutureBindingKeys(context, lineageId),
+    ...realizedFutureBindingKeys(
+      context.input.changeContractSha256,
+      context.contract.entityBindings,
+      context.futureBindingLedger,
+      lineageId
+    ),
   ])
 }
 
@@ -2571,42 +2359,6 @@ function resultParameterEvidence(
     return fail(
       'edit.internal_invariant',
       'created parameter does not have one exact post-operation evidence row'
-    )
-  return matches[0]!
-}
-
-function resultScriptEvidence(
-  project: ProjectIR,
-  targetIndex: number,
-  topBlockId: string
-): ScriptEntityEvidenceV1
-{
-  const matches = scriptEntityEvidenceSetV1(project).filter(
-    (evidence) =>
-      evidence.targetIndex === targetIndex && evidence.topBlockId === topBlockId
-  )
-  if (matches.length !== 1)
-    return fail(
-      'edit.internal_invariant',
-      'created script does not have one exact post-operation evidence row'
-    )
-  return matches[0]!
-}
-
-function resultBlockEvidence(
-  project: ProjectIR,
-  targetIndex: number,
-  blockId: string
-): BlockEntityEvidenceV1
-{
-  const matches = blockEntityEvidenceSetV1(project).filter(
-    (evidence) =>
-      evidence.targetIndex === targetIndex && evidence.blockId === blockId
-  )
-  if (matches.length !== 1)
-    return fail(
-      'edit.internal_invariant',
-      'created block does not have one exact post-operation evidence row'
     )
   return matches[0]!
 }
@@ -2868,7 +2620,9 @@ function matchResultBindings(
   operation: ProcedureOperationV1,
   slots: readonly ProcedureResultSlotV1[],
   targetBindingKeysForCreation: readonly string[],
-  procedureBindingKeysForSlot: (slot: ProcedureResultSlotV1) => readonly string[],
+  procedureBindingKeysForSlot: (
+    slot: ProcedureResultSlotV1
+  ) => readonly string[],
   scriptBindingKeysForSlot: (slot: ProcedureResultSlotV1) => readonly string[],
   creationContentFingerprint: (
     binding: ProcedureFutureContractBindingV1,
@@ -2936,37 +2690,18 @@ function matchResultBindings(
   )
 }
 
-function exactContractRef(
-  context: ProductionOperationContextV1,
-  bindingKeys: readonly string[],
-  expectedEntityKind: ScriptBlockContractEntityResolutionRequestV1['expectedEntityKind'],
-  expectedEntitySubtype: ScriptBlockContractEntityResolutionRequestV1['expectedEntitySubtype'],
-  semanticPath: string
-): ContractEntityRefV1
-{
-  return resolveExactContractRef(
-    context.contract.entityBindings,
-    bindingKeys,
-    expectedEntityKind,
-    expectedEntitySubtype,
-    () =>
-      fail(
-        'edit.unauthorized_change',
-        `${semanticPath} does not resolve one exact contract binding`
-      ),
-    () =>
-      fail(
-        'edit.unauthorized_change',
-        `${semanticPath} contract binding kind or subtype differs`
-      )
-  )
-}
-
 function resolveContractEntityReference(
   context: ProductionOperationContextV1,
   request: ScriptBlockContractEntityResolutionRequestV1
 ): ContractEntityRefV1
 {
+  if (request.sourceKind === 'rawNamedReference')
+    return standardRawNamedContractRefV2(context, request)
+  if (context.input.semanticAuthorityId === 'standard-v2')
+  {
+    const standard = standardProcedureContractRefV2(context, request)
+    if (standard) return standard
+  }
   if (request.sourceKind === 'rawTarget')
   {
     const evidence = targetEntityEvidenceSetV1(context.candidate.json)[
@@ -3044,11 +2779,14 @@ function resolveContractEntityReference(
   {
     if (request.reference.entityKind === 'target')
     {
-      const evidence = resolveTargetRefV1(
-        context.candidate,
-        request.reference,
-        resolverAdapters(context).target
-      )
+      const evidence =
+        context.input.semanticAuthorityId === 'standard-v2'
+          ? resolveTargetSelection(context, request.reference).current
+          : resolveTargetRefV1(
+              context.candidate,
+              request.reference,
+              resolverAdapters(context).target
+            )
       return exactContractRef(
         context,
         targetBindingKeys(context, evidence),
@@ -3084,6 +2822,11 @@ function resolveContractEntityReference(
       request.semanticPath
     )
   }
+  if (request.sourceKind !== 'rawDeclarationReference')
+    return fail(
+      'edit.unsupported_operation',
+      `${request.semanticPath} reference is outside its semantic authority`
+    )
   const candidates = declarationEntityEvidenceSetV1(context.candidate).filter(
     (evidence) =>
       evidence.declarationKind === request.expectedEntitySubtype &&
@@ -3138,6 +2881,22 @@ function creationContentFingerprint(
     descriptor: binding,
     resultRole: procedureCreationRoleForSlot(slot),
     selectedSource: proccode === undefined ? {} : { proccode },
+    ...(context.input.semanticAuthorityId === 'standard-v2'
+      ? {
+          semanticAuthorityId: 'standard-v2',
+          ...standardProcedureResolversV2(
+            sourceContext,
+            resolved.targetIndex,
+            resolved.selectedCallBlockId ?? undefined
+          ),
+          procedureScopeForCall: (reference) =>
+            standardProcedureScopeForBlockV2(
+              sourceContext,
+              resolved.targetIndex,
+              resolveBlockSelectionRef(sourceContext, reference).current.blockId
+            ),
+        }
+      : {}),
     resolveContractEntityRef: (request) =>
       resolveContractEntityReference(sourceContext, request),
   })
@@ -3391,8 +3150,7 @@ function assertProcedurePreconditions(
     // an unmapped comment attached to the removed closure would dangle, so a
     // rejectIfPresent disposition refuses rather than orphaning it
     const target = context.candidate.json.targets[targetIndex]
-    if (!target)
-      fail('edit.invalid_owner', 'procedure owner target is absent')
+    if (!target) fail('edit.invalid_owner', 'procedure owner target is absent')
     const plan = planGraphClosureV1(target, 'script', record.definitionBlockId)
     if (
       operation.comments.kind === 'rejectIfPresent' &&
@@ -3701,13 +3459,38 @@ function executeResolvedProcedureOperation(
           resolved.selectedProcedure,
           resolved.selectedProcedureLineageId
         )
-  const adapters = createCuratedCoreOperationAdaptersV1(
-    curatedEntityResolver(context)
-  )
+  const isStandard = context.input.semanticAuthorityId === 'standard-v2'
+  const curatedAdapters = isStandard
+    ? null
+    : createCuratedCoreOperationAdaptersV1(curatedEntityResolver(context))
+  const standardAdapters = (procedureScope?: StandardProcedureScopeV2) =>
+    createStandardAuthoringGraphAdaptersV2({
+      resolveEntity: curatedEntityResolver(context),
+      ...standardProcedureResolversV2(context),
+      procedureScope,
+    })
   const applied = applyProcedureOperationV1(
     context.candidate,
     resolvedProcedureOperation(resolved, record),
-    { lowerStatementSequence: adapters.block.lowerStatementSequence }
+    isStandard
+      ? {
+          semanticAuthorityId: 'standard-v2',
+          procedureScopeForBlock: (_project, targetIndex, blockId) =>
+            standardProcedureScopeForBlockV2(context, targetIndex, blockId),
+          lowerStatementSequence: (project, targetIndex, sequence, scope) =>
+            standardAdapters(
+              scope?.procedureScope
+            ).block.lowerStatementSequence(project, targetIndex, sequence),
+          lowerReplacement: (project, targetIndex, replacement, scope) =>
+            standardAdapters(scope?.procedureScope).block.lowerReplacement(
+              project,
+              targetIndex,
+              replacement
+            ),
+        }
+      : {
+          lowerStatementSequence: curatedAdapters!.block.lowerStatementSequence,
+        }
   )
   const lineage = reconcileProcedureLineage(
     context,
@@ -3794,7 +3577,9 @@ function executeResolvedProcedureOperation(
     ...slots.fixedSlots.filter((slot) => slot.entityKind === 'block'),
     ...slots.dynamicSlots.filter((slot) => slot.entityKind === 'block'),
   ]
-  const scriptKeysForSlot = (slot: ProcedureResultSlotV1): readonly string[] =>
+  const scriptKeysForSlot = (
+    slot: ProcedureResultSlotV1
+  ): readonly string[] =>
   {
     if (slot.entityKind !== 'block') return Object.freeze([])
     const owner = lineage.activeLineage.records.find(
@@ -3918,7 +3703,9 @@ function executeResolvedProcedureOperation(
     applied
   )
   const effectEvidence = {
-    catalogEvidence: CURATED_CORE_BLOCK_CATALOG_EVIDENCE_V1,
+    catalogEvidence: isStandard
+      ? STANDARD_AUTHORING_CATALOG_EVIDENCE_V2
+      : CURATED_CORE_BLOCK_CATALOG_EVIDENCE_V1,
     applied,
     postTargetScriptSetSha256: semanticHashV1('evidence-content', {
       targetIndex: resolved.targetIndex,
@@ -3977,30 +3764,6 @@ function executeResolvedProcedureOperation(
   }
 }
 
-function scriptBindingKeysByLineage(
-  context: ProductionOperationContextV1,
-  targetIndex: number
-): ReadonlyMap<string, readonly string[]>
-{
-  const entries = scriptEntityEvidenceSetV1(context.candidate)
-    .filter((script) => script.targetIndex === targetIndex)
-    .map((script) =>
-    {
-      const lineage = entityLineageIn(
-        context.candidate,
-        context.activeLineage,
-        'script',
-        targetIndex,
-        `script:${script.topBlockId}`
-      )
-      return [
-        lineage.lineageId,
-        allScriptBindingKeys(context, script, lineage.lineageId),
-      ] as const
-    })
-  return new Map(entries)
-}
-
 class ProcedureLifecycleProductionOperationDispatcherV1 implements ProductionOperationDispatcherV1
 {
   readonly operationKinds = Object.freeze([
@@ -4026,7 +3789,10 @@ class ProcedureLifecycleProductionOperationDispatcherV1 implements ProductionOpe
     return executeResolvedProcedureOperation(
       context,
       resolved,
-      procedurePlanningFactProjection(resolved)
+      procedurePlanningFactProjection(
+        resolved,
+        context.input.semanticAuthorityId
+      )
     )
   }
 }
@@ -4054,7 +3820,10 @@ class ProcedureCallProductionOperationDispatcherV1 implements ProductionOperatio
     return executeResolvedProcedureOperation(
       context,
       resolved,
-      procedurePlanningFactProjection(resolved)
+      procedurePlanningFactProjection(
+        resolved,
+        context.input.semanticAuthorityId
+      )
     )
   }
 }

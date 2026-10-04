@@ -262,11 +262,10 @@ class VmEngine implements ScenarioEngine, IdentityBoundScenarioEngine
       catch (error)
       {
         throw new RunnerIssueError(
-          createRunIssue({
+          toRunIssue(error, {
             code: RUN_ISSUE_CODES.vmObserverFailed,
             kind: 'internal',
             responsibility: 'infrastructure',
-            message: errorMessage(error),
           })
         )
       }
@@ -291,11 +290,10 @@ class VmEngine implements ScenarioEngine, IdentityBoundScenarioEngine
       catch (error)
       {
         throw new RunnerIssueError(
-          createRunIssue({
+          toRunIssue(error, {
             code: RUN_ISSUE_CODES.vmObserverFailed,
             kind: 'internal',
             responsibility: 'infrastructure',
-            message: errorMessage(error),
           })
         )
       }

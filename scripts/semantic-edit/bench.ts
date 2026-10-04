@@ -137,7 +137,9 @@ function decodeJsonBytes(
   catch (error)
   {
     const message = error instanceof Error ? error.message : 'invalid JSON'
-    throw new Error(`${label} could not be decoded: ${message}`)
+    throw new Error(`${label} could not be decoded: ${message}`, {
+      cause: error,
+    })
   }
 }
 
@@ -2052,9 +2054,6 @@ async function main(): Promise<void>
       authenticatedHandoffSha256: terminal.authenticatedHandoff.sha256,
       reconciliation: terminal.reconciliation,
     })
-    integrationBlocker =
-      'both workflows and audit reconciliation passed, but predecessor ' +
-      'recovery and fresh-process replay are not yet complete'
     const fixtureProbes = await runOperatorFixtureProbes({
       parentRunRoot: layout.runRoot,
       serverPath,

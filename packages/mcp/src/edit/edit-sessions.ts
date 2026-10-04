@@ -241,6 +241,7 @@ export function mcpStdioInvocationV1(input: {
 
 export interface EditTransportRegistryOptionsV1
 {
+  readonly semanticAuthorityId?: 'a0-v1' | 'standard-v2'
   readonly projects: ProjectSessionRegistry
   readonly changeContracts: EditChangeContractRegistryV1
   readonly identity: EditSessionRegistryIdentityV1
@@ -483,6 +484,7 @@ export class EditTransportRegistryV1
   implements EditHostLifecycleAuthorityV1, EditToolHostV1
 {
   readonly cursors: EditPaginationCursorAuthorityV1
+  readonly semanticAuthorityId: 'a0-v1' | 'standard-v2'
   readonly #projects: ProjectSessionRegistry
   readonly #identity: EditSessionRegistryIdentityV1
   readonly #principalSha256: string
@@ -497,6 +499,7 @@ export class EditTransportRegistryV1
     predecessorSessions: readonly RetainedEditSessionEvidenceV1[]
   )
   {
+    this.semanticAuthorityId = options.semanticAuthorityId ?? 'a0-v1'
     this.#projects = options.projects
     this.#identity = options.identity
     this.#principalSha256 = options.principalSha256
@@ -504,6 +507,7 @@ export class EditTransportRegistryV1
     this.#predecessorSessions = predecessorSessions
     this.cursors = new EditPaginationCursorAuthorityV1(options.cursorSecret)
     this.#kernel = createEditSessionRegistryV1({
+      semanticAuthorityId: this.semanticAuthorityId,
       artifactStore: options.artifactStore,
       changeContracts: options.changeContracts,
       identity: options.identity,
@@ -515,6 +519,7 @@ export class EditTransportRegistryV1
       resourceCatalogue: options.resourceCatalogue,
     })
     this.#host = new DirectEditToolHostV1({
+      semanticAuthorityId: this.semanticAuthorityId,
       lifecycle: this,
       intake: options.trustedIntake,
       cursors: this.cursors,

@@ -3,7 +3,7 @@
 
 import type { RepairLiteral } from './repair-types.js'
 
-export type RepairLiteralTag = 4 | 5 | 6 | 7 | 8 | 9 | 10
+type RepairLiteralTag = 4 | 5 | 6 | 7 | 8 | 9 | 10
 
 export const REPAIR_LITERAL_TAGS: Readonly<
   Record<RepairLiteral['kind'], RepairLiteralTag>

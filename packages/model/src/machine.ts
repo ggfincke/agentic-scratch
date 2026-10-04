@@ -30,6 +30,7 @@ interface PendingEffect
 {
   effect: Check
   sinceTick: number
+  deadlineTick: number
   edgeId: string
   edgeLabel: string
 }
@@ -72,13 +73,15 @@ export class ModelInstance
     this.storage = { ...this.model.initialStorage }
     this.lastTransitionTick = tick
     this.stopped = false
-    this.pending = []
   }
 
   // one lockstep observation: recheck deferred effects, then take at most one transition.
   // recheck runs even once stopped so an effect deferred on the terminal edge still completes
   // its 2-step window; without it a failing terminal-edge assertion is silently dropped
-  step(makeCtx: ContextFactory): ControlSignal | null
+  step(
+    makeCtx: ContextFactory,
+    beforeTransition?: () => void
+  ): ControlSignal | null
   {
     this.recheckPending(makeCtx)
     if (this.stopped) return null
@@ -95,6 +98,7 @@ export class ModelInstance
       e.conditions.every((c) => evaluateCheck(c, ctx))
     )
     if (passing.length === 0) return null
+    beforeTransition?.()
     if (passing.length > 1)
     {
       const ids = passing.map((e) => e.id).join(', ')
@@ -129,6 +133,7 @@ export class ModelInstance
           this.pending.push({
             effect,
             sinceTick: ctx.tick,
+            deadlineTick: ctx.tick + 1,
             edgeId: edge.id,
             edgeLabel: edge.label,
           })
@@ -158,8 +163,12 @@ export class ModelInstance
     const stillPending: PendingEffect[] = []
     for (const p of this.pending)
     {
-      if (evaluateCheck(p.effect, ctx)) continue
-      if (ctx.tick - p.sinceTick >= 1)
+      const effectContext = {
+        ...ctx,
+        ticksSinceTransition: ctx.tick - p.sinceTick,
+      }
+      if (evaluateCheck(p.effect, effectContext)) continue
+      if (ctx.tick >= p.deadlineTick)
       {
         this.recordFailure(p.effect, p.edgeId, p.edgeLabel, ctx.tick)
       }
@@ -180,7 +189,12 @@ export class ModelInstance
     const ctx = makeCtx(this)
     for (const p of this.pending)
     {
-      if (!evaluateCheck(p.effect, ctx))
+      if (
+        !evaluateCheck(p.effect, {
+          ...ctx,
+          ticksSinceTransition: ctx.tick - p.sinceTick,
+        })
+      )
       {
         this.recordFailure(p.effect, p.edgeId, p.edgeLabel, ctx.tick)
       }

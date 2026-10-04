@@ -13,6 +13,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
   renameSync,
@@ -24,6 +25,12 @@ import {
 import type { Stats } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
+import {
+  acquireNativeArtifactRootLeaseV1,
+  assertNativeArtifactLockCapabilityV1,
+  NativeArtifactLockErrorV1,
+  withNativeArtifactRootLeaseV1,
+} from './native-root-lock.js'
 import { isPathWithinRootV1 } from './path-containment.js'
 import { sha256 } from '../core/sha256.js'
 
@@ -117,8 +124,7 @@ export const DURABLE_ARTIFACT_FAULT_POINTS = [
   'cleanup.afterDirectorySync',
 ] as const
 
-type DurableArtifactFaultPoint =
-  (typeof DURABLE_ARTIFACT_FAULT_POINTS)[number]
+type DurableArtifactFaultPoint = (typeof DURABLE_ARTIFACT_FAULT_POINTS)[number]
 
 export interface DurableArtifactFaultContext
 {
@@ -189,8 +195,7 @@ interface DurableArtifactStoreCapability
   readonly quota: DurableArtifactQuotaSnapshot
 }
 
-type DurableArtifactStoreMode =
-  'create-writer' | 'read-only' | 'recovery'
+type DurableArtifactStoreMode = 'create-writer' | 'read-only' | 'recovery'
 
 export interface DurableArtifactOwnershipAuthority
 {
@@ -212,7 +217,11 @@ interface DurableArtifactStoreOptions
   readonly expectedStoreId?: string
   readonly expectedOwnershipSha256?: string
   readonly ownershipAuthority?: DurableArtifactOwnershipAuthority
+  readonly nativeWriterCoordination?: boolean
+  readonly nativeLeaseOwner?: object
 }
+
+const nativeHostOptions = new WeakSet<DurableArtifactStoreOptions>()
 
 interface EditArtifactStoreHostCapability extends DurableArtifactStoreCapability
 {
@@ -259,6 +268,7 @@ type EditArtifactStoreHostQuotaOutcome =
 export interface EditArtifactStoreHostAdapter
 {
   readonly storeId: string
+  withRootLease?<T>(operation: () => Promise<T>): Promise<T>
   capability(): Promise<EditArtifactStoreHostCapability>
   createImmutable(
     key: string,
@@ -269,6 +279,10 @@ export interface EditArtifactStoreHostAdapter
     bytes: Uint8Array
   ): Promise<DurableArtifactIdentity>
   readImmutable(key: string): Promise<Uint8Array>
+  readImmutableOwnedBytes?(
+    key: string,
+    expectedByteLength: number
+  ): Promise<Uint8Array>
   hashImmutable(key: string): Promise<string>
   sizeImmutable(key: string): Promise<number>
   listImmutable(prefix: string): Promise<readonly DurableArtifactEntry[]>
@@ -305,6 +319,9 @@ type DurableArtifactStoreErrorCode =
   | 'expected-hash-mismatch'
   | 'invalid-logical-key'
   | 'invalid-quota'
+  | 'lock-busy'
+  | 'lock-unavailable'
+  | 'lock-path-changed'
   | 'path-unsafe'
   | 'quota-exceeded'
   | 'reservation-conflict'
@@ -920,6 +937,11 @@ export class DurableArtifactStore
 
   constructor(rawRoot: string, options: DurableArtifactStoreOptions = {})
   {
+    if (options.nativeWriterCoordination && !nativeHostOptions.has(options))
+      throw new DurableArtifactStoreError(
+        'capability-unavailable',
+        'native writer coordination requires the guarded edit artifact host adapter'
+      )
     if (typeof rawRoot !== 'string' || rawRoot.length === 0)
     {
       throw new DurableArtifactStoreError(
@@ -945,6 +967,10 @@ export class DurableArtifactStore
     this.#mode = mode
     this.#faultHook = options.faultHook ?? null
     const configuredRoot = resolve(rawRoot)
+    if (options.nativeWriterCoordination && mode !== 'read-only')
+      assertNativeArtifactLockCapabilityV1(
+        mode === 'create-writer' ? dirname(configuredRoot) : configuredRoot
+      )
     if (this.#mode === 'create-writer')
     {
       if (existsSync(configuredRoot))
@@ -971,192 +997,203 @@ export class DurableArtifactStore
       )
     this.#root = realpathSync(configuredRoot)
     this.#rootIdentity = rootIdentity(this.#root)
-    if (this.#mode === 'create-writer')
+    const rootLease =
+      options.nativeWriterCoordination && mode !== 'read-only'
+        ? acquireNativeArtifactRootLeaseV1(this.#root, options.nativeLeaseOwner)
+        : null
+    try
     {
-      this.#maxBytes = positiveSafeInteger(
-        options.maxBytes ?? DEFAULT_MAX_BYTES,
-        'durable artifact maxBytes'
-      )
-      this.#maxEntryBytes = positiveSafeInteger(
-        options.maxEntryBytes ?? DEFAULT_MAX_ENTRY_BYTES,
-        'durable artifact maxEntryBytes'
-      )
-      this.#maxEntries = positiveSafeInteger(
-        options.maxEntries ?? DEFAULT_MAX_ENTRIES,
-        'durable artifact maxEntries'
-      )
-      this.storeId = `store-${randomBytes(16).toString('hex')}`
-      const manifest: DurableStoreManifest = {
-        schemaVersion: 1,
-        format: 'durable-artifact-store-v1',
-        storeId: this.storeId,
-        maxBytes: this.#maxBytes,
-        maxEntryBytes: this.#maxEntryBytes,
-        maxEntries: this.#maxEntries,
-        rootDevice: this.#rootIdentity.device,
-        rootInode: this.#rootIdentity.inode,
-      }
-      this.#manifestSha256 = installPrivateImmutable(
-        this.#root,
-        STORE_MANIFEST_NAME,
-        privateJsonBytes(manifest)
-      )
-      const owner: DurableStoreOwner = {
-        schemaVersion: 1,
-        storeId: this.storeId,
-        generation: 0,
-        previousOwnershipSha256: null,
-        ownerTokenSha256:
-          options.ownershipAuthority?.ownerTokenSha256({
-            storeId: this.storeId,
-            generation: 0,
-            previousOwnershipSha256: null,
-          }) ?? sha256(randomBytes(32)),
-      }
-      this.#ownershipSha256 = installPrivateImmutable(
-        this.#root,
-        STORE_OWNER_NAME,
-        privateJsonBytes(owner)
-      )
-      this.#ownershipGeneration = owner.generation
-      this.#previousOwnershipSha256 = owner.previousOwnershipSha256
-      const quota: DurableQuotaState = {
-        schemaVersion: 1,
-        generation: 0,
-        maxBytes: this.#maxBytes,
-        reservations: [],
-        outcomes: [],
-      }
-      this.#quotaPointerSha256 = installPrivateImmutable(
-        this.#root,
-        STORE_QUOTA_NAME,
-        privateJsonBytes(quota)
-      )
-      this.#quotaGeneration = 0
-    }
-    else
-    {
-      const manifestBytes = readPrivateBytes(this.#root, STORE_MANIFEST_NAME)
-      const manifest = parseStoreManifest(manifestBytes)
-      this.#manifestSha256 = sha256(manifestBytes)
-      if (
-        manifest.rootDevice !== this.#rootIdentity.device ||
-        manifest.rootInode !== this.#rootIdentity.inode
-      )
-        throw new DurableArtifactStoreError(
-          'path-unsafe',
-          'durable store root identity differs from its pinned manifest'
-        )
-      if (
-        options.expectedStoreId !== undefined &&
-        options.expectedStoreId !== manifest.storeId
-      )
-        throw new DurableArtifactStoreError(
-          'path-unsafe',
-          'durable store ID differs from the expected recovery identity'
-        )
-      for (const [configured, pinned, label] of [
-        [options.maxBytes, manifest.maxBytes, 'maxBytes'],
-        [options.maxEntryBytes, manifest.maxEntryBytes, 'maxEntryBytes'],
-        [options.maxEntries, manifest.maxEntries, 'maxEntries'],
-      ] as const)
-        if (configured !== undefined && configured !== pinned)
-          throw new DurableArtifactStoreError(
-            'invalid-quota',
-            `reopened durable store ${label} differs from its manifest`
-          )
-      this.storeId = manifest.storeId
-      this.#maxBytes = manifest.maxBytes
-      this.#maxEntryBytes = manifest.maxEntryBytes
-      this.#maxEntries = manifest.maxEntries
-      const ownerBytes = readPrivateBytes(this.#root, STORE_OWNER_NAME)
-      const owner = parseStoreOwner(ownerBytes)
-      if (owner.storeId !== this.storeId)
-        throw new DurableArtifactStoreError(
-          'path-unsafe',
-          'durable owner marker names a different store'
-        )
-      const observedOwnershipSha256 = sha256(ownerBytes)
-      if (
-        options.ownershipAuthority !== undefined &&
-        options.ownershipAuthority.ownerTokenSha256({
-          storeId: owner.storeId,
-          generation: owner.generation,
-          previousOwnershipSha256: owner.previousOwnershipSha256,
-        }) !== owner.ownerTokenSha256
-      )
-        throw new DurableArtifactStoreError(
-          'path-unsafe',
-          'durable owner authentication failed'
-        )
-      if (
-        this.#mode === 'read-only' &&
-        options.expectedOwnershipSha256 !== undefined &&
-        options.expectedOwnershipSha256 !== observedOwnershipSha256
-      )
-        throw new DurableArtifactStoreError(
-          'path-unsafe',
-          'durable owner differs from the expected read identity'
-        )
-      if (this.#mode === 'recovery')
+      if (this.#mode === 'create-writer')
       {
+        this.#maxBytes = positiveSafeInteger(
+          options.maxBytes ?? DEFAULT_MAX_BYTES,
+          'durable artifact maxBytes'
+        )
+        this.#maxEntryBytes = positiveSafeInteger(
+          options.maxEntryBytes ?? DEFAULT_MAX_ENTRY_BYTES,
+          'durable artifact maxEntryBytes'
+        )
+        this.#maxEntries = positiveSafeInteger(
+          options.maxEntries ?? DEFAULT_MAX_ENTRIES,
+          'durable artifact maxEntries'
+        )
+        this.storeId = `store-${randomBytes(16).toString('hex')}`
+        const manifest: DurableStoreManifest = {
+          schemaVersion: 1,
+          format: 'durable-artifact-store-v1',
+          storeId: this.storeId,
+          maxBytes: this.#maxBytes,
+          maxEntryBytes: this.#maxEntryBytes,
+          maxEntries: this.#maxEntries,
+          rootDevice: this.#rootIdentity.device,
+          rootInode: this.#rootIdentity.inode,
+        }
+        this.#manifestSha256 = installPrivateImmutable(
+          this.#root,
+          STORE_MANIFEST_NAME,
+          privateJsonBytes(manifest)
+        )
+        const owner: DurableStoreOwner = {
+          schemaVersion: 1,
+          storeId: this.storeId,
+          generation: 0,
+          previousOwnershipSha256: null,
+          ownerTokenSha256:
+            options.ownershipAuthority?.ownerTokenSha256({
+              storeId: this.storeId,
+              generation: 0,
+              previousOwnershipSha256: null,
+            }) ?? sha256(randomBytes(32)),
+        }
+        this.#ownershipSha256 = installPrivateImmutable(
+          this.#root,
+          STORE_OWNER_NAME,
+          privateJsonBytes(owner)
+        )
+        this.#ownershipGeneration = owner.generation
+        this.#previousOwnershipSha256 = owner.previousOwnershipSha256
+        const quota: DurableQuotaState = {
+          schemaVersion: 1,
+          generation: 0,
+          maxBytes: this.#maxBytes,
+          reservations: [],
+          outcomes: [],
+        }
+        this.#quotaPointerSha256 = installPrivateImmutable(
+          this.#root,
+          STORE_QUOTA_NAME,
+          privateJsonBytes(quota)
+        )
+        this.#quotaGeneration = 0
+      }
+      else
+      {
+        const manifestBytes = readPrivateBytes(this.#root, STORE_MANIFEST_NAME)
+        const manifest = parseStoreManifest(manifestBytes)
+        this.#manifestSha256 = sha256(manifestBytes)
         if (
-          options.expectedStoreId === undefined ||
-          options.expectedOwnershipSha256 === undefined ||
+          manifest.rootDevice !== this.#rootIdentity.device ||
+          manifest.rootInode !== this.#rootIdentity.inode
+        )
+          throw new DurableArtifactStoreError(
+            'path-unsafe',
+            'durable store root identity differs from its pinned manifest'
+          )
+        if (
+          options.expectedStoreId !== undefined &&
+          options.expectedStoreId !== manifest.storeId
+        )
+          throw new DurableArtifactStoreError(
+            'path-unsafe',
+            'durable store ID differs from the expected recovery identity'
+          )
+        for (const [configured, pinned, label] of [
+          [options.maxBytes, manifest.maxBytes, 'maxBytes'],
+          [options.maxEntryBytes, manifest.maxEntryBytes, 'maxEntryBytes'],
+          [options.maxEntries, manifest.maxEntries, 'maxEntries'],
+        ] as const)
+          if (configured !== undefined && configured !== pinned)
+            throw new DurableArtifactStoreError(
+              'invalid-quota',
+              `reopened durable store ${label} differs from its manifest`
+            )
+        this.storeId = manifest.storeId
+        this.#maxBytes = manifest.maxBytes
+        this.#maxEntryBytes = manifest.maxEntryBytes
+        this.#maxEntries = manifest.maxEntries
+        const ownerBytes = readPrivateBytes(this.#root, STORE_OWNER_NAME)
+        const owner = parseStoreOwner(ownerBytes)
+        if (owner.storeId !== this.storeId)
+          throw new DurableArtifactStoreError(
+            'path-unsafe',
+            'durable owner marker names a different store'
+          )
+        const observedOwnershipSha256 = sha256(ownerBytes)
+        if (
+          options.ownershipAuthority !== undefined &&
+          options.ownershipAuthority.ownerTokenSha256({
+            storeId: owner.storeId,
+            generation: owner.generation,
+            previousOwnershipSha256: owner.previousOwnershipSha256,
+          }) !== owner.ownerTokenSha256
+        )
+          throw new DurableArtifactStoreError(
+            'path-unsafe',
+            'durable owner authentication failed'
+          )
+        if (
+          this.#mode === 'read-only' &&
+          options.expectedOwnershipSha256 !== undefined &&
           options.expectedOwnershipSha256 !== observedOwnershipSha256
         )
           throw new DurableArtifactStoreError(
             'path-unsafe',
-            'exclusive recovery requires exact prior store and owner identities'
+            'durable owner differs from the expected read identity'
           )
-        const successor: DurableStoreOwner = {
-          schemaVersion: 1,
-          storeId: this.storeId,
-          generation: owner.generation + 1,
-          previousOwnershipSha256: observedOwnershipSha256,
-          ownerTokenSha256:
-            options.ownershipAuthority?.ownerTokenSha256({
-              storeId: this.storeId,
-              generation: owner.generation + 1,
-              previousOwnershipSha256: observedOwnershipSha256,
-            }) ?? sha256(randomBytes(32)),
+        if (this.#mode === 'recovery')
+        {
+          if (
+            options.expectedStoreId === undefined ||
+            options.expectedOwnershipSha256 === undefined ||
+            options.expectedOwnershipSha256 !== observedOwnershipSha256
+          )
+            throw new DurableArtifactStoreError(
+              'path-unsafe',
+              'exclusive recovery requires exact prior store and owner identities'
+            )
+          const successor: DurableStoreOwner = {
+            schemaVersion: 1,
+            storeId: this.storeId,
+            generation: owner.generation + 1,
+            previousOwnershipSha256: observedOwnershipSha256,
+            ownerTokenSha256:
+              options.ownershipAuthority?.ownerTokenSha256({
+                storeId: this.storeId,
+                generation: owner.generation + 1,
+                previousOwnershipSha256: observedOwnershipSha256,
+              }) ?? sha256(randomBytes(32)),
+          }
+          this.#ownershipSha256 = replacePrivatePointer(
+            this.#root,
+            STORE_OWNER_NAME,
+            observedOwnershipSha256,
+            privateJsonBytes(successor)
+          )
+          this.#ownershipGeneration = successor.generation
+          this.#previousOwnershipSha256 = successor.previousOwnershipSha256
         }
-        this.#ownershipSha256 = replacePrivatePointer(
-          this.#root,
-          STORE_OWNER_NAME,
-          observedOwnershipSha256,
-          privateJsonBytes(successor)
-        )
-        this.#ownershipGeneration = successor.generation
-        this.#previousOwnershipSha256 = successor.previousOwnershipSha256
+        else
+        {
+          this.#ownershipSha256 = observedOwnershipSha256
+          this.#ownershipGeneration = owner.generation
+          this.#previousOwnershipSha256 = owner.previousOwnershipSha256
+        }
+        const quotaBytes = readPrivateBytes(this.#root, STORE_QUOTA_NAME)
+        const quota = parseQuotaState(quotaBytes)
+        if (quota.maxBytes !== this.#maxBytes)
+          throw new DurableArtifactStoreError(
+            'invalid-quota',
+            'durable quota state differs from the pinned store limit'
+          )
+        this.#quotaPointerSha256 = sha256(quotaBytes)
+        this.#quotaGeneration = quota.generation
+        this.loadQuotaState(quota)
       }
-      else
-      {
-        this.#ownershipSha256 = observedOwnershipSha256
-        this.#ownershipGeneration = owner.generation
-        this.#previousOwnershipSha256 = owner.previousOwnershipSha256
-      }
-      const quotaBytes = readPrivateBytes(this.#root, STORE_QUOTA_NAME)
-      const quota = parseQuotaState(quotaBytes)
-      if (quota.maxBytes !== this.#maxBytes)
+      if (this.physicalBytes() > this.#maxBytes)
         throw new DurableArtifactStoreError(
-          'invalid-quota',
-          'durable quota state differs from the pinned store limit'
+          'quota-exceeded',
+          'existing durable artifacts exceed the configured quota'
         )
-      this.#quotaPointerSha256 = sha256(quotaBytes)
-      this.#quotaGeneration = quota.generation
-      this.loadQuotaState(quota)
+      if (this.#mode === 'read-only') this.#capabilityProved = true
+      else if (options.probeCapabilities !== false)
+      {
+        this.probeCapabilities()
+        this.#capabilityProved = true
+      }
     }
-    if (this.physicalBytes() > this.#maxBytes)
-      throw new DurableArtifactStoreError(
-        'quota-exceeded',
-        'existing durable artifacts exceed the configured quota'
-      )
-    if (this.#mode === 'read-only') this.#capabilityProved = true
-    else if (options.probeCapabilities !== false)
+    finally
     {
-      this.probeCapabilities()
-      this.#capabilityProved = true
+      rootLease?.release()
     }
   }
 
@@ -1523,6 +1560,27 @@ export class DurableArtifactStore
   {
     const key = validateLogicalKey(logicalKeyValue)
     return Uint8Array.from(this.readCheckedBytes(key))
+  }
+
+  // transfer one newly read buffer so snapshot verification needs no payload copy
+  readImmutableOwnedBytes(
+    logicalKeyValue: string,
+    expectedByteLength: number
+  ): Uint8Array
+  {
+    if (
+      !Number.isSafeInteger(expectedByteLength) ||
+      expectedByteLength < 0 ||
+      expectedByteLength > this.#maxEntryBytes
+    )
+      throw new DurableArtifactStoreError(
+        'quota-exceeded',
+        'snapshot byte length exceeds the durable entry bound'
+      )
+    return this.readCheckedBytes(
+      validateLogicalKey(logicalKeyValue),
+      expectedByteLength
+    )
   }
 
   hashImmutable(logicalKeyValue: string): string
@@ -2307,7 +2365,7 @@ export class DurableArtifactStore
     }
   }
 
-  private readCheckedBytes(key: string): Buffer
+  private readCheckedBytes(key: string, expectedByteLength?: number): Buffer
   {
     let path: string
     try
@@ -2350,7 +2408,8 @@ export class DurableArtifactStore
         !before.isFile() ||
         before.isSymbolicLink() ||
         before.dev !== this.#rootIdentity.device ||
-        before.size > this.#maxEntryBytes
+        before.size > this.#maxEntryBytes ||
+        (expectedByteLength !== undefined && before.size !== expectedByteLength)
       )
       {
         throw new DurableArtifactStoreError(
@@ -2359,7 +2418,30 @@ export class DurableArtifactStore
         )
       }
       this.inject('read.beforeRead', 'readImmutable', key)
-      const bytes = readFileSync(descriptor)
+      let bytes: Buffer
+      if (expectedByteLength === undefined) bytes = readFileSync(descriptor)
+      else
+      {
+        bytes = Buffer.allocUnsafeSlow(expectedByteLength)
+        let offset = 0
+        while (offset < bytes.byteLength)
+        {
+          const count = readSync(
+            descriptor,
+            bytes,
+            offset,
+            bytes.byteLength - offset,
+            offset
+          )
+          if (count === 0) break
+          offset += count
+        }
+        if (offset !== expectedByteLength)
+          throw new DurableArtifactStoreError(
+            'path-unsafe',
+            'durable snapshot changed during its bounded read'
+          )
+      }
       this.inject('read.afterRead', 'readImmutable', key)
       const after = fstatSync(descriptor)
       if (
@@ -2891,6 +2973,11 @@ export function recoverPartialDurableArtifactStoreV1(
   >
 ): DurableArtifactStore
 {
+  if (options.nativeWriterCoordination)
+    throw new DurableArtifactStoreError(
+      'capability-unavailable',
+      'native writer coordination requires the guarded edit artifact host adapter'
+    )
   const root = realpathSync(resolve(rawRoot))
   const identity = rootIdentity(root)
   const entries = readdirSync(root, { withFileTypes: true })
@@ -3044,16 +3131,39 @@ class NodeEditArtifactStoreHostAdapter implements EditArtifactStoreHostAdapter
 {
   readonly storeId: string
   readonly #store: DurableArtifactStore
+  readonly #nativeRoot: string | null
+  readonly #nativeLeaseOwner = {}
 
   constructor(rawRoot: string, options: DurableArtifactStoreOptions)
   {
-    this.#store = createDurableArtifactStore(rawRoot, options)
+    const guardedOptions = {
+      ...options,
+      nativeLeaseOwner: this.#nativeLeaseOwner,
+    }
+    nativeHostOptions.add(guardedOptions)
+    this.#store = createDurableArtifactStore(rawRoot, guardedOptions)
     this.storeId = this.#store.storeId
+    this.#nativeRoot =
+      options.nativeWriterCoordination && options.mode !== 'read-only'
+        ? realpathSync(rawRoot)
+        : null
+  }
+
+  async withRootLease<T>(operation: () => Promise<T>): Promise<T>
+  {
+    try
+    {
+      return await this.call(operation)
+    }
+    catch (error)
+    {
+      return this.rethrow(error)
+    }
   }
 
   async capability(): Promise<EditArtifactStoreHostCapability>
   {
-    const capability = this.#store.capability()
+    const capability = this.call(() => this.#store.capability())
     return Object.freeze({
       ...capability,
       durableFileSync: capability.fileFsync,
@@ -3083,6 +3193,16 @@ class NodeEditArtifactStoreHostAdapter implements EditArtifactStoreHostAdapter
   async readImmutable(key: string): Promise<Uint8Array>
   {
     return this.call(() => this.#store.readImmutable(key))
+  }
+
+  async readImmutableOwnedBytes(
+    key: string,
+    expectedByteLength: number
+  ): Promise<Uint8Array>
+  {
+    return this.call(() =>
+      this.#store.readImmutableOwnedBytes(key, expectedByteLength)
+    )
   }
 
   async hashImmutable(key: string): Promise<string>
@@ -3180,21 +3300,39 @@ class NodeEditArtifactStoreHostAdapter implements EditArtifactStoreHostAdapter
   {
     try
     {
-      return operation()
+      return this.#nativeRoot === null
+        ? operation()
+        : withNativeArtifactRootLeaseV1(
+            this.#nativeRoot,
+            operation,
+            this.#nativeLeaseOwner
+          )
     }
     catch (error)
     {
-      if (error instanceof DurableArtifactStoreError)
-      {
-        throw new EditArtifactStoreHostError(
-          error.code,
-          error.message,
-          error.tempProof ? encodeTempProof(error.tempProof) : null,
-          error.finalInstalled
-        )
-      }
-      throw error
+      return this.rethrow(error)
     }
+  }
+
+  private rethrow(error: unknown): never
+  {
+    if (error instanceof NativeArtifactLockErrorV1)
+      throw new EditArtifactStoreHostError(
+        error.code,
+        error.message,
+        null,
+        false
+      )
+    if (error instanceof DurableArtifactStoreError)
+    {
+      throw new EditArtifactStoreHostError(
+        error.code,
+        error.message,
+        error.tempProof ? encodeTempProof(error.tempProof) : null,
+        error.finalInstalled
+      )
+    }
+    throw error
   }
 }
 

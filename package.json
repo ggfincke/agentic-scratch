@@ -5,6 +5,9 @@
   "description": "IR-first, .sb3-backed agentic Scratch development workbench",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "workspaces": [
     "packages/*"
   ],
@@ -23,12 +26,18 @@
     "roundtrip": "tsx scripts/project/roundtrip.ts",
     "prevalidate": "npm run build",
     "validate": "tsx scripts/project/validate.ts",
+    "prelitterbox": "npm run build",
+    "litterbox": "tsx scripts/tools/litterbox-check.ts",
     "prefragility-check": "npm run build",
     "fragility-check": "tsx scripts/project/fragility-check.ts",
     "preproject-check": "npm run build",
     "project-check": "tsx scripts/project/project-check.ts",
     "preproject-walkthrough:codex": "npm run build",
     "project-walkthrough:codex": "tsx scripts/project/walkthrough-codex.ts",
+    "drive-observe": "tsx scripts/project/drive-observe.ts",
+    "drive-observe-replay": "tsx scripts/project/drive-observe-replay.ts",
+    "predrive-observe-bench": "npm run build:authoritative",
+    "drive-observe-bench": "tsx scripts/project/drive-observe-bench.ts",
     "prevmtest": "npm run build",
     "vmtest": "tsx scripts/suites/vmtest.ts",
     "previstest": "npm run build",
@@ -65,7 +74,25 @@
     "format:check": "prettier --check . && eslint .",
     "pretest": "npm run build",
     "test": "node --import tsx --test \"tests/**/*.test.ts\" \"eslint-rules/**/*.test.js\"",
-    "clean": "rm -rf runs .tmp packages/*/dist packages/*/*.tsbuildinfo *.tsbuildinfo"
+    "clean": "rm -rf runs .tmp packages/*/dist packages/*/*.tsbuildinfo *.tsbuildinfo",
+    "authoring-catalog-check": "tsx scripts/gates/reconcile-authoring-catalog.ts",
+    "authoring:open": "tsx scripts/authoring/cli.ts open",
+    "authoring:plan": "tsx scripts/authoring/cli.ts plan",
+    "authoring:build": "tsx scripts/authoring/cli.ts build",
+    "authoring:evaluate": "tsx scripts/authoring/cli.ts evaluate",
+    "authoring:export": "tsx scripts/authoring/cli.ts export",
+    "authoring:recover-export": "tsx scripts/authoring/cli.ts recover-export",
+    "authoring:inspect": "tsx scripts/authoring/cli.ts inspect",
+    "authoring:close": "tsx scripts/authoring/cli.ts close",
+    "authoring:replay": "tsx scripts/authoring/cli.ts replay",
+    "playtest": "tsx scripts/development/cli.ts playtest",
+    "debug": "tsx scripts/development/cli.ts debug",
+    "development:inspect": "tsx scripts/development/cli.ts inspect",
+    "reproduce": "tsx scripts/development/cli.ts reproduce",
+    "development:view": "tsx scripts/development/cli.ts view",
+    "workbench-acceptance": "tsx scripts/authoring/acceptance.ts",
+    "workbench-native-acceptance": "tsx scripts/authoring/native-acceptance.ts",
+    "view": "tsx scripts/development/cli.ts view"
   },
   "prettier": {
     "plugins": [
@@ -80,7 +107,8 @@
     "arrowParens": "always"
   },
   "allowScripts": {
-    "esbuild@0.28.1": true
+    "esbuild@0.28.2": true,
+    "fs-ext@2.1.1": true
   },
   "overrides": {
     "@scratch/scratch-render": {
@@ -91,16 +119,18 @@
     }
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.0",
+    "@eslint/js": "^10.0.1",
+    "@turbowarp/sb3fix": "^0.5.0",
     "@types/node": "^24.10.0",
-    "esbuild": "^0.28.1",
-    "eslint": "^9.39.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.9.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.7.0",
+    "parse-sb3-blocks": "^0.5.2",
     "prettier": "^3.9.0",
     "prettier-plugin-brace-style": "^0.10.2",
     "scratch-blocks": "2.1.19",
-    "tsx": "^4.22.0",
+    "tsx": "^4.23.12",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "typescript-eslint": "^8.62.0"
   }

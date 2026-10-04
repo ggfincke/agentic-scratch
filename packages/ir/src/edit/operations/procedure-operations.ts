@@ -28,8 +28,13 @@ import type {
   SemanticEditOperationProcedureSetCallArgumentV1,
   SemanticEditOperationProcedureUpdateSignatureV1,
   SemanticInputValueV1,
+  SemanticReplacementV1,
   SemanticStatementSequenceV1,
 } from '../contracts.generated.js'
+import type { StandardProcedureScopeV2 } from '../standard-authoring/index.js'
+import { standardProcedureArgumentShapeFitsV2 } from '../standard-authoring/connection-policy.js'
+import { validateExistingStandardBlockV2 } from '../standard-authoring/graph-validation.js'
+import { knownScratchBlockShapeV2 } from '../semantic-index/block-shape-policy.js'
 import {
   blockInputFingerprintV1,
   commentSetSha256V1,
@@ -47,6 +52,7 @@ import {
 } from './entity-resolution.js'
 import { semanticHashV1 } from '../contracts/hash-domains.js'
 import { unknownNameSemanticsEvidenceV1 } from '../semantic-index/name-semantics-catalog.js'
+import { unknownNameSemanticsForAuthorityV2 } from '../semantic-index/standard-name-policy.js'
 import {
   decodeProcedureWarpV1,
   parseMutationArray,
@@ -55,6 +61,7 @@ import {
 import {
   PROCEDURE_PARAMETER_ENCODING_BY_TYPE_V1,
   procedureParameterEncodingForPlaceholderV1,
+  procedureParameterTypeForPlaceholderV1,
   type ProcedureParameterTypeV1,
 } from '../contracts/procedure-parameter-catalog.js'
 import { buildSemanticReferenceIndex } from '../semantic-index/reference-index.js'
@@ -177,6 +184,24 @@ export function canonicalProcedureSignatureV1(
   }
 }
 
+// authored calls bind the visible signature before the allocator assigns ids
+export function standardProcedureSignatureSha256V2(
+  decoded: DecodedProcedureSignatureV1
+): string
+{
+  return semanticHashV1('evidence-content', {
+    kind: 'standard-procedure-signature',
+    schemaVersion: 2,
+    proccode: decoded.proccode,
+    warp: decoded.warp,
+    parameters: decoded.parameters.map((parameter) => ({
+      name: parameter.name,
+      parameterType: parameter.parameterType,
+      defaultValue: serializedDefault(parameter),
+    })),
+  })
+}
+
 // a %b default serializes as a JSON boolean & a %n default as a JSON number; a
 // %s default keeps a number verbatim & otherwise stringifies
 function serializedDefault(
@@ -243,6 +268,307 @@ export interface ProcedureRecordV1
   readonly argumentIds: readonly string[]
   readonly argumentNames: readonly string[]
   readonly argumentDefaults: readonly string[]
+}
+
+export function standardProcedureScopeFromRecordV2(
+  project: ProjectIR,
+  targetIndex: number,
+  proccode: string
+): StandardProcedureScopeV2
+{
+  const record = resolveProcedureRecordV1(project, targetIndex, proccode)
+  const prototype = blockEntry(
+    targetAt(project, targetIndex),
+    record.prototypeBlockId
+  )
+  let defaults: unknown
+  try
+  {
+    defaults = JSON.parse(prototype.mutation?.argumentdefaults ?? '[]')
+  }
+  catch
+  {
+    return procedureError(
+      'edit.invalid_shape',
+      'procedure defaults are malformed'
+    )
+  }
+  if (!Array.isArray(defaults) || defaults.length !== record.argumentIds.length)
+    return procedureError(
+      'edit.invalid_shape',
+      'procedure default cardinality differs'
+    )
+  const placeholders = procedurePlaceholderKinds(proccode)
+  const parameters = record.argumentIds.map((argumentId, ordinal) =>
+  {
+    const placeholder = placeholders[ordinal]
+    const name = record.argumentNames[ordinal]
+    const defaultValue: unknown = defaults[ordinal]
+    if (
+      placeholder === undefined ||
+      name === undefined ||
+      !['string', 'number', 'boolean'].includes(typeof defaultValue) ||
+      (typeof defaultValue === 'number' && !Number.isFinite(defaultValue))
+    )
+      return procedureError(
+        'edit.invalid_shape',
+        'procedure signature is incomplete'
+      )
+    return {
+      localKey: argumentId,
+      argumentId,
+      name,
+      parameterType: procedureParameterTypeForPlaceholderV1(placeholder),
+      defaultValue: defaultValue as string | number | boolean,
+    }
+  })
+  const decoded: DecodedProcedureSignatureV1 = {
+    proccode,
+    warp: record.warp,
+    parameters,
+  }
+  return {
+    ...decoded,
+    signatureSha256: standardProcedureSignatureSha256V2(decoded),
+    parameters,
+  }
+}
+
+// graph edits can move reporters without passing through the compiler; compare
+// stable argument ownership as well as their names so moves cannot rebind them
+export function assertStandardProcedureGraphOwnershipV2(
+  project: ProjectIR,
+  previousProject?: ProjectIR
+): void
+{
+  const collect = (source: ProjectIR) =>
+    procedureEntityEvidenceSetV1(source).map((entry) =>
+    {
+      let scope: StandardProcedureScopeV2 | undefined
+      try
+      {
+        scope = standardProcedureScopeFromRecordV2(
+          source,
+          entry.targetIndex,
+          entry.proccode
+        )
+      }
+      catch (error)
+      {
+        if (
+          !(error instanceof ProcedureOperationErrorV1) ||
+          error.code !== 'edit.invalid_shape'
+        )
+          throw error
+      }
+      const prototype = blockEntry(
+        source.json.targets[entry.targetIndex]!,
+        entry.prototypeBlockId
+      )
+      return {
+        targetIndex: entry.targetIndex,
+        definitionBlockId: entry.definitionBlockId,
+        proccode: entry.proccode,
+        scope,
+        rawSignatureSha256: semanticHashV1('evidence-content', {
+          proccode: prototype.mutation?.proccode ?? null,
+          argumentids: prototype.mutation?.argumentids ?? null,
+          argumentnames: prototype.mutation?.argumentnames ?? null,
+          argumentdefaults: prototype.mutation?.argumentdefaults ?? null,
+          warp: prototype.mutation?.warp ?? null,
+        }),
+        owned: new Set(
+          procedureOwnedBlockIdsV1(
+            source.json.targets[entry.targetIndex]!,
+            entry.definitionBlockId
+          )
+        ),
+      }
+    })
+  const scopes = collect(project)
+  const priorScopes = previousProject ? collect(previousProject) : []
+  const ownership = (
+    available: typeof scopes,
+    targetIndex: number,
+    blockId: string
+  ) =>
+    available.filter(
+      (scope) => scope.targetIndex === targetIndex && scope.owned.has(blockId)
+    )
+  const parameter = (
+    scope: (typeof scopes)[number] | undefined,
+    block: Block
+  ) =>
+    scope?.scope?.parameters.filter(
+      (entry) =>
+        entry.name === scratchRecordValue(block.fields, 'VALUE')?.[0] &&
+        (entry.parameterType === 'boolean') ===
+          (block.opcode === 'argument_reporter_boolean')
+    ) ?? []
+  const nodeSha256 = (value: Block | undefined) =>
+    semanticHashV1('evidence-content', value ?? null)
+  const inputShapes = (source: ProjectIR, targetIndex: number, block: Block) =>
+    Object.entries(block.inputs ?? {}).map(([name, input]) =>
+    {
+      const child =
+        typeof input[1] === 'string'
+          ? source.json.targets[targetIndex]?.blocks[input[1]]
+          : undefined
+      return {
+        name,
+        shape:
+          child && !Array.isArray(child)
+            ? knownScratchBlockShapeV2(child.opcode)
+            : null,
+      }
+    })
+  const ownerProjection = (owned: typeof scopes) =>
+    owned.map((entry) => ({
+      definitionBlockId: entry.definitionBlockId,
+      signatureSha256: entry.rawSignatureSha256,
+    }))
+  for (const [targetIndex, target] of project.json.targets.entries())
+    for (const [blockId, entry] of Object.entries(target.blocks))
+    {
+      if (
+        Array.isArray(entry) ||
+        ![
+          'procedures_call',
+          'argument_reporter_string_number',
+          'argument_reporter_boolean',
+        ].includes(entry.opcode)
+      )
+        continue
+      const previous =
+        previousProject?.json.targets[targetIndex]?.blocks[blockId]
+      const priorBlock =
+        previous && !Array.isArray(previous) ? previous : undefined
+      if (entry.opcode === 'procedures_call')
+      {
+        const called = scopes.filter(
+          (scope) =>
+            scope.targetIndex === targetIndex &&
+            scope.proccode === entry.mutation?.proccode
+        )
+        const priorCalled = priorScopes.filter(
+          (scope) =>
+            scope.targetIndex === targetIndex &&
+            scope.proccode === priorBlock?.mutation?.proccode
+        )
+        if (
+          priorBlock &&
+          nodeSha256(entry) === nodeSha256(priorBlock) &&
+          semanticHashV1(
+            'evidence-content',
+            inputShapes(project, targetIndex, entry)
+          ) ===
+            semanticHashV1(
+              'evidence-content',
+              inputShapes(previousProject!, targetIndex, priorBlock)
+            ) &&
+          semanticHashV1('evidence-content', ownerProjection(called)) ===
+            semanticHashV1('evidence-content', ownerProjection(priorCalled))
+        )
+          continue
+        if (called.length !== 1 || called[0]!.scope === undefined)
+          procedureError(
+            'edit.invalid_owner',
+            `procedure call ${blockId} has no unique owning signature`
+          )
+        let argumentIds: unknown
+        try
+        {
+          argumentIds = JSON.parse(entry.mutation?.argumentids ?? 'null')
+        }
+        catch
+        {
+          procedureError(
+            'edit.invalid_shape',
+            `procedure call ${blockId} argument IDs are malformed`
+          )
+        }
+        const expected = called[0]!.scope!.parameters.map(
+          (slot) => slot.argumentId
+        )
+        if (
+          !Array.isArray(argumentIds) ||
+          argumentIds.length !== expected.length ||
+          argumentIds.some((id, ordinal) => id !== expected[ordinal]) ||
+          Object.keys(entry.inputs ?? {}).length !== expected.length ||
+          expected.some((id) => !Object.hasOwn(entry.inputs ?? {}, id)) ||
+          decodeProcedureWarpV1(entry.mutation?.warp).warp !==
+            called[0]!.scope!.warp
+        )
+          procedureError(
+            'edit.invalid_shape',
+            `procedure call ${blockId} differs from its declared signature`
+          )
+        if (!validateExistingStandardBlockV2(entry).ok)
+          procedureError(
+            'edit.invalid_shape',
+            `procedure call ${blockId} has invalid argument input encoding`
+          )
+        for (const slot of called[0]!.scope!.parameters)
+        {
+          const input = entry.inputs![slot.argumentId]!
+          const childId = input[1]
+          if (typeof childId !== 'string') continue
+          const child = target.blocks[childId]
+          const shape =
+            child && !Array.isArray(child)
+              ? knownScratchBlockShapeV2(child.opcode)
+              : null
+          const scalarShadow =
+            input[0] === 1 &&
+            child &&
+            !Array.isArray(child) &&
+            child.shadow === true &&
+            shape === 'menuReporter'
+          if (
+            !child ||
+            Array.isArray(child) ||
+            (!scalarShadow &&
+              !standardProcedureArgumentShapeFitsV2(
+                slot.parameterType,
+                shape
+              ))
+          )
+            procedureError(
+              'edit.invalid_shape',
+              `procedure call ${blockId} argument ${slot.argumentId} has incompatible shape`
+            )
+        }
+        continue
+      }
+      const owned = ownership(scopes, targetIndex, blockId)
+      const priorOwned = ownership(priorScopes, targetIndex, blockId)
+      if (
+        priorBlock &&
+        nodeSha256(entry) === nodeSha256(priorBlock) &&
+        semanticHashV1('evidence-content', ownerProjection(owned)) ===
+          semanticHashV1('evidence-content', ownerProjection(priorOwned))
+      )
+        continue
+      const parameters = owned.length === 1 ? parameter(owned[0], entry) : []
+      if (owned.length !== 1 || parameters.length !== 1)
+        procedureError(
+          'edit.invalid_owner',
+          `argument reporter ${blockId} escapes its unique procedure parameter`
+        )
+      const priorParameters =
+        priorBlock && priorOwned.length === 1
+          ? parameter(priorOwned[0], priorBlock)
+          : []
+      if (
+        priorParameters.length === 1 &&
+        (priorOwned[0]!.definitionBlockId !== owned[0]!.definitionBlockId ||
+          priorParameters[0]!.argumentId !== parameters[0]!.argumentId)
+      )
+        procedureError(
+          'edit.invalid_owner',
+          `argument reporter ${blockId} changed its procedure parameter identity`
+        )
+    }
 }
 
 function blockEntry(target: Target, blockId: string): Block
@@ -586,12 +912,16 @@ function duplicateParameterIdentityV1(index: SemanticReferenceIndex): boolean
 // available as a complete unit or not at all, never per-operation
 export function assessProcedureCapabilitiesV1(
   project: ProjectIR,
-  suppliedIndex?: SemanticReferenceIndex
+  suppliedIndex?: SemanticReferenceIndex,
+  semanticAuthorityId: 'a0-v1' | 'standard-v2' = 'a0-v1'
 ): ProcedureCapabilityAssessmentV1
 {
   const index = suppliedIndex ?? buildSemanticReferenceIndex(project)
   const restrictions: string[] = []
-  const unknownSemantics = unknownNameSemanticsEvidenceV1(project.json)
+  const unknownSemantics =
+    semanticAuthorityId === 'standard-v2'
+      ? unknownNameSemanticsForAuthorityV2(project.json, semanticAuthorityId)
+      : unknownNameSemanticsEvidenceV1(project.json)
   const unknownSemanticsBlocked =
     unknownSemantics.declaredExtensions.length > 0 ||
     unknownSemantics.unknownOpcodes.length > 0 ||
@@ -636,10 +966,23 @@ export function assessProcedureCapabilitiesV1(
 
 interface ProcedureOperationCatalogAdapterV1
 {
+  readonly semanticAuthorityId?: 'a0-v1' | 'standard-v2'
+  readonly procedureScopeForBlock?: (
+    project: ProjectIR,
+    targetIndex: number,
+    blockId: string
+  ) => StandardProcedureScopeV2 | undefined
   readonly lowerStatementSequence: (
     project: ProjectIR,
     targetIndex: number,
-    sequence: SemanticStatementSequenceV1
+    sequence: SemanticStatementSequenceV1,
+    context?: { readonly procedureScope?: StandardProcedureScopeV2 }
+  ) => GraphInstalledClosureV1
+  readonly lowerReplacement?: (
+    project: ProjectIR,
+    targetIndex: number,
+    replacement: SemanticReplacementV1,
+    context?: { readonly procedureScope?: StandardProcedureScopeV2 }
   ) => GraphInstalledClosureV1
 }
 
@@ -903,8 +1246,24 @@ function applyProcedureAdd(
   // project.uids independently, so an uncommitted candidate would let the body
   // & the definition closure both be handed the same block id
   project.uids.commit(candidate)
+  const procedureScope: StandardProcedureScopeV2 = {
+    proccode: decoded.proccode,
+    signatureSha256: standardProcedureSignatureSha256V2(decoded),
+    warp: decoded.warp,
+    parameters: decoded.parameters.map((parameter) => ({
+      ...parameter,
+      argumentId: closure.argumentIdByLocalKey[parameter.localKey]!,
+    })),
+  }
   const body = operation.body
-    ? adapters.lowerStatementSequence(project, targetIndex, operation.body)
+    ? adapters.lowerStatementSequence(
+        project,
+        targetIndex,
+        operation.body,
+        adapters.semanticAuthorityId === 'standard-v2'
+          ? { procedureScope }
+          : undefined
+      )
     : null
   if (body) commitGraphAllocatorV1(project.uids, body)
   const createdBlockIds = [...Object.keys(closure.blocks)]
@@ -1094,7 +1453,8 @@ function applyProcedureSetCallArgument(
       )
     for (const blockId of plan.orderedBlockIds)
     {
-      deleteScratchRecordValue(target.blocks, blockId)
+      if (adapters.semanticAuthorityId !== 'standard-v2')
+        deleteScratchRecordValue(target.blocks, blockId)
       removedBlockIds.push(blockId)
     }
   }
@@ -1136,12 +1496,14 @@ function applyProcedureSetCallArgument(
   {
     // lower the wrapped tree, not the SemanticInputValueV1 envelope: the
     // sequence validator keys on nodeKind, which the envelope does not carry
-    const lowered = adapters.lowerStatementSequence(project, targetIndex, {
-      blocks: [
-        operation.value
-          .value as unknown as SemanticStatementSequenceV1['blocks'][number],
-      ],
-    } as SemanticStatementSequenceV1)
+    const lowered = lowerCallArgumentTreeV1(
+      project,
+      targetIndex,
+      callBlockId,
+      operation.value.value,
+      procedureParameterTypeForPlaceholderV1(placeholder),
+      adapters
+    )
     commitGraphAllocatorV1(project.uids, lowered)
     for (const [blockId, block] of Object.entries(lowered.blocks))
     {
@@ -1172,6 +1534,9 @@ function applyProcedureSetCallArgument(
       `call argument value kind ${operation.value.valueKind} is not authorable`
     )
   }
+  if (adapters.semanticAuthorityId === 'standard-v2')
+    for (const blockId of removedBlockIds)
+      deleteScratchRecordValue(target.blocks, blockId)
   call.inputs ??= Object.create(null) as Record<string, BlockInput>
   defineScratchRecordValue<BlockInput>(call.inputs, argumentId, nextInput)
   return {
@@ -1472,6 +1837,57 @@ const EMPTY_LOWERED_ALIASES: Readonly<Record<string, string>> = Object.freeze(
   {}
 )
 
+function lowerCallArgumentTreeV1(
+  project: ProjectIR,
+  targetIndex: number,
+  callBlockId: string,
+  value: Extract<SemanticInputValueV1, { valueKind: 'block' }>['value'],
+  parameterType: ProcedureParameterTypeV1,
+  adapters: ProcedureOperationCatalogAdapterV1
+): GraphInstalledClosureV1
+{
+  if (adapters.semanticAuthorityId === 'standard-v2')
+  {
+    if (value.nodeKind === 'procedureCall')
+      return procedureError(
+        'edit.invalid_shape',
+        'procedure call cannot occupy an expression input'
+      )
+    if (!adapters.lowerReplacement)
+      return procedureError(
+        'edit.internal_invariant',
+        'standard procedure arguments require expression lowering'
+      )
+    const procedureScope = adapters.procedureScopeForBlock?.(
+      project,
+      targetIndex,
+      callBlockId
+    )
+    const lowered = adapters.lowerReplacement(
+      project,
+      targetIndex,
+      { replacementKind: 'expression', value },
+      { procedureScope }
+    )
+    const root = lowered.blocks[lowered.rootId]
+    if (
+      !root ||
+      !standardProcedureArgumentShapeFitsV2(
+        parameterType,
+        knownScratchBlockShapeV2(root.opcode)
+      )
+    )
+      return procedureError(
+        'edit.invalid_shape',
+        'procedure argument expression has incompatible parameter shape'
+      )
+    return lowered
+  }
+  return adapters.lowerStatementSequence(project, targetIndex, {
+    blocks: [value as unknown as SemanticStatementSequenceV1['blocks'][number]],
+  } as SemanticStatementSequenceV1)
+}
+
 // a boolean call slot has no literal primitive in sb3, so an empty %b argument
 // is left genuinely empty rather than filled w/ a text shadow
 function lowerCallArgumentValueV1(
@@ -1490,7 +1906,9 @@ function lowerCallArgumentValueV1(
     return {
       input:
         encoding.inputShape === 'boolean'
-          ? [1]
+          ? adapters.semanticAuthorityId === 'standard-v2'
+            ? [2, null]
+            : [1]
           : [1, [encoding.literalPrimitiveTag, '']],
       createdBlockIds: Object.freeze([]),
       aliasBlockIds: EMPTY_LOWERED_ALIASES,
@@ -1521,11 +1939,14 @@ function lowerCallArgumentValueV1(
       'edit.invalid_shape',
       `call argument value kind ${value.valueKind} is not authorable here`
     )
-  const lowered = adapters.lowerStatementSequence(project, targetIndex, {
-    blocks: [
-      value.value as unknown as SemanticStatementSequenceV1['blocks'][number],
-    ],
-  } as SemanticStatementSequenceV1)
+  const lowered = lowerCallArgumentTreeV1(
+    project,
+    targetIndex,
+    callBlockId,
+    value.value,
+    parameter.parameterType,
+    adapters
+  )
   commitGraphAllocatorV1(project.uids, lowered)
   const createdBlockIds: string[] = []
   const creationKeyByBlockId: Record<string, string> = Object.create(

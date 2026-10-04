@@ -1288,7 +1288,8 @@ export function createSemanticEditMcpDriverV1(
         throw new Error(
           `semantic-edit-stdio-bootstrap-unavailable: ${boundedError(error)}; ` +
             `the project-edit server must consume ${options.hostBootstrapPath} ` +
-            'and inject its production edit host plus durable server audit'
+            'and inject its production edit host plus durable server audit',
+          { cause: error }
         )
       }
     },

@@ -4,7 +4,16 @@
 export * from './helpers.js'
 export * from './checks.js'
 export * from './analyze.js'
+export * from './text/scratchblocks.js'
 export * from './fragility/fragility-types.js'
+export {
+  FRAGILITY_ANALYSIS_POLICY_V1,
+  FRAGILITY_ANALYSIS_POLICY_SHA256_V1,
+} from './fragility/analysis-budget.js'
+export type {
+  FragilityBudgetEvidenceV1,
+  FragilityBudgetLimitV1,
+} from './fragility/analysis-budget.js'
 export * from './fragility/boundary-model.js'
 export * from './fragility/analyze-fragility.js'
 export * from './fragility/signatures.js'

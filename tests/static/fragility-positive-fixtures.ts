@@ -14,14 +14,14 @@ import {
   type VariableEntry,
 } from '@scratch-agent/sb3'
 
-interface StackSpec
+export interface StackSpec
 {
   id: string
   opcode: string
   extra?: Partial<Block>
 }
 
-function mutableProject(): ProjectJson
+export function mutableProject(): ProjectJson
 {
   const json = buildClicker().toProjectJson()
   for (const target of json.targets)
@@ -36,12 +36,12 @@ function mutableProject(): ProjectJson
   return json
 }
 
-function put(target: Target, id: string, block: Block): void
+export function put(target: Target, id: string, block: Block): void
 {
   defineScratchRecordValue<BlockEntry>(target.blocks, id, block)
 }
 
-function stack(target: Target, specs: readonly StackSpec[]): void
+export function stack(target: Target, specs: readonly StackSpec[]): void
 {
   for (let position = 0; position < specs.length; position++)
   {
@@ -73,7 +73,7 @@ function mutation(proccode: string, warp?: boolean | string)
   }
 }
 
-function procedure(
+export function procedure(
   target: Target,
   prefix: string,
   proccode: string,
@@ -122,9 +122,36 @@ function procedure(
   }
 }
 
-function call(proccode: string): Partial<Block>
+export function call(proccode: string): Partial<Block>
 {
   return { mutation: mutation(proccode) }
+}
+
+export function sharedProcedureDagProject(
+  depth: number,
+  repetitions = 2
+): ProjectJson
+{
+  const json = mutableProject()
+  const sprite = json.targets.find((target) => !target.isStage)!
+  procedure(sprite, 'a-budget-witness', 'a budget witness', true, [
+    { id: 'a-budget-wait', opcode: 'looks_sayforsecs' },
+  ])
+  for (let level = 0; level <= depth; level++)
+    procedure(
+      sprite,
+      `z-budget-${level}`,
+      `z budget ${level}`,
+      level === 0,
+      level === depth
+        ? [{ id: `z-budget-leaf`, opcode: 'motion_movesteps' }]
+        : Array.from({ length: repetitions }, (_, occurrence) => ({
+            id: `z-budget-${level}-call-${occurrence}`,
+            opcode: 'procedures_call',
+            extra: call(`z budget ${level + 1}`),
+          }))
+    )
+  return json
 }
 
 function addStaticInventoryWitnesses(stage: Target, sprite: Target): void

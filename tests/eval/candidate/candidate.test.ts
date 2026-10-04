@@ -195,7 +195,6 @@ test('candidate gate classifies repair, infrastructure, preflight, & diagnostic 
     {
       tests: specs,
       diagnostics: DEFAULT_DIAGNOSTIC_REGRESSION_OPTIONS,
-      run: { recordVideo: false },
     },
     async (testCase, options) =>
     {

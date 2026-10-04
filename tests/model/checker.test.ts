@@ -175,6 +175,12 @@ test('an end model asserts against the frozen final state', () =>
   const ok = passing.results()
   assert.equal(ok.ok, true)
   assert.equal(ok.models[0]!.finalNode, 'ok')
+
+  const inactive = new ModelChecker(loadModelsFromText(END))
+  inactive.onEnd(tickOf(50, { score: 0, lives: 2 }))
+  assert.equal(inactive.results().ok, true)
+  assert.equal(inactive.results().models[0]!.reachedStop, false)
+  assert.deepEqual(inactive.results().models[0]!.coverage.covered, [])
 })
 
 // regression: a failing effect on the edge INTO a stop node must not be dropped when the
@@ -198,6 +204,48 @@ const TERMINAL = JSON.stringify([
   },
 ])
 
+function restartingChecker(): ModelChecker
+{
+  return new ModelChecker(
+    loadModelsFromText(
+      JSON.stringify([
+        {
+          id: 'assertion',
+          usage: 'program',
+          startNodeId: 's',
+          nodes: [{ id: 's' }, { id: 'done' }],
+          edges: [
+            {
+              id: 'original',
+              label: 'original assertion',
+              from: 's',
+              to: 'done',
+              conditions: [{ name: 'Key', args: ['space'] }],
+              effects: [
+                { name: 'VarComp', args: ['Stage', 'state', '==', 'won'] },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'restarter',
+          usage: 'program',
+          startNodeId: 's',
+          nodes: [{ id: 's' }],
+          edges: [
+            {
+              id: 'restart',
+              from: 's',
+              to: 's',
+              effects: [{ name: 'RestartModels' }],
+            },
+          ],
+        },
+      ])
+    )
+  )
+}
+
 test('a failing effect on a terminal edge is caught, not swallowed by the stop', () =>
 {
   const checker = new ModelChecker(loadModelsFromText(TERMINAL))
@@ -211,6 +259,24 @@ test('a failing effect on a terminal edge is caught, not swallowed by the stop',
   assert.equal(res.ok, false)
   assert.ok(res.models[0]!.failures.some((f) => /VarComp/.test(f.check)))
   assert.equal(res.models[0]!.finalNode, 'won')
+
+  const restarted = restartingChecker()
+  restarted.onTick(tickOf(1, { state: 'playing' }, ['space']))
+  assert.equal(restarted.results().models[0]!.finalNode, 's')
+  restarted.onTick(tickOf(2, { state: 'playing' }))
+  restarted.onTick(tickOf(3, { state: 'playing' }))
+  const failure = restarted.results().models[0]!.failures
+  assert.equal(failure.length, 1)
+  assert.equal(failure[0]!.edgeId, 'original')
+  assert.equal(failure[0]!.edgeLabel, 'original assertion')
+  assert.equal(failure[0]!.tick, 2)
+
+  const satisfied = restartingChecker()
+  satisfied.onTick(tickOf(1, { state: 'playing' }, ['space']))
+  satisfied.onTick(tickOf(2, { state: 'won' }))
+  satisfied.onEnd(tickOf(2, { state: 'won' }))
+  assert.equal(satisfied.results().ok, true)
+  assert.deepEqual(satisfied.results().models[0]!.failures, [])
 })
 
 test('an effect deferred on the final tick is flushed at run end', () =>
@@ -224,4 +290,13 @@ test('an effect deferred on the final tick is flushed at run end', () =>
   const res = checker.results()
   assert.equal(res.ok, false)
   assert.ok(res.models[0]!.failures.some((f) => /VarChange/.test(f.check)))
+
+  const restarted = restartingChecker()
+  restarted.onTick(tickOf(1, { state: 'playing' }, ['space']))
+  restarted.onEnd(tickOf(1, { state: 'playing' }))
+  assert.equal(restarted.results().ok, false)
+  const failure = restarted.results().models[0]!.failures
+  assert.equal(failure.length, 1)
+  assert.equal(failure[0]!.edgeId, 'original')
+  assert.equal(failure[0]!.tick, 1)
 })

@@ -3,7 +3,7 @@
 
 import { createHash } from 'node:crypto'
 
-export const PINNED_VM_VERSION = '14.1.0'
+export const PINNED_VM_VERSION = '15.1.0'
 export const PINNED_SCRATCH_AUDIO_VERSION = '2.0.268'
 export const WARP_TIME_MS = 500
 
@@ -140,7 +140,7 @@ export const PINNED_VM_SOURCE_FILES_V1: readonly PinnedSourceFile[] = [
   },
   {
     path: '@scratch/scratch-vm/src/engine/runtime.js',
-    sha256: '2f7eef51ebcc187ef3e63d0a218bdd4dbaec36f2137bcfb543022a30215d5abe',
+    sha256: 'fc30983d1213ba4c0053086464045f26e2cc0abb7957361d3e6054179aae2d78',
   },
   {
     path: '@scratch/scratch-vm/src/blocks/scratch3_control.js',

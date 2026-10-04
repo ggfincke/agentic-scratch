@@ -9,6 +9,7 @@ import {
   scratchRecordValue,
   validateAdmittedSb3,
   type Sb3AdmissionMetrics,
+  type Sb3Admission,
   type Sb3Limits,
   type ProjectJson,
 } from '@scratch-agent/sb3'
@@ -33,6 +34,7 @@ import {
   type ProjectCheckIssue,
   type ProjectCheckStageStatus,
 } from './project-check-contract.js'
+import { sha256 } from '../core/sha256.js'
 import { unknownErrorMessage } from '../core/unknown-error-message.js'
 
 interface ProjectTargetInspection
@@ -228,11 +230,11 @@ function inspectionSummary(
   }
 }
 
-export async function inspectSelectedProject(
+function emptySelectedProjectInspection(
   bytes: Uint8Array
-): Promise<SelectedProjectInspection>
+): SelectedProjectInspection
 {
-  const result: SelectedProjectInspection = {
+  return {
     input: { sha256: null, byteLength: bytes.byteLength },
     stages: {
       admission: 'not-run',
@@ -250,16 +252,17 @@ export async function inspectSelectedProject(
     issues: [],
     summary: inspectionSummary(null, emptyCatalog()),
   }
+}
+
+export async function inspectSelectedProject(
+  bytes: Uint8Array
+): Promise<SelectedProjectInspection>
+{
+  const result = emptySelectedProjectInspection(bytes)
   let admission
   try
   {
     admission = await admitSb3(bytes)
-    result.input.sha256 = admission.metrics.sha256
-    result.admission = {
-      metrics: structuredClone(admission.metrics),
-      limits: { ...admission.limits },
-    }
-    result.stages.admission = 'passed'
   }
   catch (error)
   {
@@ -281,6 +284,29 @@ export async function inspectSelectedProject(
     }
     return result
   }
+
+  return inspectSelectedProjectFromAdmittedSb3(bytes, admission)
+}
+
+export async function inspectSelectedProjectFromAdmittedSb3(
+  bytes: Uint8Array,
+  admission: Sb3Admission
+): Promise<SelectedProjectInspection>
+{
+  if (
+    admission.metrics.sha256 !== sha256(bytes) ||
+    admission.metrics.compressedBytes !== bytes.byteLength
+  )
+  {
+    throw new Error('admitted archive identity does not match project bytes')
+  }
+  const result = emptySelectedProjectInspection(bytes)
+  result.input.sha256 = admission.metrics.sha256
+  result.admission = {
+    metrics: structuredClone(admission.metrics),
+    limits: { ...admission.limits },
+  }
+  result.stages.admission = 'passed'
 
   let json: ProjectJson
   try

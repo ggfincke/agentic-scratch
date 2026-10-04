@@ -37,7 +37,8 @@ import type {
 } from '../contracts.generated.js'
 import { semanticHashV1 } from '../contracts/hash-domains.js'
 import { compareLexicalTextV1 as compareText } from '../support/lexical-order.js'
-import { unknownNameSemanticsEvidenceV1 } from '../semantic-index/name-semantics-catalog.js'
+import { unknownNameSemanticsForAuthorityV2 } from '../semantic-index/standard-name-policy.js'
+import type { SemanticAuthoringAuthorityIdV2 } from '../contracts/authority-selection.js'
 import { buildSemanticReferenceIndex } from '../semantic-index/reference-index.js'
 import {
   type MediaKind,
@@ -1034,12 +1035,16 @@ function existingStageBackdropHatCollisionV1(project: ProjectIR): boolean
 // available as a complete unit or not at all, never per-operation
 export function assessMediaOperationCapabilitiesV1(
   project: ProjectIR,
-  suppliedIndex?: SemanticReferenceIndex
+  suppliedIndex?: SemanticReferenceIndex,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): MediaCapabilityAssessmentV1
 {
   const index = suppliedIndex ?? buildSemanticReferenceIndex(project)
   const restrictions: string[] = []
-  const unknownSemantics = unknownNameSemanticsEvidenceV1(project.json)
+  const unknownSemantics = unknownNameSemanticsForAuthorityV2(
+    project.json,
+    authorityId
+  )
   const unknownSemanticsBlocked =
     unknownSemantics.declaredExtensions.length > 0 ||
     unknownSemantics.unknownOpcodes.length > 0 ||

@@ -618,7 +618,8 @@ function validateMultimodalEvaluationRequest(
   {
     const message = unknownErrorMessage(error)
     throw new Error(
-      `Multimodal evaluation request must be bounded canonical JSON: ${message}`
+      `Multimodal evaluation request must be bounded canonical JSON: ${message}`,
+      { cause: error }
     )
   }
   const request = inputRecord(detached)
@@ -707,7 +708,8 @@ function validateMultimodalEvaluationRequest(
   {
     const message = unknownErrorMessage(error)
     throw new Error(
-      `Multimodal evaluation request policy is invalid: ${message}`
+      `Multimodal evaluation request policy is invalid: ${message}`,
+      { cause: error }
     )
   }
   return typed

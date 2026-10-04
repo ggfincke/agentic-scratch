@@ -201,7 +201,9 @@ function checkTargetBlocks(
     }
     checkBlock(target, id, entry, index, argNames, diags)
   }
-  checkBlockOwnership(target, diags)
+  const owners = collectBlockOwners(target)
+  checkBlockCycles(target, owners, diags)
+  checkBlockOwnership(target, owners, diags)
 }
 
 interface BlockOwner
@@ -210,9 +212,62 @@ interface BlockOwner
   via: string
 }
 
-function checkBlockOwnership(target: Target, diags: Diagnostics): void
+interface BlockCycleFrame
 {
-  const owners = collectBlockOwners(target)
+  blockId: string
+  ownerIndex: number
+}
+
+type BlockVisitState = 'active' | 'done'
+
+// owner links reverse the exact next/input graph; reversing preserves directed cycles
+function checkBlockCycles(
+  target: Target,
+  owners: Map<string, BlockOwner[]>,
+  diags: Diagnostics
+): void
+{
+  const states = new Map<string, BlockVisitState>()
+  for (const [rootId, entry] of scratchRecordEntries(target.blocks))
+  {
+    if (!isBlock(entry) || states.has(rootId)) continue
+    states.set(rootId, 'active')
+    const stack: BlockCycleFrame[] = [{ blockId: rootId, ownerIndex: 0 }]
+    while (stack.length > 0)
+    {
+      const frame = stack[stack.length - 1]!
+      const blockOwners = owners.get(frame.blockId) ?? []
+      const owner = blockOwners[frame.ownerIndex]
+      if (!owner)
+      {
+        states.set(frame.blockId, 'done')
+        stack.pop()
+        continue
+      }
+      frame.ownerIndex++
+      const ownerState = states.get(owner.ownerId)
+      if (ownerState === 'active')
+      {
+        diags.error(
+          'block-cycle',
+          `block-reference cycle reaches active block ${owner.ownerId}`,
+          { target: target.name, block: owner.ownerId }
+        )
+        return
+      }
+      if (ownerState === 'done') continue
+      states.set(owner.ownerId, 'active')
+      stack.push({ blockId: owner.ownerId, ownerIndex: 0 })
+    }
+  }
+}
+
+function checkBlockOwnership(
+  target: Target,
+  owners: Map<string, BlockOwner[]>,
+  diags: Diagnostics
+): void
+{
   for (const [id, entry] of scratchRecordEntries(target.blocks))
   {
     if (!isBlock(entry)) continue

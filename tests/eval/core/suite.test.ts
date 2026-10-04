@@ -20,7 +20,7 @@ import type { Costume } from '@scratch-agent/sb3'
 import type { AssertResult, Assertion } from '@scratch-agent/eval'
 import { evaluate } from '@scratch-agent/eval'
 import { buildRelay } from '@scratch-agent/eval'
-import { scratchEquals } from '@scratch-agent/eval'
+import { matches, scratchEquals } from '@scratch-agent/eval'
 import { vmTestSuite } from '@scratch-agent/eval'
 import { runTest } from '@scratch-agent/eval'
 import type { TestCase } from '@scratch-agent/eval'
@@ -186,12 +186,29 @@ for (const tc of vmTestSuite)
   })
 }
 
-test('matcher: scratchEquals coerces numeric strings', () =>
+test('matcher: Scratch equality and finite numeric matchers keep their policies', () =>
 {
-  assert.ok(scratchEquals('0', 0))
-  assert.ok(scratchEquals(5, '5'))
-  assert.ok(!scratchEquals('hi', 0))
-  assert.ok(scratchEquals('HELLO', 'hello'))
+  const comparisons: readonly [unknown, unknown, boolean][] = [
+    ['0', 0, true],
+    [5, '5', true],
+    ['hi', 0, false],
+    ['HELLO', 'hello', true],
+    [' \t\n', 0, false],
+    ['', 0, false],
+    [null, 0, false],
+    [' 05 ', 5, true],
+    [Infinity, 'Infinity', true],
+    [-Infinity, '-Infinity', true],
+    [Infinity, -Infinity, false],
+  ]
+  for (const [observed, expected, equal] of comparisons)
+    assert.equal(scratchEquals(observed, expected), equal)
+  assert.equal(matches({ kind: 'contains', value: 0 }, [' \t\n']), false)
+  assert.equal(matches({ kind: 'closeTo', value: 0 }, ' \t\n'), true)
+  assert.equal(matches({ kind: 'closeTo', value: 0 }, Infinity), false)
+  assert.equal(matches({ kind: 'gt', value: 0 }, Infinity), false)
+  assert.equal(matches({ kind: 'lt', value: 0 }, -Infinity), false)
+  assert.equal(matches({ kind: 'gt', value: 0 }, '2'), true)
 })
 
 // the runner can inject a broadcast directly (no in-project sender needed)

@@ -27,7 +27,13 @@ import type {
   EditPublicationRecoveryAuthorityV1,
   EditPublicationRecoveryPortV1,
 } from '@scratch-agent/edit'
-import { isPathWithinRootV1 } from '@scratch-agent/eval'
+import {
+  isPathWithinRootV1,
+  preparePublicationFileV1,
+  readPublicationFileV1,
+  syncPublicationDirectoryV1,
+  PublicationFilesystemErrorV1,
+} from '@scratch-agent/eval'
 
 import { RepairMcpBoundaryError } from './errors.js'
 
@@ -215,39 +221,21 @@ function isMissing(error: unknown): boolean
 // between the identity check & the sync itself
 function syncDirectory(path: string): void
 {
-  let descriptor: number
   try
   {
-    descriptor = openSync(
-      path,
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
-    )
+    syncPublicationDirectoryV1(path)
   }
   catch (error)
   {
     throw new EditPublicationError(
       'edit.export_write_failed',
-      'publication directory could not be opened for durability proof',
+      error instanceof PublicationFilesystemErrorV1 &&
+        error.phase === 'directory.open'
+        ? 'publication directory could not be opened for durability proof'
+        : 'publication directory durability could not be proven',
       false,
-      error
+      error instanceof PublicationFilesystemErrorV1 ? error.cause : error
     )
-  }
-  try
-  {
-    fsyncSync(descriptor)
-  }
-  catch (error)
-  {
-    throw new EditPublicationError(
-      'edit.export_write_failed',
-      'publication directory durability could not be proven',
-      false,
-      error
-    )
-  }
-  finally
-  {
-    closeSync(descriptor)
   }
 }
 
@@ -741,44 +729,20 @@ export class EditPublicationDirectoryPort
     const tempCanonicalPath = join(identity.canonicalRealpath, tempBasename)
     const expectedSha256 = sha256(bytes)
     this.inject('prepare.beforeTempOpen', 'prepare')
-    let descriptor: number | null = null
     try
     {
-      descriptor = openSync(
-        tempCanonicalPath,
-        constants.O_WRONLY |
-          constants.O_CREAT |
-          constants.O_EXCL |
-          constants.O_NOFOLLOW,
-        0o600
-      )
-      this.inject('prepare.afterTempOpen', 'prepare')
-      // * the recovery name must be durable before the bytes, so a crash leaves
-      // * a nameable inode rather than an unreachable one
-      syncDirectory(identity.canonicalRealpath)
-      this.inject('prepare.afterNameDurable', 'prepare')
-      this.inject('prepare.beforeWrite', 'prepare')
-      writeFileSync(descriptor, bytes)
-      this.inject('prepare.afterWrite', 'prepare')
-      this.inject('prepare.beforeFileSync', 'prepare')
-      fsyncSync(descriptor)
-      this.inject('prepare.afterFileSync', 'prepare')
-      const info = fstatSync(descriptor, { bigint: true })
-      closeSync(descriptor)
-      descriptor = null
-      this.inject('prepare.beforeReadback', 'prepare')
-      const readback = this.readNoFollow(tempCanonicalPath)
-      if (
-        readback.byteLength !== bytes.byteLength ||
-        sha256(readback) !== expectedSha256
-      )
-      {
-        throw new EditPublicationError(
-          'edit.export_proof_failed',
-          'prepared bytes did not read back at the exact size & hash'
-        )
-      }
-      this.inject('prepare.afterReadback', 'prepare')
+      const proof = preparePublicationFileV1({
+        directory: identity,
+        finalBasename: reservation.basename,
+        tempBasename,
+        bytes,
+        expectedSha256,
+        maxBytes: this.#maximumOutputByteLength,
+        hook: (point) =>
+        {
+          if (point !== 'prepare.beforeTempOpen') this.inject(point, 'prepare')
+        },
+      })
       const preparationId = `outprep-${sha256(
         new Uint8Array([
           ...new TextEncoder().encode('outprep\0'),
@@ -792,11 +756,11 @@ export class EditPublicationDirectoryPort
         tempBasename,
         tempCanonicalPath,
         finalCanonicalPath: reservation.finalCanonicalPath,
-        device: info.dev.toString(),
-        inode: info.ino.toString(),
-        mode: (info.mode & 0o7777n).toString(8),
-        byteLength: bytes.byteLength,
-        sha256: expectedSha256,
+        device: proof.device,
+        inode: proof.inode,
+        mode: proof.mode,
+        byteLength: proof.byteLength,
+        sha256: proof.sha256,
         nameDurableBeforeWrite: true,
         fileSynced: true,
         readbackVerified: true,
@@ -808,22 +772,38 @@ export class EditPublicationDirectoryPort
     }
     catch (error)
     {
-      if (descriptor !== null) closeSync(descriptor)
-      try
-      {
-        unlinkSync(tempCanonicalPath)
-        syncDirectory(identity.canonicalRealpath)
-      }
-      catch
-      {
-        // the retained temp name stays the only cleanup authority
-      }
       if (error instanceof EditPublicationError) throw error
+      if (
+        error instanceof PublicationFilesystemErrorV1 &&
+        error.cause instanceof EditPublicationError
+      )
+        throw error.cause
+      if (error instanceof PublicationFilesystemErrorV1)
+      {
+        if (
+          error.phase === 'directory.open' ||
+          error.phase === 'directory.sync'
+        )
+          throw new EditPublicationError(
+            'edit.export_write_failed',
+            error.phase === 'directory.open'
+              ? 'publication directory could not be opened for durability proof'
+              : 'publication directory durability could not be proven',
+            false,
+            error.cause
+          )
+        if (error.phase.startsWith('file.')) throw this.readFailure(error)
+        if (error.phase === 'prepare.readback')
+          throw new EditPublicationError(
+            'edit.export_proof_failed',
+            'prepared bytes did not read back at the exact size & hash'
+          )
+      }
       throw new EditPublicationError(
         'edit.export_write_failed',
         'prepared publication could not be written safely',
         false,
-        error
+        error instanceof PublicationFilesystemErrorV1 ? error.cause : error
       )
     }
   }
@@ -1587,46 +1567,16 @@ export class EditPublicationDirectoryPort
 
   private readNoFollow(path: string, expect?: Prepared): Uint8Array
   {
-    let descriptor: number
     try
     {
-      descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
-    }
-    catch (error)
-    {
-      throw new EditPublicationError(
-        'edit.export_reopen_failed',
-        'publication could not be reopened safely',
-        false,
-        error
-      )
-    }
-    try
-    {
-      const info = fstatSync(descriptor, { bigint: true })
-      if (!info.isFile())
-      {
-        throw new EditPublicationError(
-          'edit.export_reopen_failed',
-          'publication path is not one regular file'
-        )
-      }
-      if (
-        expect !== undefined &&
-        (info.dev.toString() !== expect.device ||
-          info.ino.toString() !== expect.inode)
-      )
-      {
-        throw new EditPublicationError(
-          'edit.publication_interference',
-          'prepared name no longer resolves to the prepared inode'
-        )
-      }
-      return Uint8Array.from(readFileSync(descriptor))
+      return readPublicationFileV1(path, this.#maximumOutputByteLength, expect)
+        .bytes
     }
     catch (error)
     {
       if (error instanceof EditPublicationError) throw error
+      if (error instanceof PublicationFilesystemErrorV1)
+        throw this.readFailure(error, expect?.committed ?? false)
       throw new EditPublicationError(
         'edit.export_reopen_failed',
         'publication contents could not be read safely',
@@ -1634,10 +1584,36 @@ export class EditPublicationDirectoryPort
         error
       )
     }
-    finally
-    {
-      closeSync(descriptor)
-    }
+  }
+
+  private readFailure(
+    error: PublicationFilesystemErrorV1,
+    committed = false
+  ): EditPublicationError
+  {
+    if (error.phase === 'file.open')
+      return new EditPublicationError(
+        'edit.export_reopen_failed',
+        'publication could not be reopened safely',
+        false,
+        error.cause
+      )
+    if (error.phase === 'file.kind')
+      return new EditPublicationError(
+        'edit.export_reopen_failed',
+        'publication path is not one regular file'
+      )
+    if (error.phase === 'file.identity')
+      return new EditPublicationError(
+        'edit.publication_interference',
+        'prepared name no longer resolves to the prepared inode'
+      )
+    return new EditPublicationError(
+      'edit.export_reopen_failed',
+      'publication contents could not be read safely',
+      committed,
+      error.cause
+    )
   }
 
   private inject(point: EditPublicationFaultPoint, operation: string): void

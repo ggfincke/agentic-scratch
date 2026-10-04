@@ -94,7 +94,10 @@ import {
   productionOperationResultV1,
   targetPlanningProjectionV1 as planningTargetProjection,
 } from './dispatcher-primitives.js'
-import { futureBindingKeySha256V1 } from '../lineage/future-binding-ledger.js'
+import {
+  futureBindingKeySha256V1,
+  realizedFutureBindingKeysForLineageV1 as futureBindingKeysForLineage,
+} from '../lineage/future-binding-ledger.js'
 import { editJsonPointerPartV1 } from '../support/internal-values.js'
 import type { CreatedSemanticLineageV1 } from '../lineage/lineage.js'
 import type {
@@ -564,9 +567,7 @@ function targetProductionResult(
     value === null ||
     typeof value !== 'object' ||
     (value as Partial<ProductionOperationResultV1>).opId !== opId ||
-    !Array.isArray(
-      (value as Partial<ProductionOperationResultV1>).fixedSlots
-    )
+    !Array.isArray((value as Partial<ProductionOperationResultV1>).fixedSlots)
   )
     return fail(
       'edit.created_result_invalid',
@@ -825,8 +826,7 @@ function priorCreatedSlotForLineage(
   for (const value of context.operationResultsById.values())
   {
     if (value === null || typeof value !== 'object') continue
-    const slots = (value as Partial<ProductionOperationResultV1>)
-      .fixedSlots
+    const slots = (value as Partial<ProductionOperationResultV1>).fixedSlots
     if (!Array.isArray(slots)) continue
     matches.push(
       ...slots.filter(
@@ -1388,7 +1388,12 @@ function declarationBindingKeys(
   )
   return uniqueSorted([
     ...existing,
-    ...futureBindingKeysForLineage(context, lineage.lineageId),
+    ...futureBindingKeysForLineage(
+      context.input.changeContractSha256,
+      context.contract.entityBindings,
+      context.futureBindingLedger,
+      lineage.lineageId
+    ),
   ])
 }
 
@@ -1414,7 +1419,12 @@ function commentBindingKeys(
   )
   return uniqueSorted([
     ...existing,
-    ...futureBindingKeysForLineage(context, lineage.lineageId),
+    ...futureBindingKeysForLineage(
+      context.input.changeContractSha256,
+      context.contract.entityBindings,
+      context.futureBindingLedger,
+      lineage.lineageId
+    ),
   ])
 }
 
@@ -1462,6 +1472,64 @@ export function blockBindingKeys(
   )
 }
 
+export function allScriptBindingKeys(
+  context: ProductionOperationContextV1,
+  evidence: ScriptEntityEvidenceV1,
+  lineageId: string
+): readonly string[]
+{
+  return uniqueSorted([
+    ...scriptBindingKeys(context, evidence),
+    ...futureBindingKeysForLineage(
+      context.input.changeContractSha256,
+      context.contract.entityBindings,
+      context.futureBindingLedger,
+      lineageId
+    ),
+  ])
+}
+
+export function allBlockBindingKeys(
+  context: ProductionOperationContextV1,
+  evidence: BlockEntityEvidenceV1,
+  lineageId: string
+): readonly string[]
+{
+  return uniqueSorted([
+    ...blockBindingKeys(context, evidence),
+    ...futureBindingKeysForLineage(
+      context.input.changeContractSha256,
+      context.contract.entityBindings,
+      context.futureBindingLedger,
+      lineageId
+    ),
+  ])
+}
+
+export function scriptBindingKeysByLineage(
+  context: ProductionOperationContextV1,
+  targetIndex: number
+): ReadonlyMap<string, readonly string[]>
+{
+  const entries = scriptEntityEvidenceSetV1(context.candidate)
+    .filter((script) => script.targetIndex === targetIndex)
+    .map((script) =>
+    {
+      const lineage = entityLineageIn(
+        context.candidate,
+        context.activeLineage,
+        'script',
+        targetIndex,
+        `script:${script.topBlockId}`
+      )
+      return [
+        lineage.lineageId,
+        allScriptBindingKeys(context, script, lineage.lineageId),
+      ] as const
+    })
+  return new Map(entries)
+}
+
 // media has no rawIdentity-keyed lineage lookup of its own: the caller already
 // resolved the source ordinal, so the source record is addressed positionally
 export function mediaBindingKeys(
@@ -1478,29 +1546,6 @@ export function mediaBindingKeys(
   return uniqueSorted(
     context.contract.entityBindings.flatMap((binding) =>
       exactExistingBinding(binding, 'media', entitySubtype, sourceEvidence)
-        ? [binding.bindingKey]
-        : []
-    )
-  )
-}
-
-function futureBindingKeysForLineage(
-  context: ProductionOperationContextV1,
-  lineageId: string
-): readonly string[]
-{
-  return uniqueSorted(
-    context.contract.entityBindings.flatMap((binding) =>
-      binding.bindingKind === 'future' &&
-      context.futureBindingLedger.realizations.some(
-        (realization) =>
-          realization.resultLineageId === lineageId &&
-          realization.bindingKeySha256 ===
-            futureBindingKeySha256V1(
-              context.input.changeContractSha256,
-              binding.bindingKey
-            )
-      )
         ? [binding.bindingKey]
         : []
     )
@@ -5508,8 +5553,7 @@ function conflictOverlap(
     )
       values.add(value)
   for (const value of right.deletes)
-    if (leftReads.has(value) || leftWrites.has(value))
-      values.add(value)
+    if (leftReads.has(value) || leftWrites.has(value)) values.add(value)
   return uniqueSorted([...values])
 }
 
@@ -5609,21 +5653,6 @@ function productionGroupCConflictProofIndexedV1(
     ...projection,
     proofSha256: semanticHashV1('resolved-plan', projection),
   })
-}
-
-export function productionConflictProofV1(
-  input: EditTransactionInputV1,
-  preBatch: ProjectIR,
-  preBatchLineage: SemanticLineageSnapshot,
-  operations: readonly SemanticEditOperationV1[]
-): ConflictProofV1
-{
-  return productionGroupCConflictProofIndexedV1(
-    input,
-    preBatch,
-    preBatchLineage,
-    operations
-  )
 }
 
 export function productionConflictProofWithIndexV1(

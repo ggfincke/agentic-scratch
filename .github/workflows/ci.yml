@@ -1,0 +1,64 @@
+# .github/workflows/ci.yml
+# provision pinned browser & audio tools, then verify one authoritative build
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SCRATCH_AGENT_TEST_FFMPEG: /usr/bin/ffmpeg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Provision pinned Chromium and Linux dependencies
+        run: ./node_modules/.bin/playwright install --with-deps chromium
+      - name: Provision the selected audio decoder
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+      - name: Record the selected decoder identity
+        run: |
+          mkdir -p .tmp/ci-tool-identities
+          /usr/bin/ffmpeg -hide_banner -version > .tmp/ci-tool-identities/ffmpeg-version.txt
+          sha256sum /usr/bin/ffmpeg > .tmp/ci-tool-identities/ffmpeg-executable.sha256
+          sha256sum .tmp/ci-tool-identities/ffmpeg-version.txt > .tmp/ci-tool-identities/ffmpeg-version.sha256
+      - name: Build authoritative package and browser outputs once
+        run: npm --ignore-scripts run build:authoritative
+      - name: Check package boundaries
+        run: npm --ignore-scripts run boundaries
+      - name: Check lint
+        run: npm --ignore-scripts run lint
+      - name: Check native admission lifecycle before the full suite
+        run: node --import tsx --test --test-name-pattern="two real MCP processes share" tests/mcp/workbench-transport.test.ts
+      - name: Run the full test suite including compressed audio
+        # keep unrelated browser suites from starving bounded process lifecycle tests
+        run: node --import tsx --test --test-concurrency=1 "tests/**/*.test.ts" "eslint-rules/**/*.test.js"
+      - name: Reconcile the pinned authoring catalog
+        run: npm --ignore-scripts run authoring-catalog-check
+      - name: Run deterministic repair acceptance
+        run: npm --ignore-scripts run repair-bench
+      - name: Run deterministic semantic editing acceptance
+        run: npm --ignore-scripts run semantic-edit-bench
+      - name: Run deterministic drive and observe acceptance
+        run: npm --ignore-scripts run drive-observe-bench
+      - name: Run deterministic multimodal acceptance
+        run: npm --ignore-scripts run multimodal-bench
+      - name: Run generic authoring and development acceptance
+        run: npm --ignore-scripts run workbench-acceptance
+      - name: Retain decoder identity
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-decoder-identity
+          path: .tmp/ci-tool-identities/
+          retention-days: 7

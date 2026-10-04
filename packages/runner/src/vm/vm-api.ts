@@ -94,6 +94,11 @@ interface ScratchClock
 interface ScratchIoDevices
 {
   clock: ScratchClock
+  keyboard: {
+    readonly _keysPressed: readonly string[]
+    _keyStringToScratchKey(key: string): string
+    readonly _numeralKeyCodesToStringKey?: ReadonlyMap<number, string>
+  }
 }
 
 export type ScratchThread = unknown

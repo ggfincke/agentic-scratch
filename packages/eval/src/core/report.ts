@@ -81,7 +81,10 @@ function renderTest(t: TestResult): string
       lines.push(`    - ${mdCode(s.label)} (tick ${s.tick}): ${mdCode(s.path)}`)
     }
   }
-  if (t.video) lines.push(`  - video (on failure): ${mdCode(t.video)}`)
+  if (t.diagnosticVideo)
+    lines.push(
+      `  - diagnostic video (on failure): ${mdCode(t.diagnosticVideo.relativePath)}`
+    )
   return lines.join('\n')
 }
 

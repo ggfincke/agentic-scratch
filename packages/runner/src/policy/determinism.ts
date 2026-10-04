@@ -5,6 +5,13 @@ import type { ScratchRuntime } from '../vm/vm-api.js'
 import { RUNNER_TICK_MS } from '../browser/browser-config.js'
 import { poisonRunnerExecution } from './execution-coordinator.js'
 
+export const DETERMINISTIC_TIMER_POLICY_V2 = Object.freeze({
+  id: 'deterministic-timeout-live-batch-v2',
+  order: 'deadline-then-registration',
+  admission: 'still-live-before-callback',
+  newlyScheduled: 'next-flush',
+})
+
 interface DeterminismOptions
 {
   seed?: number
@@ -236,7 +243,8 @@ export function installDeterminism(
     {
       throw new AggregateError(
         [error, restoreError],
-        'determinism installation and rollback failed'
+        'determinism installation and rollback failed',
+        { cause: restoreError }
       )
     }
     throw error
@@ -252,7 +260,8 @@ export function installDeterminism(
       for (const t of due)
       {
         const i = timers.indexOf(t)
-        if (i !== -1) timers.splice(i, 1)
+        if (i === -1) continue
+        timers.splice(i, 1)
         t.cb()
       }
     },

@@ -4,9 +4,12 @@
 import { ProjectIR } from '@scratch-agent/ir'
 import {
   blockBoundedLocationProjectionV1,
+  blockEntityEvidenceSetV1,
   commentBoundedLocationProjectionV1,
+  commentEntityEvidenceSetV1,
   semanticHashV1,
   declarationBoundedLocationProjectionV1,
+  scriptEntityEvidenceSetV1,
   targetBoundedLocationProjectionV1,
   type BlockEntityEvidenceV1,
   type CommentEntityEvidenceV1,
@@ -15,6 +18,9 @@ import {
   type ContractEntityRefV1,
   type DeclarationEntityEvidenceV1,
   type DeclarationRefV1,
+  type OperationPlanningChoiceV1,
+  type ScriptEntityEvidenceV1,
+  type SemanticEditOperationGoalV1,
   type SemanticLineageKind,
   type SemanticLineageSnapshot,
   type TargetEntityEvidenceV1,
@@ -163,23 +169,78 @@ export function bindingRealizationCandidatesV1<
   )
 }
 
+export function exactPlanningChoiceValueV1(
+  choices: readonly OperationPlanningChoiceV1[],
+  operationKind: SemanticEditOperationGoalV1['kind'],
+  destination: string
+): unknown
+{
+  const matches = choices.filter(
+    (choice) =>
+      choice.operationKind === operationKind &&
+      choice.destination === destination
+  )
+  if (matches.length !== 1)
+    throw Object.assign(
+      new Error(`planning requires one exact ${destination} choice`),
+      {
+        code: 'edit.cardinality_mismatch',
+        context: { matchCount: matches.length },
+      }
+    )
+  return matches[0]!.selection.value
+}
+
+export function assertExactPlanningChoiceSetV1(
+  choices: readonly OperationPlanningChoiceV1[],
+  operationKind: SemanticEditOperationGoalV1['kind'],
+  destinations: readonly string[]
+): void
+{
+  if (
+    choices.length !== destinations.length ||
+    destinations.some(
+      (destination) =>
+        choices.filter(
+          (choice) =>
+            choice.operationKind === operationKind &&
+            choice.destination === destination
+        ).length !== 1
+    )
+  )
+    throw Object.assign(
+      new Error(`planning choices do not exactly cover ${operationKind}`),
+      {
+        code: 'edit.cardinality_mismatch',
+        context: { matchCount: choices.length },
+      }
+    )
+}
+
 export function exactContractRefV1(
-  bindings: readonly ContractEntityBindingV1[],
+  context: ProductionOperationContextV1,
   bindingKeys: readonly string[],
   expectedEntityKind: ContractEntityBindingV1['entityKind'],
   expectedEntitySubtype: ContractEntityBindingV1['entitySubtype'],
-  failCardinality: () => never,
-  failKindOrSubtype: () => never
+  semanticPath: string
 ): ContractEntityRefV1
 {
-  if (bindingKeys.length !== 1) return failCardinality()
-  const matches = bindings.filter(
+  if (bindingKeys.length !== 1)
+    throw Object.assign(
+      new Error(`${semanticPath} does not resolve one exact contract binding`),
+      { code: 'edit.unauthorized_change', context: {} }
+    )
+  const matches = context.contract.entityBindings.filter(
     (binding) =>
       binding.bindingKey === bindingKeys[0] &&
       binding.entityKind === expectedEntityKind &&
       binding.entitySubtype === expectedEntitySubtype
   )
-  if (matches.length !== 1) return failKindOrSubtype()
+  if (matches.length !== 1)
+    throw Object.assign(
+      new Error(`${semanticPath} contract binding kind or subtype differs`),
+      { code: 'edit.unauthorized_change', context: {} }
+    )
   const binding = matches[0]!
   return {
     contractRefKind: binding.bindingKind,
@@ -274,4 +335,68 @@ export function completedPlanningFactV1(
     destination,
     value: { valueKind, value } as EditOperationPlanningFactV1['value'],
   }
+}
+
+export function targetScriptRawIdentitiesV1(
+  project: ProjectIR,
+  targetIndex: number
+): readonly string[]
+{
+  return Object.freeze(
+    scriptEntityEvidenceSetV1(project)
+      .filter((script) => script.targetIndex === targetIndex)
+      .map((script) => `script:${script.topBlockId}`)
+  )
+}
+
+export function targetCommentRawIdentitiesV1(
+  project: ProjectIR,
+  targetIndex: number
+): readonly string[]
+{
+  return Object.freeze(
+    commentEntityEvidenceSetV1(project)
+      .filter((comment) => comment.targetIndex === targetIndex)
+      .map((comment) => `comment:${comment.commentId}`)
+  )
+}
+
+export function resultScriptEvidenceV1(
+  project: ProjectIR,
+  targetIndex: number,
+  topBlockId: string
+): ScriptEntityEvidenceV1
+{
+  const matches = scriptEntityEvidenceSetV1(project).filter(
+    (evidence) =>
+      evidence.targetIndex === targetIndex && evidence.topBlockId === topBlockId
+  )
+  if (matches.length !== 1)
+    throw Object.assign(
+      new Error(
+        'created script does not have one exact post-operation evidence row'
+      ),
+      { code: 'edit.internal_invariant', context: {} }
+    )
+  return matches[0]!
+}
+
+export function resultBlockEvidenceV1(
+  project: ProjectIR,
+  targetIndex: number,
+  blockId: string
+): BlockEntityEvidenceV1
+{
+  const matches = blockEntityEvidenceSetV1(project).filter(
+    (evidence) =>
+      evidence.targetIndex === targetIndex && evidence.blockId === blockId
+  )
+  if (matches.length !== 1)
+    throw Object.assign(
+      new Error(
+        'created block does not have one exact post-operation evidence row'
+      ),
+      { code: 'edit.internal_invariant', context: {} }
+    )
+  return matches[0]!
 }

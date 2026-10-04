@@ -8,6 +8,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Interactive drive-and-observe harness in `@scratch-agent/runner`: one
+  callback-scoped, serialized TurboWarp session accepts a closed command union
+  for green flag, held keyboard/mouse state, exact natural-tick advance,
+  renderer-free bounded state observation, and close. The
+  `npm --silent run drive-observe` JSONL CLI admits and preserves one selected
+  `.sb3`, denies network access, blocks unrecorded physical DOM input, enforces
+  command/tick/observation/time budgets, and retains private transcripts,
+  canonical observations, runtime identity, console/issues, and JSON/Markdown
+  reports. `drive-observe-replay` verifies and reruns retained evidence
+  headlessly with zero source writes; `drive-observe-bench` covers exactly
+  three consequential cases. Selected Sonic acceptance closed at tick 65 with
+  five zero-tick/zero-draw observations and exact replay. The finite claim does
+  not include visual correctness, official Scratch parity, hostile-project OS
+  containment, or an OS hard-kill guarantee.
 - Project scaffold: npm workspaces monorepo, TypeScript (ESM, NodeNext, project
   references), ESLint flat config w/ ported `ggfincke/*` comment-style rules,
   Prettier (Allman / no-semi / single-quote).

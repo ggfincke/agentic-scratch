@@ -48,6 +48,11 @@ export type EditToolRequestForV1<Name extends EditToolName> = Extract<
   { readonly tool: Name }
 >['request']
 
+import {
+  assertSemanticAuthoringAuthorityIdV2,
+  type SemanticAuthoringAuthorityIdV2,
+} from './authority-selection.js'
+
 type SemanticValidator = (value: unknown) => SemanticValidationResult
 
 function immutableDescriptorCopy(value: unknown): unknown
@@ -174,7 +179,8 @@ function parseWithModel<T>(
 
 function validateToolInputSemantics(
   name: EditToolName,
-  value: unknown
+  value: unknown,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): SemanticValidationResult
 {
   if (name !== 'edit_preview')
@@ -183,26 +189,36 @@ function validateToolInputSemantics(
   }
 
   const record = value as Readonly<Record<string, unknown>>
-  return validateSemanticEditBatch(record.batch)
+  return validateSemanticEditBatch(record.batch, undefined, authorityId)
 }
 
 export function parseContractDefinitionV1<T = unknown>(
   definitionName: string,
-  input: unknown
+  input: unknown,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): SemanticEditParseResult<T>
 {
-  return parseWithModel(contractDefinitionSchemaModel(definitionName), input)
+  assertSemanticAuthoringAuthorityIdV2(authorityId)
+  return parseWithModel(
+    contractDefinitionSchemaModel(definitionName),
+    input,
+    authorityId === 'standard-v2' && definitionName === 'SemanticEditBatchV1'
+      ? (value) => validateSemanticEditBatch(value, undefined, authorityId)
+      : undefined
+  )
 }
 
 export function parseEditToolInputV1<Name extends EditToolName>(
   name: Name,
-  input: unknown
+  input: unknown,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): SemanticEditParseResult<EditToolRequestForV1<Name>>
 {
+  assertSemanticAuthoringAuthorityIdV2(authorityId)
   return parseWithModel<EditToolRequestForV1<Name>>(
     toolInputSchemaModel(name),
     input,
-    (value) => validateToolInputSemantics(name, value)
+    (value) => validateToolInputSemantics(name, value, authorityId)
   )
 }
 
@@ -229,12 +245,14 @@ export function parseEditScenarioPolicyV1(
 }
 
 export function parseSemanticEditBatchV1(
-  input: unknown
+  input: unknown,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): SemanticEditParseResult<SemanticEditBatchV1>
 {
+  assertSemanticAuthoringAuthorityIdV2(authorityId)
   return parseWithModel(
     contractDefinitionSchemaModel('SemanticEditBatchV1'),
     input,
-    validateSemanticEditBatch
+    (value) => validateSemanticEditBatch(value, undefined, authorityId)
   )
 }

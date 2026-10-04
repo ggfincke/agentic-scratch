@@ -36,6 +36,12 @@ export interface SpikeApi
   runtimeIdentityFacet(): RuntimeIdentityFacetV1 | null
   // stop scaffolding's loop, warm up rendering, install determinism edges
   prep(opts: { seed?: number; fixedDateMs?: number }): Promise<void>
+  beginDriveObserve(caps: RuntimeObservationCapsV1): DriveObserveBeginResultV1
+  inspectDriveObserve(): DriveObserveInspectResultV1
+  advanceDriveObserve(ticks: number): Promise<DriveObserveAdvanceResultV1>
+  readDriveObserveState(
+    input: DriveObserveStateInputV1
+  ): DriveObserveStateReadV1
   greenFlag(): void
   step(n: number): Promise<void>
   pressKey(key: string): void
@@ -85,6 +91,36 @@ export interface SpikeApi
     scenarioStepIndex: number,
     snapshotLabel: string | null
   ): CloneCountRead
+}
+
+export interface DriveObserveBeginResultV1
+{
+  readonly drawEpoch: number
+}
+
+export interface DriveObserveInspectResultV1
+{
+  readonly drawEpoch: number
+}
+
+export interface DriveObserveAdvanceResultV1
+{
+  readonly ticksAdvanced: number
+  readonly drawEpoch: number
+}
+
+export interface DriveObserveStateInputV1
+{
+  readonly tick: number
+  readonly commandSequence: number
+  readonly label: string | null
+  readonly heldInput: unknown
+}
+
+export interface DriveObserveStateReadV1
+{
+  readonly capture: RuntimeObservationCaptureV1<ObservedRuntimeExecutionObservationV1>
+  readonly drawEpoch: number
 }
 
 export interface BrowserRuntimeObservationReadV1

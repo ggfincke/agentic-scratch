@@ -16,7 +16,9 @@ import type {
   ContractEntityRefV1,
   DeclarationRefV1,
   MediaRefV1,
-  OrdinarySemanticBlockTreeV1,
+  ParameterRefV1,
+  ParameterSemanticRefV1,
+  ProcedureRefV1,
   SemanticBlockTreeV1,
   SemanticEditOperationBlockInsertAfterV1,
   SemanticEditOperationBlockInsertBeforeV1,
@@ -44,6 +46,23 @@ import {
 } from '../core-blocks/core-block-catalog.js'
 import { planGraphClosureV1 } from '../graph/graph-primitives.js'
 import { semanticHashV1 } from '../contracts/hash-domains.js'
+import {
+  getStandardDescriptorV2,
+  standardDescriptorForBlockV2,
+  validateExistingStandardBlockV2,
+  validateStandardClosureV2,
+  standardMenuSpecialNamesV2,
+  standardNamedMediaCountV2,
+  type StandardAuthoringDescriptorV2,
+  type StandardProcedureScopeV2,
+  type StandardResolvedParameterV2,
+  type StandardResolvedProcedureV2,
+} from '../standard-authoring/index.js'
+import { standardScalarFieldValueV2 } from '../semantic-index/sensing-property-policy.js'
+import {
+  procedureOwnedBlockIdsV1,
+  standardProcedureScopeFromRecordV2,
+} from './procedure-operations.js'
 
 import type { Without } from '../support/internal-types.js'
 
@@ -90,12 +109,20 @@ interface ScriptBlockSelectedCreationSourceV1
   readonly blockId?: string
 }
 
-type SemanticExternalReferenceV1 = TargetRefV1 | DeclarationRefV1 | MediaRefV1
+type SemanticExternalReferenceV1 =
+  TargetRefV1 | DeclarationRefV1 | MediaRefV1 | ProcedureRefV1 | ParameterRefV1
+
+type CreationBlockDescriptorV1 =
+  CuratedCoreBlockDescriptorV1 | StandardAuthoringDescriptorV2
+type CreationFieldDescriptorV1 =
+  CreationBlockDescriptorV1['requiredFields'][number]
+type CreationInputDescriptorV1 =
+  CreationBlockDescriptorV1['requiredInputs'][number]
 
 interface ScriptBlockContractReferenceExpectationV1
 {
   readonly expectedEntityKind:
-    'target' | 'declaration' | 'script' | 'media' | 'procedure'
+    'target' | 'declaration' | 'script' | 'media' | 'procedure' | 'parameter'
   readonly expectedEntitySubtype:
     | 'stage'
     | 'sprite'
@@ -135,6 +162,16 @@ export type ScriptBlockContractEntityResolutionRequestV1 =
       readonly sourceKind: 'rawProcedure'
       readonly rawProccode: string
     })
+  | (ScriptBlockContractReferenceExpectationV1 & {
+      readonly sourceKind: 'rawParameterReference'
+      readonly rawProccode: string
+      readonly rawArgumentId: string
+      readonly rawDisplayName: string
+    })
+  | (ScriptBlockContractReferenceExpectationV1 & {
+      readonly sourceKind: 'rawNamedReference'
+      readonly rawDisplayName: string
+    })
 
 export type ScriptBlockContractEntityRefResolverV1 = (
   request: ScriptBlockContractEntityResolutionRequestV1
@@ -148,6 +185,18 @@ export interface SemanticCreationNormalizationContextV1
   readonly project: ProjectIR
   readonly targetIndex: number
   readonly resolveContractEntityRef: ScriptBlockContractEntityRefResolverV1
+  readonly semanticAuthorityId?: 'a0-v1' | 'standard-v2'
+  readonly procedureScope?: StandardProcedureScopeV2
+  readonly resolveProcedure?: (request: {
+    readonly reference: ProcedureRefV1
+    readonly ownerTargetIndex: number
+    readonly semanticPath: string
+  }) => StandardResolvedProcedureV2
+  readonly resolveParameter?: (request: {
+    readonly reference: ParameterRefV1
+    readonly ownerTargetIndex: number
+    readonly semanticPath: string
+  }) => StandardResolvedParameterV2
 }
 
 interface ScriptBlockCreationContentInputV1 extends SemanticCreationNormalizationContextV1
@@ -206,6 +255,7 @@ function expectedEntityKind(
 {
   if (subtype === 'stage' || subtype === 'sprite') return 'target'
   if (subtype === 'costume' || subtype === 'sound') return 'media'
+  if (subtype === 'parameter') return 'parameter'
   return 'declaration'
 }
 
@@ -221,21 +271,31 @@ function normalizeSemanticEntityReference(
     return invalidCreationContent(
       `${semanticPath} descriptor lacks an external reference policy`
     )
+  const actualSubtype =
+    subtype === 'target'
+      ? 'sprite'
+      : subtype === 'backdrop'
+        ? 'costume'
+        : subtype
+  const ownerTargetIndex =
+    subtype === 'backdrop'
+      ? input.project.json.targets.findIndex((entry) => entry.isStage)
+      : input.targetIndex
   return resolveContractRef(input, {
     sourceKind: 'semanticReference',
     reference,
-    expectedEntityKind: expectedEntityKind(subtype),
+    expectedEntityKind: expectedEntityKind(actualSubtype),
     expectedEntitySubtype:
-      subtype as ScriptBlockContractReferenceExpectationV1['expectedEntitySubtype'],
+      actualSubtype as ScriptBlockContractReferenceExpectationV1['expectedEntitySubtype'],
     referenceDomain,
-    ownerTargetIndex: input.targetIndex,
+    ownerTargetIndex,
     semanticPath,
   })
 }
 
 function assertDescriptorOwner(
   input: SemanticCreationNormalizationContextV1,
-  descriptor: CuratedCoreBlockDescriptorV1,
+  descriptor: CreationBlockDescriptorV1,
   semanticPath: string
 ): void
 {
@@ -274,11 +334,19 @@ function exactNamedValues<T extends { readonly name: string }>(
 function normalizeSemanticField(
   input: SemanticCreationNormalizationContextV1,
   value: SemanticFieldValueV1,
-  descriptorField: CuratedCoreBlockDescriptorV1['requiredFields'][number],
+  descriptorField: CreationFieldDescriptorV1,
   semanticPath: string
 ): unknown
 {
-  if (descriptorField.requiredEntitySubtype !== null)
+  if (
+    descriptorField.requiredEntitySubtype !== null &&
+    !(
+      input.semanticAuthorityId === 'standard-v2' &&
+      'kind' in descriptorField &&
+      descriptorField.kind === 'sensingProperty' &&
+      value.valueKind !== 'entity'
+    )
+  )
   {
     if (value.valueKind !== 'entity')
       return invalidCreationContent(`${semanticPath} requires an entity value`)
@@ -301,11 +369,30 @@ function normalizeSemanticField(
 function normalizeSemanticInput(
   input: SemanticCreationNormalizationContextV1,
   value: SemanticInputValueV1,
-  descriptorInput: CuratedCoreBlockDescriptorV1['requiredInputs'][number],
+  descriptorInput: CreationInputDescriptorV1,
   semanticPath: string
 ): unknown | null
 {
   if (value.valueKind === 'empty') return null
+  if (
+    input.semanticAuthorityId === 'standard-v2' &&
+    value.valueKind === 'entity'
+  )
+    return {
+      valueKind: 'entity',
+      value: normalizeSemanticEntityReference(
+        input,
+        value.value,
+        descriptorInput.requiredEntitySubtype,
+        descriptorInput.referenceDomain,
+        semanticPath
+      ),
+    }
+  if (
+    input.semanticAuthorityId === 'standard-v2' &&
+    value.valueKind === 'special'
+  )
+    return { valueKind: 'special', value: value.value }
   if (descriptorInput.connection === 'entityMenu')
   {
     if (value.valueKind !== 'entity')
@@ -351,6 +438,7 @@ function normalizeSemanticInput(
   if (value.valueKind !== 'literal')
     return invalidCreationContent(`${semanticPath} requires a literal or block`)
   if (
+    input.semanticAuthorityId !== 'standard-v2' &&
     descriptorInput.connection === 'number' &&
     (typeof value.value !== 'number' || !Number.isFinite(value.value))
   )
@@ -360,17 +448,216 @@ function normalizeSemanticInput(
   return { valueKind: 'literal', value: value.value }
 }
 
+function authorableDescriptor(
+  input: SemanticCreationNormalizationContextV1,
+  opcode: string
+): CreationBlockDescriptorV1 | null
+{
+  return input.semanticAuthorityId === 'standard-v2'
+    ? getStandardDescriptorV2(opcode)
+    : curatedAuthorableDescriptorV1(opcode)
+}
+
+function normalizedParameterReference(
+  input: SemanticCreationNormalizationContextV1,
+  reference: ParameterSemanticRefV1,
+  semanticPath: string
+): {
+  readonly value: unknown
+  readonly resolved: StandardProcedureScopeV2['parameters'][number] & {
+    readonly proccode: string
+    readonly ownerTargetIndex: number
+    readonly signatureSha256: string
+  }
+}
+{
+  if (reference.refKind === 'procedureLocalParameter')
+  {
+    const scope = input.procedureScope
+    const parameter = scope?.parameters.find(
+      (entry) => entry.localKey === reference.localKey
+    )
+    if (!scope || !parameter)
+      return invalidCreationContent(
+        `${semanticPath} local parameter is outside its scope`
+      )
+    return {
+      value: {
+        refKind: 'procedureLocalParameter',
+        localKey: reference.localKey,
+      },
+      resolved: {
+        ...parameter,
+        proccode: scope.proccode,
+        ownerTargetIndex: input.targetIndex,
+        signatureSha256: scope.signatureSha256,
+      },
+    }
+  }
+  if (!input.resolveParameter)
+    return invalidCreationContent(
+      `${semanticPath} has no parameter resolution authority`
+    )
+  const resolved = input.resolveParameter({
+    reference,
+    ownerTargetIndex: input.targetIndex,
+    semanticPath,
+  })
+  if (resolved.ownerTargetIndex !== input.targetIndex)
+    return invalidCreationContent(
+      `${semanticPath} parameter belongs to another target`
+    )
+  return {
+    value: resolveContractRef(input, {
+      sourceKind: 'semanticReference',
+      reference,
+      expectedEntityKind: 'parameter',
+      expectedEntitySubtype: 'unspecialized',
+      referenceDomain: 'procedureParameterOwnership',
+      ownerTargetIndex: input.targetIndex,
+      semanticPath,
+    }),
+    resolved,
+  }
+}
+
+function normalizedCallArgument(
+  input: SemanticCreationNormalizationContextV1,
+  value: SemanticInputValueV1,
+  parameterType: string,
+  semanticPath: string
+): unknown
+{
+  if (value.valueKind === 'empty') return { valueKind: 'empty' }
+  if (value.valueKind === 'block')
+    return {
+      valueKind: 'block',
+      value: normalizeSemanticBlock(input, value.value, semanticPath),
+    }
+  if (value.valueKind !== 'literal' || parameterType === 'boolean')
+    return invalidCreationContent(
+      `${semanticPath} is not a valid procedure argument`
+    )
+  return { valueKind: 'literal', value: value.value }
+}
+
+function normalizeStandardProcedureNode(
+  input: SemanticCreationNormalizationContextV1,
+  block: Exclude<SemanticBlockTreeV1, { nodeKind: 'ordinary' }>,
+  semanticPath: string
+): unknown
+{
+  if (block.nodeKind === 'parameterReporter')
+  {
+    const parameter = normalizedParameterReference(
+      input,
+      block.parameter,
+      semanticPath
+    )
+    const scope = input.procedureScope
+    if (
+      !scope ||
+      parameter.resolved.proccode !== scope.proccode ||
+      parameter.resolved.signatureSha256 !== scope.signatureSha256 ||
+      !scope.parameters.some(
+        (entry) => entry.argumentId === parameter.resolved.argumentId
+      )
+    )
+      return invalidCreationContent(
+        `${semanticPath} reporter escapes its owning procedure`
+      )
+    return { nodeKind: 'parameterReporter', parameter: parameter.value }
+  }
+  const scope =
+    block.procedure.refKind === 'selfProcedure'
+      ? input.procedureScope
+      : input.resolveProcedure?.({
+          reference: block.procedure,
+          ownerTargetIndex: input.targetIndex,
+          semanticPath,
+        })
+  if (!scope || scope.signatureSha256 !== block.expectedSignatureSha256)
+    return invalidCreationContent(
+      `${semanticPath} procedure signature is absent or changed`
+    )
+  if (
+    'ownerTargetIndex' in scope &&
+    scope.ownerTargetIndex !== input.targetIndex
+  )
+    return invalidCreationContent(
+      `${semanticPath} procedure belongs to another target`
+    )
+  const argumentsById = new Map<string, unknown>()
+  for (const [index, argument] of block.arguments.entries())
+  {
+    const path = `${semanticPath}/arguments/${index}`
+    const parameter = normalizedParameterReference(
+      input,
+      argument.parameter,
+      path
+    )
+    if (
+      parameter.resolved.proccode !== scope.proccode ||
+      parameter.resolved.signatureSha256 !== scope.signatureSha256 ||
+      !scope.parameters.some(
+        (entry) => entry.argumentId === parameter.resolved.argumentId
+      ) ||
+      argumentsById.has(parameter.resolved.argumentId)
+    )
+      return invalidCreationContent(
+        `${path} parameter is duplicated or outside the called signature`
+      )
+    argumentsById.set(parameter.resolved.argumentId, {
+      parameter: parameter.value,
+      value: normalizedCallArgument(
+        input,
+        argument.value,
+        parameter.resolved.parameterType,
+        path
+      ),
+    })
+  }
+  if (argumentsById.size !== scope.parameters.length)
+    return invalidCreationContent(
+      `${semanticPath} arguments do not cover the called signature`
+    )
+  return {
+    nodeKind: 'procedureCall',
+    procedure:
+      block.procedure.refKind === 'selfProcedure'
+        ? { refKind: 'selfProcedure' }
+        : resolveContractRef(input, {
+            sourceKind: 'semanticReference',
+            reference: block.procedure,
+            expectedEntityKind: 'procedure',
+            expectedEntitySubtype: 'unspecialized',
+            referenceDomain: 'procedureOwnership',
+            ownerTargetIndex: input.targetIndex,
+            semanticPath,
+          }),
+    expectedSignatureSha256: scope.signatureSha256,
+    arguments: scope.parameters.map((parameter) =>
+      argumentsById.get(parameter.argumentId)
+    ),
+  }
+}
+
 function normalizeSemanticBlock(
   input: SemanticCreationNormalizationContextV1,
   block: SemanticBlockTreeV1,
   semanticPath: string
 ): unknown
 {
+  if (
+    input.semanticAuthorityId === 'standard-v2' &&
+    block.nodeKind !== 'ordinary'
+  )
+    return normalizeStandardProcedureNode(input, block, semanticPath)
   if (block.nodeKind !== 'ordinary')
     return invalidCreationContent(
       `${semanticPath} procedure nodes are outside Group D creation content`
     )
-  const descriptor = curatedAuthorableDescriptorV1(block.opcode)
+  const descriptor = authorableDescriptor(input, block.opcode)
   if (descriptor === null)
     return invalidCreationContent(
       `${semanticPath} opcode is outside the curated authoring catalog`
@@ -459,7 +746,18 @@ export function normalizeSemanticSequence(
   for (const [index, block] of sequence.blocks.entries())
   {
     if (block.nodeKind !== 'ordinary') continue
-    const descriptor = curatedAuthorableDescriptorV1(block.opcode)
+    const descriptor =
+      input.semanticAuthorityId === 'standard-v2'
+        ? standardDescriptorForBlockV2(
+            block.opcode,
+            Object.fromEntries(
+              block.fields.map((field) => [
+                field.name,
+                field.value.valueKind === 'entity' ? [] : [field.value.value],
+              ])
+            )
+          )
+        : authorableDescriptor(input, block.opcode)
     if (
       descriptor?.context.mustTerminateSequence === true &&
       index !== sequence.blocks.length - 1
@@ -525,10 +823,11 @@ function normalizeSemanticTopLevelRoot(
 
 function visitSemanticAliases(
   block: SemanticBlockTreeV1,
-  aliases: Map<string, OrdinarySemanticBlockTreeV1>
+  aliases: Map<string, SemanticBlockTreeV1>,
+  allowProcedures = false
 ): void
 {
-  if (block.nodeKind !== 'ordinary')
+  if (block.nodeKind !== 'ordinary' && !allowProcedures)
     return invalidCreationContent('procedure aliases are outside Group D')
   if (block.localAlias !== undefined)
   {
@@ -536,29 +835,34 @@ function visitSemanticAliases(
       invalidCreationContent(`duplicate semantic alias ${block.localAlias}`)
     aliases.set(block.localAlias, block)
   }
-  for (const input of block.inputs)
+  if (block.nodeKind === 'parameterReporter') return
+  const inputs =
+    block.nodeKind === 'procedureCall' ? block.arguments : block.inputs
+  for (const input of inputs)
   {
     if (input.value.valueKind === 'block')
-      visitSemanticAliases(input.value.value, aliases)
+      visitSemanticAliases(input.value.value, aliases, allowProcedures)
     else if (input.value.valueKind === 'statementSequence')
       for (const child of input.value.value.blocks)
-        visitSemanticAliases(child, aliases)
+        visitSemanticAliases(child, aliases, allowProcedures)
   }
 }
 
 function semanticAliases(
-  value: unknown
-): Map<string, OrdinarySemanticBlockTreeV1>
+  value: unknown,
+  allowProcedures = false
+): Map<string, SemanticBlockTreeV1>
 {
-  const aliases = new Map<string, OrdinarySemanticBlockTreeV1>()
+  const aliases = new Map<string, SemanticBlockTreeV1>()
   const visitSequence = (sequence: SemanticStatementSequenceV1): void =>
   {
-    for (const block of sequence.blocks) visitSemanticAliases(block, aliases)
+    for (const block of sequence.blocks)
+      visitSemanticAliases(block, aliases, allowProcedures)
   }
   const root = value as Partial<TopLevelScriptRootV1>
   if (root.rootKind === 'eventScript' && root.hat)
   {
-    visitSemanticAliases(root.hat, aliases)
+    visitSemanticAliases(root.hat, aliases, allowProcedures)
     if (root.body) visitSequence(root.body)
     return aliases
   }
@@ -569,7 +873,11 @@ function semanticAliases(
   }
   if (root.rootKind === 'expression' && root.value)
   {
-    visitSemanticAliases(root.value as SemanticExpressionBlockTreeV1, aliases)
+    visitSemanticAliases(
+      root.value as SemanticExpressionBlockTreeV1,
+      aliases,
+      allowProcedures
+    )
     return aliases
   }
   const sequence = value as Partial<SemanticStatementSequenceV1>
@@ -591,14 +899,19 @@ function semanticAliases(
   {
     visitSemanticAliases(
       replacement.value as SemanticExpressionBlockTreeV1,
-      aliases
+      aliases,
+      allowProcedures
     )
     return aliases
   }
   const input = value as Partial<SemanticInputValueV1>
   if (input.valueKind === 'block' && input.value)
   {
-    visitSemanticAliases(input.value as SemanticBlockTreeV1, aliases)
+    visitSemanticAliases(
+      input.value as SemanticBlockTreeV1,
+      aliases,
+      allowProcedures
+    )
     return aliases
   }
   if (input.valueKind === 'statementSequence' && input.value)
@@ -615,7 +928,10 @@ export function normalizedAlias(
   alias: string
 ): unknown
 {
-  const block = semanticAliases(value).get(alias)
+  const block = semanticAliases(
+    value,
+    input.semanticAuthorityId === 'standard-v2'
+  ).get(alias)
   if (block === undefined)
     return invalidCreationContent(`semantic alias ${alias} is absent`)
   return normalizeSemanticBlock(input, block, `/alias/${alias}`)
@@ -700,13 +1016,72 @@ function normalizeRawAttachedComment(
 
 function normalizeRawField(
   state: RawNormalizationStateV1,
+  block: Block,
   field: BlockField,
-  descriptorField: CuratedCoreBlockDescriptorV1['requiredFields'][number],
+  descriptorField: CreationFieldDescriptorV1,
   semanticPath: string
 ): unknown
 {
   if (descriptorField.requiredEntitySubtype !== null)
   {
+    if (
+      state.input.semanticAuthorityId === 'standard-v2' &&
+      'kind' in descriptorField &&
+      descriptorField.kind === 'sensingProperty'
+    )
+    {
+      const value = standardScalarFieldValueV2(field)
+      if (value === undefined)
+        return invalidCreationContent(
+          `${semanticPath} scalar field is malformed`
+        )
+      return { valueKind: 'scalar', value }
+    }
+    if (
+      state.input.semanticAuthorityId === 'standard-v2' &&
+      'kind' in descriptorField &&
+      descriptorField.kind === 'media'
+    )
+      return {
+        valueKind: 'entity',
+        value: normalizeRawNamedReference(
+          state.input,
+          String(field[0]),
+          descriptorField.requiredEntitySubtype,
+          descriptorField.referenceDomain,
+          semanticPath
+        ),
+      }
+    if (
+      state.input.semanticAuthorityId === 'standard-v2' &&
+      'kind' in descriptorField &&
+      descriptorField.kind === 'text'
+    )
+    {
+      const name = String(field[0])
+      const domain = descriptorField.referenceDomain
+      const special = standardMenuSpecialNamesV2(block.opcode, domain)
+      const mediaCount = standardNamedMediaCountV2(
+        state.input.project.json,
+        state.input.targetIndex,
+        domain,
+        name
+      )
+      if (mediaCount > 1)
+        return invalidCreationContent(`${semanticPath} media name is ambiguous`)
+      if (special.includes(name) && mediaCount === 0)
+        return { valueKind: 'scalar', value: field[0] }
+      return {
+        valueKind: 'entity',
+        value: normalizeRawNamedReference(
+          state.input,
+          name,
+          descriptorField.requiredEntitySubtype,
+          domain,
+          semanticPath
+        ),
+      }
+    }
     if (typeof field[0] !== 'string' || typeof field[1] !== 'string')
       return invalidCreationContent(`${semanticPath} entity field is malformed`)
     return {
@@ -730,10 +1105,15 @@ function normalizeRawField(
 function normalizeRawInput(
   state: RawNormalizationStateV1,
   raw: BlockInput,
-  descriptorInput: CuratedCoreBlockDescriptorV1['requiredInputs'][number],
+  descriptorInput: CreationInputDescriptorV1,
   semanticPath: string
 ): unknown
 {
+  if (
+    state.input.semanticAuthorityId === 'standard-v2' &&
+    (raw.length === 1 || raw[1] === null)
+  )
+    return { valueKind: 'empty' }
   if (descriptorInput.connection === 'entityMenu')
   {
     const primitive = raw[1]
@@ -772,6 +1152,15 @@ function normalizeRawInput(
   }
   if (raw[0] === 1 && Array.isArray(raw[1]))
     return { valueKind: 'literal', value: rawPrimitive(raw[1]) }
+  if (
+    state.input.semanticAuthorityId === 'standard-v2' &&
+    (raw[0] === 1 || raw[0] === 2) &&
+    typeof raw[1] === 'string'
+  )
+    return {
+      valueKind: 'block',
+      value: normalizeRawBlockNode(state, raw[1], `${semanticPath}/block`),
+    }
   if (raw[0] === 3 && typeof raw[1] === 'string' && Array.isArray(raw[2]))
   {
     return {
@@ -780,7 +1169,178 @@ function normalizeRawInput(
       obscuredShadow: rawPrimitive(raw[2]),
     }
   }
+  if (
+    state.input.semanticAuthorityId === 'standard-v2' &&
+    raw[0] === 3 &&
+    typeof raw[1] === 'string' &&
+    typeof raw[2] === 'string'
+  )
+    return {
+      valueKind: 'block',
+      value: normalizeRawBlockNode(state, raw[1], `${semanticPath}/block`),
+      obscuredShadow: normalizeRawBlockNode(
+        state,
+        raw[2],
+        `${semanticPath}/shadow`
+      ),
+    }
   return invalidCreationContent(`${semanticPath} raw input is malformed`)
+}
+
+function normalizeRawNamedReference(
+  input: SemanticCreationNormalizationContextV1,
+  rawDisplayName: string,
+  subtype: string | null,
+  referenceDomain: string | null,
+  semanticPath: string
+): ContractEntityRefV1
+{
+  if (subtype === null || referenceDomain === null)
+    return invalidCreationContent(
+      `${semanticPath} has no named reference policy`
+    )
+  const actualSubtype =
+    subtype === 'target'
+      ? 'sprite'
+      : subtype === 'backdrop'
+        ? 'costume'
+        : subtype
+  return resolveContractRef(input, {
+    sourceKind: 'rawNamedReference',
+    rawDisplayName,
+    expectedEntityKind: expectedEntityKind(actualSubtype),
+    expectedEntitySubtype:
+      actualSubtype as ScriptBlockContractReferenceExpectationV1['expectedEntitySubtype'],
+    referenceDomain,
+    ownerTargetIndex:
+      subtype === 'backdrop'
+        ? input.project.json.targets.findIndex((entry) => entry.isStage)
+        : input.targetIndex,
+    semanticPath,
+  })
+}
+
+function rawParameterContractRef(
+  input: SemanticCreationNormalizationContextV1,
+  scope: StandardProcedureScopeV2,
+  parameter: StandardProcedureScopeV2['parameters'][number],
+  semanticPath: string
+): ContractEntityRefV1
+{
+  return resolveContractRef(input, {
+    sourceKind: 'rawParameterReference',
+    rawProccode: scope.proccode,
+    rawArgumentId: parameter.argumentId,
+    rawDisplayName: parameter.name,
+    expectedEntityKind: 'parameter',
+    expectedEntitySubtype: 'unspecialized',
+    referenceDomain: 'procedureParameterOwnership',
+    ownerTargetIndex: input.targetIndex,
+    semanticPath,
+  })
+}
+
+function normalizeRawProcedureArgument(
+  state: RawNormalizationStateV1,
+  raw: BlockInput | undefined,
+  semanticPath: string
+): unknown
+{
+  if (
+    raw === undefined ||
+    raw[1] === null ||
+    (raw[0] === 1 && raw.length === 1)
+  )
+    return { valueKind: 'empty' }
+  if (raw[0] === 1 && Array.isArray(raw[1]))
+    return { valueKind: 'literal', value: rawPrimitive(raw[1]) }
+  if ((raw[0] === 2 || raw[0] === 3) && typeof raw[1] === 'string')
+    return {
+      valueKind: 'block',
+      value: normalizeRawBlockNode(state, raw[1], `${semanticPath}/block`),
+      ...(raw[0] === 3 && Array.isArray(raw[2])
+        ? { obscuredShadow: rawPrimitive(raw[2]) }
+        : {}),
+    }
+  return invalidCreationContent(
+    `${semanticPath} procedure argument is malformed`
+  )
+}
+
+function normalizeRawProcedureNode(
+  state: RawNormalizationStateV1,
+  block: Block,
+  semanticPath: string
+): unknown
+{
+  const attachedComment = normalizeRawAttachedComment(
+    state,
+    block,
+    `${semanticPath}/comment`
+  )
+  if (block.opcode !== 'procedures_call')
+  {
+    const scope = state.input.procedureScope
+    const name = scratchRecordValue(block.fields, 'VALUE')?.[0]
+    const matches =
+      scope?.parameters.filter(
+        (parameter) =>
+          parameter.name === name &&
+          (parameter.parameterType === 'boolean') ===
+            (block.opcode === 'argument_reporter_boolean')
+      ) ?? []
+    if (!scope || matches.length !== 1)
+      return invalidCreationContent(
+        `${semanticPath} argument reporter has no exact local scope`
+      )
+    return {
+      nodeKind: 'parameterReporter',
+      parameter: rawParameterContractRef(
+        state.input,
+        scope,
+        matches[0]!,
+        semanticPath
+      ),
+      ...(attachedComment === null ? {} : { attachedComment }),
+    }
+  }
+  const proccode = block.mutation?.proccode
+  if (typeof proccode !== 'string')
+    return invalidCreationContent(
+      `${semanticPath} procedure call has no signature`
+    )
+  const scope = standardProcedureScopeFromRecordV2(
+    state.input.project,
+    state.input.targetIndex,
+    proccode
+  )
+  return {
+    nodeKind: 'procedureCall',
+    procedure: resolveContractRef(state.input, {
+      sourceKind: 'rawProcedure',
+      rawProccode: proccode,
+      expectedEntityKind: 'procedure',
+      expectedEntitySubtype: 'unspecialized',
+      referenceDomain: 'procedureOwnership',
+      ownerTargetIndex: state.input.targetIndex,
+      semanticPath,
+    }),
+    expectedSignatureSha256: scope.signatureSha256,
+    arguments: scope.parameters.map((parameter, ordinal) => ({
+      parameter: rawParameterContractRef(
+        state.input,
+        scope,
+        parameter,
+        `${semanticPath}/arguments/${ordinal}`
+      ),
+      value: normalizeRawProcedureArgument(
+        state,
+        scratchRecordValue(block.inputs, parameter.argumentId),
+        `${semanticPath}/arguments/${ordinal}/value`
+      ),
+    })),
+    ...(attachedComment === null ? {} : { attachedComment }),
+  }
 }
 
 function normalizeRawBlockNode(
@@ -790,7 +1350,17 @@ function normalizeRawBlockNode(
 ): unknown
 {
   const block = rawBlock(state, blockId)
-  const validation = validateExistingCuratedBlockV1(block)
+  if (
+    state.input.semanticAuthorityId === 'standard-v2' &&
+    (block.opcode === 'procedures_call' ||
+      block.opcode === 'argument_reporter_boolean' ||
+      block.opcode === 'argument_reporter_string_number')
+  )
+    return normalizeRawProcedureNode(state, block, semanticPath)
+  const validation =
+    state.input.semanticAuthorityId === 'standard-v2'
+      ? validateExistingStandardBlockV2(block)
+      : validateExistingCuratedBlockV1(block)
   const descriptor = validation.descriptor
   if (!validation.ok || descriptor === null)
     return invalidCreationContent(`${semanticPath} is not a curated raw block`)
@@ -818,6 +1388,7 @@ function normalizeRawBlockNode(
               name: descriptorField.name,
               value: normalizeRawField(
                 state,
+                block,
                 field,
                 descriptorField,
                 `${semanticPath}/fields/${descriptorField.name}`
@@ -889,7 +1460,10 @@ function rawPlan(
   const plan = planGraphClosureV1(owner, kind, rootId)
   if (kind === 'script')
   {
-    const closure = validateCuratedClosureV1(owner.blocks, rootId)
+    const closure =
+      input.semanticAuthorityId === 'standard-v2'
+        ? validateStandardClosureV2(owner.blocks, rootId)
+        : validateCuratedClosureV1(owner.blocks, rootId)
     if (!closure.ok)
       return invalidCreationContent('raw script is not a safe curated closure')
   }
@@ -898,11 +1472,52 @@ function rawPlan(
     const value = scratchRecordValue(owner.blocks, blockId)
     if (!value || !isBlockEntry(value))
       return invalidCreationContent('raw closure contains a non-block entry')
-    const validation = validateExistingCuratedBlockV1(value)
+    const validation =
+      input.semanticAuthorityId === 'standard-v2'
+        ? validateExistingStandardBlockV2(value)
+        : validateExistingCuratedBlockV1(value)
     if (!validation.ok || !validation.safeForStructuralEdit)
       return invalidCreationContent('raw closure contains an unsafe block')
   }
-  return { input, closure: new Set(plan.orderedBlockIds) }
+  let scopedInput = input
+  if (input.semanticAuthorityId === 'standard-v2' && !input.procedureScope)
+  {
+    const owners = Object.entries(owner.blocks).flatMap(([blockId, value]) =>
+    {
+      if (
+        !value ||
+        !isBlockEntry(value) ||
+        value.opcode !== 'procedures_definition'
+      )
+        return []
+      const prototypeId = scratchRecordValue(value.inputs, 'custom_block')?.[1]
+      const prototype =
+        typeof prototypeId === 'string'
+          ? scratchRecordValue(owner.blocks, prototypeId)
+          : undefined
+      if (
+        !prototype ||
+        !isBlockEntry(prototype) ||
+        typeof prototype.mutation?.proccode !== 'string'
+      )
+        return []
+      return procedureOwnedBlockIdsV1(owner, blockId).includes(rootId)
+        ? [prototype.mutation.proccode]
+        : []
+    })
+    if (owners.length > 1)
+      return invalidCreationContent('raw closure has multiple procedure owners')
+    if (owners.length === 1)
+      scopedInput = {
+        ...input,
+        procedureScope: standardProcedureScopeFromRecordV2(
+          input.project,
+          input.targetIndex,
+          owners[0]!
+        ),
+      }
+  }
+  return { input: scopedInput, closure: new Set(plan.orderedBlockIds) }
 }
 
 function normalizeRawTopLevelRoot(
@@ -913,7 +1528,21 @@ function normalizeRawTopLevelRoot(
 {
   const state = rawPlan(input, kind, rootId)
   const root = rawBlock(state, rootId)
-  const descriptor = curatedAuthorableDescriptorV1(root.opcode)!
+  const descriptor = authorableDescriptor(input, root.opcode)
+  if (!descriptor)
+  {
+    if (
+      input.semanticAuthorityId === 'standard-v2' &&
+      root.opcode === 'procedures_call'
+    )
+      return {
+        rootKind: 'statementSequence',
+        value: normalizeRawSequence(state, rootId, '/raw/value'),
+      }
+    return invalidCreationContent(
+      'raw top-level root has no authoring descriptor'
+    )
+  }
   if (descriptor.shape === 'hat')
   {
     return {
@@ -1063,7 +1692,9 @@ export function normalizeAuthoredRootBlock(
   )
 }
 
-function expectedResultRoleShape(name: ScriptBlockCreationResultRoleV1['name']): {
+function expectedResultRoleShape(
+  name: ScriptBlockCreationResultRoleV1['name']
+): {
   readonly entityKind: 'script' | 'block'
   readonly roleKind: 'fixed' | 'dynamic'
 }
@@ -1231,7 +1862,9 @@ function assertCreationScope(input: ScriptBlockCreationContentInputV1): void
   )
 }
 
-function resultInitialContent(input: ScriptBlockCreationContentInputV1): unknown
+function resultInitialContent(
+  input: ScriptBlockCreationContentInputV1
+): unknown
 {
   const { operation, resultRole, selectedSource } = input
   if (operation.kind === 'script.add')
@@ -1275,6 +1908,49 @@ function resultInitialContent(input: ScriptBlockCreationContentInputV1): unknown
     return normalizeRawTopLevelRoot(input, 'ownedBlock', selectedSource.blockId)
   }
   const authored = authoredRootValue(operation)
+  if (
+    input.semanticAuthorityId === 'standard-v2' &&
+    operation.kind === 'block.setInput' &&
+    resultRole.name === 'rootBlock' &&
+    (operation.value.valueKind === 'literal' ||
+      operation.value.valueKind === 'entity' ||
+      operation.value.valueKind === 'special')
+  )
+  {
+    const ownerId = selectedSource.blockId
+    const owner = ownerId === undefined
+      ? undefined
+      : scratchRecordValue(target(input).blocks, ownerId)
+    const ownerDescriptor = isBlockEntry(owner)
+      ? getStandardDescriptorV2(owner.opcode)
+      : undefined
+    const descriptorInput = ownerDescriptor?.requiredInputs.find(
+      (entry) => entry.name === operation.inputName
+    ) ?? ownerDescriptor?.optionalInputs.find(
+      (entry) => entry.name === operation.inputName
+    )
+    const shadow = descriptorInput?.canonicalShadow
+    if (
+      descriptorInput === undefined ||
+      shadow?.kind !== 'menu' ||
+      typeof shadow.field !== 'string'
+    )
+      return invalidCreationContent(
+        'authored input does not create an owner-declared menu closure'
+      )
+    return {
+      nodeKind: 'generatedInputMenu',
+      schemaVersion: 1,
+      opcode: shadow.opcode,
+      field: shadow.field,
+      value: normalizeSemanticInput(
+        input,
+        operation.value,
+        descriptorInput,
+        `/authored/input/${operation.inputName}`
+      ),
+    }
+  }
   if (
     resultRole.name === 'rootBlock' ||
     resultRole.name === 'sourceGapRootBlock'

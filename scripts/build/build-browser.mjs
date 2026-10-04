@@ -10,6 +10,8 @@ const builds = [
   ['page-entry.ts', 'page.js'],
   ['official-page-entry.ts', 'official-page.js'],
   ['hash-parity-page-entry.ts', 'hash-parity-page.js'],
+  ['debug-page-entry.ts', 'debug-page.js'],
+  ['official-debug-page-entry.ts', 'official-debug-page.js'],
 ]
 
 for (const [entryName, outputName] of builds)
@@ -27,3 +29,15 @@ for (const [entryName, outputName] of builds)
   })
   console.log(`bundled browser page -> ${outfile}`)
 }
+
+await esbuild.build({
+  entryPoints: [
+    resolve(root, 'packages/runner/src/development/viewer-entry.ts'),
+  ],
+  outfile: resolve(root, 'packages/runner/dist/development/viewer-page.js'),
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  target: 'es2020',
+  logLevel: 'info',
+})

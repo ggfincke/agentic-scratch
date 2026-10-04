@@ -1416,7 +1416,7 @@ function validateVlmRequestBinding(
     version: VLM_OUTPUT_SCHEMA_VERSION,
     sha256: hashMultimodalJson(RUBRIC_JUDGMENT_JSON_SCHEMA),
   }
-  let renderedPromptSha256: string | null = null
+  let renderedPromptSha256: string | null
   try
   {
     renderedPromptSha256 = hashMultimodalContent(

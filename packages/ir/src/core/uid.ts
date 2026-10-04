@@ -253,7 +253,7 @@ export class Uids
   // fresh id not colliding w/ any seen/reserved id; deterministic given call order
   next(prefix = 'b'): string
   {
-    let id = ''
+    let id: string
     do
     {
       id = `${prefix}-${(this.counter++).toString(36)}`

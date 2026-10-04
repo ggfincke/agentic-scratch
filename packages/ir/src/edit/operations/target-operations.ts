@@ -40,7 +40,8 @@ import {
   type SemanticLineageRecord,
   type SemanticLineageSnapshot,
 } from '../lineage/lineage.js'
-import { unknownNameSemanticsEvidenceV1 } from '../semantic-index/name-semantics-catalog.js'
+import { unknownNameSemanticsForAuthorityV2 } from '../semantic-index/standard-name-policy.js'
+import type { SemanticAuthoringAuthorityIdV2 } from '../contracts/authority-selection.js'
 import { buildSemanticReferenceIndex } from '../semantic-index/reference-index.js'
 import {
   targetKey,
@@ -48,7 +49,10 @@ import {
   type SemanticReferenceIndex,
   type SpriteReference,
 } from '../semantic-index/reference-index-types.js'
-import { TARGET_NAME_REFERENCE_DESCRIPTORS_V1 } from '../semantic-index/target-reference-catalog.js'
+import {
+  RESERVED_TARGET_NAMES_V1,
+  TARGET_NAME_REFERENCE_DESCRIPTORS_V1,
+} from '../semantic-index/target-reference-catalog.js'
 
 export type TargetOperationV1 = Extract<
   SemanticEditOperationV1,
@@ -182,14 +186,6 @@ export class TargetOperationError extends Error
     this.name = 'TargetOperationError'
   }
 }
-
-const RESERVED_TARGET_NAMES = new Set([
-  '_edge_',
-  '_mouse_',
-  '_myself_',
-  '_random_',
-  '_stage_',
-])
 
 function editError(
   code: string,
@@ -1058,9 +1054,12 @@ function assertUniqueSpriteNames(json: ProjectJson): void
     )
 }
 
-function assertKnownTargetReferenceSemantics(json: ProjectJson): void
+function assertKnownTargetReferenceSemantics(
+  json: ProjectJson,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
+): void
 {
-  const evidence = unknownNameSemanticsEvidenceV1(json)
+  const evidence = unknownNameSemanticsForAuthorityV2(json, authorityId)
   if (evidence.declaredExtensions.length > 0)
     editError(
       'edit.unsupported_extension',
@@ -1215,7 +1214,8 @@ function assertRenamePostcondition(
 function applyRename(
   project: ProjectIR,
   operation: Extract<TargetOperationV1, { kind: 'target.renameSprite' }>,
-  targetIndex: number
+  targetIndex: number,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): {
   propagatedReferenceCount: number
   inbound: TargetReferenceSetEvidenceV1
@@ -1225,9 +1225,9 @@ function applyRename(
   const target = project.json.targets[targetIndex]
   if (!target || target.isStage)
     return editError('edit.invalid_owner', 'rename requires a sprite target')
-  assertKnownTargetReferenceSemantics(project.json)
+  assertKnownTargetReferenceSemantics(project.json, authorityId)
   assertUniqueSpriteNames(project.json)
-  if (RESERVED_TARGET_NAMES.has(operation.newName))
+  if (RESERVED_TARGET_NAMES_V1.includes(operation.newName))
     return editError(
       'edit.project_constraint',
       'sprite name collides with a reserved runtime target name'
@@ -1393,7 +1393,8 @@ function applyRemove(
   operation: Extract<TargetOperationV1, { kind: 'target.removeSprite' }>,
   targetIndex: number,
   lineage: SemanticLineageSnapshot,
-  beforeOrder: TargetDualOrderSnapshotV1
+  beforeOrder: TargetDualOrderSnapshotV1,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): {
   activeLineage: SemanticLineageSnapshot
   attribution: DeltaOperationAttribution
@@ -1404,7 +1405,7 @@ function applyRemove(
   const target = project.json.targets[targetIndex]
   if (!target || target.isStage)
     return editError('edit.invalid_owner', 'remove requires a sprite target')
-  assertKnownTargetReferenceSemantics(project.json)
+  assertKnownTargetReferenceSemantics(project.json, authorityId)
   assertUniqueSpriteNames(project.json)
   const index = buildSemanticReferenceIndex(project)
   assertNoDynamicTargetReferences(index)
@@ -1596,7 +1597,8 @@ function postconditionEvidence(
 
 export function applyTargetOperationV1(
   project: ProjectIR,
-  resolved: ResolvedTargetOperationV1
+  resolved: ResolvedTargetOperationV1,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): TargetOperationResultV1
 {
   const beforeTargetCount = project.json.targets.length
@@ -1624,7 +1626,12 @@ export function applyTargetOperationV1(
   const operation = resolved.operation
   if (operation.kind === 'target.renameSprite')
   {
-    const result = applyRename(workingProject, operation, resolved.targetIndex)
+    const result = applyRename(
+      workingProject,
+      operation,
+      resolved.targetIndex,
+      authorityId
+    )
     attribution = result.attribution
     propagatedReferenceCount = result.propagatedReferenceCount
     inboundReferenceSetSha256 = result.inbound.referenceSetSha256
@@ -1643,7 +1650,8 @@ export function applyTargetOperationV1(
       operation,
       resolved.targetIndex,
       activeLineage,
-      beforeOrder
+      beforeOrder,
+      authorityId
     )
     activeLineage = result.activeLineage
     attribution = result.attribution
@@ -1783,7 +1791,8 @@ const UNINITIALIZED_CURRENT_COSTUME: ExistingOptionalNumberV1 = Object.freeze({
 
 export function applyTargetAddSpriteV1(
   project: ProjectIR,
-  resolved: ResolvedTargetCreationV1
+  resolved: ResolvedTargetCreationV1,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): AppliedTargetCreationV1
 {
   const operation = resolved.operation
@@ -1792,11 +1801,11 @@ export function applyTargetAddSpriteV1(
     resolved.activeLineage
   )
   visualSpriteIndexes(project.json)
-  assertKnownTargetReferenceSemantics(project.json)
+  assertKnownTargetReferenceSemantics(project.json, authorityId)
   assertUniqueSpriteNames(project.json)
   if (operation.name.length === 0)
     return editError('edit.project_constraint', 'a sprite name cannot be empty')
-  if (RESERVED_TARGET_NAMES.has(operation.name))
+  if (RESERVED_TARGET_NAMES_V1.includes(operation.name))
     return editError(
       'edit.project_constraint',
       'sprite name collides with a reserved runtime target name'
@@ -1904,7 +1913,10 @@ export function assertCreatedTargetsAreCostumedV1(
 }
 
 // creation reads no existing target, so its limitations are project-wide facts
-function targetCreationLimitations(json: ProjectJson): readonly string[]
+function targetCreationLimitations(
+  json: ProjectJson,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
+): readonly string[]
 {
   const limitations = new Set<string>()
   try
@@ -1920,7 +1932,7 @@ function targetCreationLimitations(json: ProjectJson): readonly string[]
     .map((candidate) => candidate.name)
   if (new Set(spriteNames).size !== spriteNames.length)
     limitations.add('edit.project_constraint')
-  const unknownSemantics = unknownNameSemanticsEvidenceV1(json)
+  const unknownSemantics = unknownNameSemanticsForAuthorityV2(json, authorityId)
   if (unknownSemantics.declaredExtensions.length > 0)
     limitations.add('edit.unsupported_extension')
   if (
@@ -1935,7 +1947,8 @@ function targetMutationLimitations(
   json: ProjectJson,
   index: SemanticReferenceIndex,
   targetIndex: number,
-  operationKind: TargetCapabilityAssessmentItemV1['operationKind']
+  operationKind: TargetCapabilityAssessmentItemV1['operationKind'],
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): readonly string[]
 {
   const target = json.targets[targetIndex]
@@ -1954,7 +1967,10 @@ function targetMutationLimitations(
     operationKind === 'target.removeSprite'
   )
   {
-    const unknownSemantics = unknownNameSemanticsEvidenceV1(json)
+    const unknownSemantics = unknownNameSemanticsForAuthorityV2(
+      json,
+      authorityId
+    )
     if (unknownSemantics.declaredExtensions.length > 0)
       limitations.add('edit.unsupported_extension')
     if (
@@ -2012,7 +2028,8 @@ function targetMutationLimitations(
 }
 
 export function assessTargetOperationCapabilitiesV1(
-  project: ProjectIR
+  project: ProjectIR,
+  authorityId: SemanticAuthoringAuthorityIdV2 = 'a0-v1'
 ): TargetCapabilityAssessmentV1
 {
   const index = buildSemanticReferenceIndex(project)
@@ -2034,10 +2051,10 @@ export function assessTargetOperationCapabilitiesV1(
       return {
         operationKind,
         availability:
-          targetCreationLimitations(project.json).length === 0
+          targetCreationLimitations(project.json, authorityId).length === 0
             ? ('supported' as const)
             : ('unsupported' as const),
-        limitationCodes: targetCreationLimitations(project.json),
+        limitationCodes: targetCreationLimitations(project.json, authorityId),
         targetIndexes: Object.freeze([] as number[]),
       }
     const supportedTargetIndexes: number[] = []
@@ -2052,7 +2069,8 @@ export function assessTargetOperationCapabilitiesV1(
         project.json,
         index,
         targetIndex,
-        operationKind
+        operationKind,
+        authorityId
       )
       if (limitations.length === 0) supportedTargetIndexes.push(targetIndex)
       for (const limitation of limitations) limitationCodes.add(limitation)

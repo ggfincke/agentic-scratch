@@ -3,31 +3,26 @@
 
 import { scratchRecordValue, type BlockInput } from '@scratch-agent/sb3'
 import type { ProjectIR } from '@scratch-agent/ir'
+import { retainedEditSemanticAuthorityV1 } from '../authority/semantic-authority.js'
+import { standardProcedureResolversV2, standardProcedureContractRefV2 } from './standard-procedure-resolution.js'
 import {
-  CURATED_CORE_BLOCK_CATALOG_EVIDENCE_V1,
   applyBlockStructuralOperationV1,
   applyScriptStructuralOperationV1,
-  blockEntityEvidenceSetV1,
   blockFieldFingerprintV1,
   blockInputFingerprintV1,
   commentEntityEvidenceSetV1,
   commentSetSha256V1,
-  createCuratedCoreOperationAdaptersV1,
   declarationEntityEvidenceSetV1,
+  mediaRecordEntityEvidenceSetV1,
   scriptBlockCreationContentFingerprintForResultV1,
   inputShadowFingerprintV1,
   planGraphClosureV1,
   resolveCommentRefV1,
   resolveDeclarationRefV1,
-  resolveTargetRefV1,
   scriptBoundedLocationProjectionV1,
   scriptEntityEvidenceSetV1,
   semanticHashV1,
   targetEntityEvidenceSetV1,
-  validateCuratedClosureV1,
-  validateExistingCuratedBlockV1,
-  SEMANTIC_LINEAGE_VERSION_V1,
-  validateSemanticLineageSnapshot,
   type AppliedBlockStructuralOperationV1,
   type AppliedScriptStructuralOperationV1,
   type BlockEntityEvidenceV1,
@@ -39,10 +34,8 @@ import {
   type CuratedEntityResolverV1,
   type CuratedResolvedEntityV1,
   type DeclarationEntityEvidenceV1,
-  type DeclarationRefV1,
   type GraphClosurePlanV1,
   type ScriptBlockContractEntityResolutionRequestV1,
-  type MediaRefV1,
   type OperationPlanningChoiceV1,
   type ScriptBlockCreationOperationV1,
   type ResolvedBlockDestinationV1,
@@ -50,7 +43,6 @@ import {
   type ResolvedCommentDispositionV1,
   type ResolvedScriptStructuralOperationV1,
   type ScriptEntityEvidenceV1,
-  type ScriptRefV1,
   type SemanticEditOperationBlockInsertAfterV1,
   type SemanticEditOperationBlockInsertBeforeV1,
   type SemanticEditOperationBlockInsertSubstackV1,
@@ -70,34 +62,44 @@ import {
 } from '@scratch-agent/ir/edit'
 
 import {
+  assertExactPlanningChoiceSetV1,
   bindingRealizationCandidatesV1 as bindingRealizationCandidates,
   blockPlanningProjectionV1 as planningBlock,
   cloneDispatcherProjectV1 as cloneProject,
   completedPlanningFactV1,
   createProductionLineageV1,
   exactCommentRefV1 as exactCommentRef,
-  exactContractRefV1 as resolveExactContractRef,
-  exactDeclarationRefV1 as exactDeclarationRef,
+  exactContractRefV1 as exactContractRef,
+  exactPlanningChoiceValueV1,
   futureBindingAlreadyRealizedV1 as futureBindingAlreadyRealized,
+  resultBlockEvidenceV1 as resultBlockEvidence,
+  resultScriptEvidenceV1 as resultScriptEvidence,
+  targetCommentRawIdentitiesV1 as targetCommentRawIdentities,
   targetPlanningProjectionV1 as planningTarget,
+  targetScriptRawIdentitiesV1 as targetScriptRawIdentities,
 } from './dispatcher-primitives.js'
-import { futureBindingKeySha256V1 } from '../lineage/future-binding-ledger.js'
+import { realizedFutureBindingKeysForLineageV1 as realizedFutureBindingKeys } from '../lineage/future-binding-ledger.js'
 import type { FutureContractBindingV1 } from '../lineage/future-binding-ledger.js'
 import { editJsonPointerPartV1 as pointerPart } from '../support/internal-values.js'
-import type { CreatedSemanticLineageV1 } from '../lineage/lineage.js'
 import {
-  blockBindingKeys,
+  activeLineageRecordV1 as activeRecord,
+  reindexOwnerLineagesV1 as reindexOwnerLineages,
+  replaceLineageRawIdentityV1 as replaceLineageRawIdentity,
+  type CreatedSemanticLineageV1,
+} from '../lineage/lineage.js'
+import {
+  allBlockBindingKeys,
+  allScriptBindingKeys,
   entityLineageIn,
-  exactBlockRef,
-  exactScriptRef,
   exactTargetRef,
   operationResult,
+  mediaLineageAt,
   planningContext,
   resolveBlockSelectionRef,
   resolveScriptSelectionRef,
   resolveTargetSelection,
   resolverAdapters,
-  scriptBindingKeys,
+  scriptBindingKeysByLineage,
   targetBindingKeys,
   targetLineageAt,
   tombstoneLineage,
@@ -108,10 +110,14 @@ import {
 } from './target-dispatchers.js'
 import {
   curatedMediaEntityV1,
-  exactMediaRefV1,
+  mediaContractBindingKeys,
   mediaContractEntityRefV1,
-  resolveMediaReferenceV1,
 } from './media-target-dispatchers.js'
+import {
+  canonicalBlockRefV1 as canonicalBlockRef,
+  canonicalScriptRefV1 as canonicalScriptRef,
+  canonicalizeSemanticValueV1 as canonicalizeSemanticValue,
+} from './reference-canonicalization.js'
 import {
   canonicalParameterRefV1,
   canonicalProcedureRefV1,
@@ -149,7 +155,8 @@ type ScriptBlockBlockOperationV1 =
   | SemanticEditOperationBlockSetFieldV1
   | SemanticEditOperationBlockSetInputV1
 
-type ScriptBlockOperationV1 = ScriptBlockScriptOperationV1 | ScriptBlockBlockOperationV1
+type ScriptBlockOperationV1 =
+  ScriptBlockScriptOperationV1 | ScriptBlockBlockOperationV1
 
 type ScriptBlockFutureContractBindingV1 = Extract<
   FutureContractBindingV1,
@@ -164,7 +171,7 @@ interface ScriptBlockPlanningFactProjectionV1
   readonly opId: string
   readonly selectedEntities: readonly PlanningEntityProjectionV1[]
   readonly selectedLineageIds: readonly string[]
-  readonly catalogEvidence: typeof CURATED_CORE_BLOCK_CATALOG_EVIDENCE_V1
+  readonly catalogEvidence: ReturnType<typeof retainedEditSemanticAuthorityV1>['catalogEvidence']
   readonly facts: unknown
 }
 
@@ -204,8 +211,7 @@ interface ResolvedBlockDispatchV1
 interface ResultBindingMatchV1
 {
   readonly binding: ScriptBlockFutureContractBindingV1
-  readonly slot:
-    ProductionResultSlotV1 | ProductionDynamicBlockResultSlotV1
+  readonly slot: ProductionResultSlotV1 | ProductionDynamicBlockResultSlotV1
   readonly collisionNonce: number
   readonly creationKey: string
 }
@@ -217,25 +223,6 @@ function fail(
 ): never
 {
   throw Object.assign(new Error(message), { code, context })
-}
-
-// a same-batch created ref has no exact location in the predecessor revision, so
-// canonicalizing it away makes the retained batch unreplayable. keep it verbatim
-// & canonicalize every other selector, matching the Group C declaration rule.
-function canonicalBlockRef(
-  reference: BlockRefV1,
-  evidence: BlockEntityEvidenceV1
-): BlockRefV1
-{
-  return reference.refKind === 'created' ? reference : exactBlockRef(evidence)
-}
-
-function canonicalScriptRef(
-  reference: ScriptRefV1,
-  evidence: ScriptEntityEvidenceV1
-): ScriptRefV1
-{
-  return reference.refKind === 'created' ? reference : exactScriptRef(evidence)
 }
 
 function planningScript(
@@ -348,13 +335,14 @@ function procedureCallInput(
 
 function descriptorPlanningEvidence(
   project: ProjectIR,
-  block: BlockEntityEvidenceV1
+  block: BlockEntityEvidenceV1,
+  context: ProductionOperationContextV1
 ): unknown
 {
   const entry = project.json.targets[block.targetIndex]?.blocks[block.blockId]
   if (entry === undefined || Array.isArray(entry))
     return fail('edit.selector_no_match', 'selected block record is absent')
-  const validation = validateExistingCuratedBlockV1(entry)
+  const validation = retainedEditSemanticAuthorityV1(context.input).validateExistingBlock(entry)
   if (
     !validation.ok ||
     !validation.safeForStructuralEdit ||
@@ -376,7 +364,8 @@ function closurePlanningEvidence(
   project: ProjectIR,
   targetIndex: number,
   rootBlockId: string,
-  kind: 'script' | 'ownedBlock'
+  kind: 'script' | 'ownedBlock',
+  context: ProductionOperationContextV1
 ): GraphClosurePlanV1
 {
   const target = project.json.targets[targetIndex]
@@ -387,7 +376,7 @@ function closurePlanningEvidence(
     const entry = target.blocks[blockId]
     if (entry === undefined || Array.isArray(entry))
       return fail('edit.graph_failed', 'closure contains an absent block')
-    const validation = validateExistingCuratedBlockV1(entry)
+    const validation = retainedEditSemanticAuthorityV1(context.input).validateExistingBlock(entry)
     if (!validation.ok || !validation.safeForStructuralEdit)
       return fail(
         'edit.unsupported_opcode',
@@ -418,49 +407,6 @@ function closureFact(
       plan.attachedCommentIds
     ),
   }
-}
-
-function canonicalizeSemanticValue(
-  context: ProductionOperationContextV1,
-  value: unknown
-): unknown
-{
-  if (Array.isArray(value))
-    return value.map((entry) => canonicalizeSemanticValue(context, entry))
-  if (value === null || typeof value !== 'object') return value
-  const record = value as Readonly<Record<string, unknown>>
-  if (
-    record['entityKind'] === 'target' &&
-    typeof record['refKind'] === 'string'
-  )
-  {
-    const evidence = resolveTargetRefV1(
-      context.candidate,
-      record as unknown as Parameters<typeof resolveTargetRefV1>[1],
-      resolverAdapters(context).target
-    )
-    return exactTargetRef(evidence)
-  }
-  if (
-    record['entityKind'] === 'declaration' &&
-    typeof record['refKind'] === 'string'
-  )
-  {
-    const evidence = resolveDeclarationRefV1(
-      context.candidate,
-      record as unknown as DeclarationRefV1,
-      resolverAdapters(context)
-    )
-    return exactDeclarationRef(evidence)
-  }
-  if (record['entityKind'] === 'media' && typeof record['refKind'] === 'string')
-    return exactMediaRefV1(
-      resolveMediaReferenceV1(context, record as unknown as MediaRefV1).current
-    )
-  const canonical: Record<string, unknown> = Object.create(null)
-  for (const [key, entry] of Object.entries(record))
-    canonical[key] = canonicalizeSemanticValue(context, entry)
-  return canonical
 }
 
 function planningAuthoredContent(
@@ -677,10 +623,7 @@ function resolveBlockDestination(
           destination.procedure,
           procedure.canonical
         ),
-        parameter: canonicalParameterRefV1(
-          destination.parameter,
-          parameter
-        ),
+        parameter: canonicalParameterRefV1(destination.parameter, parameter),
       },
       resolved: {
         kind: destination.kind,
@@ -705,8 +648,7 @@ function resolveBlockDestination(
         procedure: planningProcedureV1(procedure.canonical),
         parameter: planningParameterV1(parameter),
         argumentId: parameter.argumentId,
-        actualSignatureSha256:
-          procedureSignatureStateSha256V1(planningRecord),
+        actualSignatureSha256: procedureSignatureStateSha256V1(planningRecord),
         expectedSignatureSha256: destination.expectedSignatureSha256,
         actualInputFingerprintSha256,
         expectedCurrentInputFingerprint:
@@ -714,8 +656,7 @@ function resolveBlockDestination(
         expectedNoOwnedBlock: destination.expectedNoOwnedBlock,
       },
       procedureArgumentGuard: {
-        actualSignatureSha256:
-          procedureSignatureStateSha256V1(currentRecord),
+        actualSignatureSha256: procedureSignatureStateSha256V1(currentRecord),
         expectedSignatureSha256: destination.expectedSignatureSha256,
       },
     }
@@ -724,7 +665,7 @@ function resolveBlockDestination(
   {
     const selected = resolveBlockSelectionRef(context, destination.anchor)
     assertSameTarget(targetIndex, selected.current.targetIndex, 'block move')
-    descriptorPlanningEvidence(planning.candidate, selected.canonical)
+    descriptorPlanningEvidence(planning.candidate, selected.canonical, planning)
     return {
       canonical: {
         kind: destination.kind,
@@ -748,7 +689,7 @@ function resolveBlockDestination(
   {
     const selected = resolveBlockSelectionRef(context, destination.owner)
     assertSameTarget(targetIndex, selected.current.targetIndex, 'block move')
-    descriptorPlanningEvidence(planning.candidate, selected.canonical)
+    descriptorPlanningEvidence(planning.candidate, selected.canonical, planning)
     const currentInput = currentBlockInput(
       planning.candidate,
       planningTargetIndex,
@@ -874,7 +815,8 @@ function resolveScriptDispatch(
     planning.candidate,
     planningTargetIndex,
     script.canonical.topBlockId,
-    'script'
+    'script',
+    planning
   )
   const target = exactCurrentTarget(planning, planningTargetIndex)
   const targetLineageId = targetLineageAt(
@@ -950,7 +892,7 @@ function resolveScriptDispatch(
           planningTargetIndex,
           plan
         ),
-        sourceCatalog: validateCuratedClosureV1(
+        sourceCatalog: retainedEditSemanticAuthorityV1(context.input).validateClosure(
           planning.candidate.json.targets[planningTargetIndex]!.blocks,
           script.canonical.topBlockId
         ),
@@ -1021,7 +963,9 @@ function resolveScriptDispatch(
   }
 }
 
-function blockPrimaryReference(operation: ScriptBlockBlockOperationV1): BlockRefV1
+function blockPrimaryReference(
+  operation: ScriptBlockBlockOperationV1
+): BlockRefV1
 {
   if (
     operation.kind === 'block.insertBefore' ||
@@ -1045,7 +989,8 @@ function blockClosurePlan(
         context.candidate,
         selected.targetIndex,
         selected.blockId,
-        'ownedBlock'
+        'ownedBlock',
+        context
       )
     : null
 }
@@ -1090,7 +1035,8 @@ function resolveBlockDispatch(
   ).lineageId
   const descriptor = descriptorPlanningEvidence(
     planning.candidate,
-    selected.canonical
+    selected.canonical,
+    planning
   )
   const plan = blockClosurePlan(planning, operation, selected.canonical)
   const baseFacts = {
@@ -1494,7 +1440,7 @@ function productionGroupDPlanningFactProjectionV1(
     opId: operation.opId,
     selectedEntities: resolved.planningEntities,
     selectedLineageIds: resolved.selectedLineageIds,
-    catalogEvidence: CURATED_CORE_BLOCK_CATALOG_EVIDENCE_V1,
+    catalogEvidence: retainedEditSemanticAuthorityV1(context.input).catalogEvidence,
     facts: resolved.facts,
   }
 }
@@ -1602,50 +1548,6 @@ export function productionScriptBlockPlanningCompletionV1(
   })
 }
 
-function exactPlanningChoiceValueV1(
-  choices: readonly OperationPlanningChoiceV1[],
-  operationKind: OperationPlanningChoiceV1['operationKind'],
-  destination: string
-): unknown
-{
-  const matches = choices.filter(
-    (choice) =>
-      choice.operationKind === operationKind &&
-      choice.destination === destination
-  )
-  if (matches.length !== 1)
-    return fail(
-      'edit.cardinality_mismatch',
-      `planning requires one exact ${destination} choice`,
-      { matchCount: matches.length }
-    )
-  return matches[0]!.selection.value
-}
-
-function assertExactPlanningChoiceSetV1(
-  choices: readonly OperationPlanningChoiceV1[],
-  operationKind: OperationPlanningChoiceV1['operationKind'],
-  destinations: readonly string[]
-): void
-{
-  if (
-    choices.length !== destinations.length ||
-    destinations.some(
-      (destination) =>
-        choices.filter(
-          (choice) =>
-            choice.operationKind === operationKind &&
-            choice.destination === destination
-        ).length !== 1
-    )
-  )
-    fail(
-      'edit.cardinality_mismatch',
-      `planning choices do not exactly cover ${operationKind}`,
-      { matchCount: choices.length }
-    )
-}
-
 function completedClosureFactsV1(
   plan: GraphClosurePlanV1
 ): readonly EditOperationPlanningFactV1[]
@@ -1693,7 +1595,8 @@ function completedSourceGapV1(
       planning.candidate,
       targetIndex,
       plan.rootBlockId,
-      'script'
+      'script',
+      planning
     )
     return {
       sourceGap: {
@@ -2052,7 +1955,8 @@ export function productionScriptBlockChoicePlanningCompletionV1(
         planning.candidate,
         selected.canonical.targetIndex,
         activeId,
-        'ownedBlock'
+        'ownedBlock',
+        planning
       )
       replacedInput = {
         ...initialReplacement,
@@ -2245,11 +2149,7 @@ function curatedEntityResolver(
           'edit.invalid_shape',
           `${request.semanticPath} does not contain a target reference`
         )
-      const target = resolveTargetRefV1(
-        context.candidate,
-        request.reference,
-        resolverAdapters(context).target
-      )
+      const target = resolveTargetSelection(context, request.reference).current
       if (target.targetKind !== request.expectedEntitySubtype)
         return fail(
           'edit.invalid_shape',
@@ -2318,105 +2218,6 @@ function createLineage(
     canonicalOrdinal,
     creationKey,
     activeLineage
-  )
-}
-
-function activeRecord(
-  lineage: SemanticLineageSnapshot,
-  kind: 'script' | 'block' | 'comment',
-  ownerLineageId: string,
-  rawIdentity: string
-): SemanticLineageRecord
-{
-  const matches = lineage.records.filter(
-    (record) =>
-      record.status === 'active' &&
-      record.kind === kind &&
-      record.ownerLineageId === ownerLineageId &&
-      record.rawIdentity === rawIdentity
-  )
-  if (matches.length !== 1)
-    return fail(
-      'edit.internal_invariant',
-      `active ${kind} lineage is absent or ambiguous for ${rawIdentity}`
-    )
-  return matches[0]!
-}
-
-function replaceLineageRawIdentity(
-  active: SemanticLineageSnapshot,
-  lineageId: string,
-  rawIdentity: string
-): SemanticLineageSnapshot
-{
-  return validateSemanticLineageSnapshot({
-    version: SEMANTIC_LINEAGE_VERSION_V1,
-    records: active.records.map((record) =>
-      record.lineageId === lineageId ? { ...record, rawIdentity } : record
-    ),
-  })
-}
-
-function reindexOwnerLineages(
-  active: SemanticLineageSnapshot,
-  kind: 'script' | 'comment',
-  ownerLineageId: string,
-  orderedRawIdentities: readonly string[]
-): SemanticLineageSnapshot
-{
-  const ordinalByRawIdentity = new Map(
-    orderedRawIdentities.map((rawIdentity, ordinal) => [rawIdentity, ordinal])
-  )
-  const siblings = active.records.filter(
-    (record) =>
-      record.status === 'active' &&
-      record.kind === kind &&
-      record.ownerLineageId === ownerLineageId
-  )
-  if (
-    siblings.length !== orderedRawIdentities.length ||
-    siblings.some((record) => !ordinalByRawIdentity.has(record.rawIdentity))
-  )
-    return fail(
-      'edit.internal_invariant',
-      `active ${kind} lineage does not match post-operation evidence`
-    )
-  return validateSemanticLineageSnapshot({
-    version: SEMANTIC_LINEAGE_VERSION_V1,
-    records: active.records.map((record) =>
-      record.status === 'active' &&
-      record.kind === kind &&
-      record.ownerLineageId === ownerLineageId
-        ? {
-            ...record,
-            canonicalOrdinal: ordinalByRawIdentity.get(record.rawIdentity)!,
-          }
-        : record
-    ),
-  })
-}
-
-function targetScriptRawIdentities(
-  project: ProjectIR,
-  targetIndex: number
-): readonly string[]
-{
-  return Object.freeze(
-    scriptEntityEvidenceSetV1(project)
-      .filter((script) => script.targetIndex === targetIndex)
-      .map((script) => `script:${script.topBlockId}`)
-  )
-}
-
-function targetCommentRawIdentities(
-  project: ProjectIR,
-  targetIndex: number
-): readonly string[]
-{
-  return Object.freeze(
-    commentEntityEvidenceSetV1(project)
-      .filter((comment) => comment.targetIndex === targetIndex)
-      .map((comment) => `comment:${comment.commentId}`)
   )
 }
 
@@ -2713,53 +2514,6 @@ function reconcileGroupDLineage(
   }
 }
 
-function realizedFutureBindingKeys(
-  context: ProductionOperationContextV1,
-  lineageId: string
-): readonly string[]
-{
-  return uniqueSorted(
-    context.contract.entityBindings.flatMap((binding) =>
-      binding.bindingKind === 'future' &&
-      context.futureBindingLedger.realizations.some(
-        (realization) =>
-          realization.resultLineageId === lineageId &&
-          realization.bindingKeySha256 ===
-            futureBindingKeySha256V1(
-              context.input.changeContractSha256,
-              binding.bindingKey
-            )
-      )
-        ? [binding.bindingKey]
-        : []
-    )
-  )
-}
-
-function allScriptBindingKeys(
-  context: ProductionOperationContextV1,
-  evidence: ScriptEntityEvidenceV1,
-  lineageId: string
-): readonly string[]
-{
-  return uniqueSorted([
-    ...scriptBindingKeys(context, evidence),
-    ...realizedFutureBindingKeys(context, lineageId),
-  ])
-}
-
-function allBlockBindingKeys(
-  context: ProductionOperationContextV1,
-  evidence: BlockEntityEvidenceV1,
-  lineageId: string
-): readonly string[]
-{
-  return uniqueSorted([
-    ...blockBindingKeys(context, evidence),
-    ...realizedFutureBindingKeys(context, lineageId),
-  ])
-}
-
 function exactExistingBindingKeys(
   context: ProductionOperationContextV1,
   entityKind: 'declaration',
@@ -2794,7 +2548,12 @@ export function declarationContractBindingKeys(
 ): readonly string[]
 {
   const lineage = declarationLineage(context, evidence)
-  const future = realizedFutureBindingKeys(context, lineage.lineageId)
+  const future = realizedFutureBindingKeys(
+    context.input.changeContractSha256,
+    context.contract.entityBindings,
+    context.futureBindingLedger,
+    lineage.lineageId
+  )
   const owner = context.activeLineage.records.find(
     (record) => record.lineageId === lineage.ownerLineageId
   )
@@ -2898,42 +2657,6 @@ function activeLineageForEvidence(
       ? `script:${evidence.topBlockId}`
       : `block:${evidence.blockId}`
   )
-}
-
-function resultScriptEvidence(
-  project: ProjectIR,
-  targetIndex: number,
-  topBlockId: string
-): ScriptEntityEvidenceV1
-{
-  const matches = scriptEntityEvidenceSetV1(project).filter(
-    (evidence) =>
-      evidence.targetIndex === targetIndex && evidence.topBlockId === topBlockId
-  )
-  if (matches.length !== 1)
-    return fail(
-      'edit.internal_invariant',
-      'created script does not have one exact post-operation evidence row'
-    )
-  return matches[0]!
-}
-
-function resultBlockEvidence(
-  project: ProjectIR,
-  targetIndex: number,
-  blockId: string
-): BlockEntityEvidenceV1
-{
-  const matches = blockEntityEvidenceSetV1(project).filter(
-    (evidence) =>
-      evidence.targetIndex === targetIndex && evidence.blockId === blockId
-  )
-  if (matches.length !== 1)
-    return fail(
-      'edit.internal_invariant',
-      'created block does not have one exact post-operation evidence row'
-    )
-  return matches[0]!
 }
 
 function scopeBindingKey(scope: ContractScopeV1): string | null
@@ -3374,32 +3097,6 @@ function matchResultBindings(
   )
 }
 
-function exactContractRef(
-  context: ProductionOperationContextV1,
-  bindingKeys: readonly string[],
-  expectedEntityKind: ScriptBlockContractEntityResolutionRequestV1['expectedEntityKind'],
-  expectedEntitySubtype: ScriptBlockContractEntityResolutionRequestV1['expectedEntitySubtype'],
-  semanticPath: string
-): ContractEntityRefV1
-{
-  return resolveExactContractRef(
-    context.contract.entityBindings,
-    bindingKeys,
-    expectedEntityKind,
-    expectedEntitySubtype,
-    () =>
-      fail(
-        'edit.unauthorized_change',
-        `${semanticPath} does not resolve one exact contract binding`
-      ),
-    () =>
-      fail(
-        'edit.unauthorized_change',
-        `${semanticPath} contract binding kind or subtype differs`
-      )
-  )
-}
-
 function rawDeclarationEvidence(
   context: ProductionOperationContextV1,
   request: Extract<
@@ -3436,20 +3133,74 @@ function rawDeclarationEvidence(
   return visible[0]!
 }
 
+export function standardRawNamedContractRefV2(
+  context: ProductionOperationContextV1,
+  request: Extract<ScriptBlockContractEntityResolutionRequestV1, {sourceKind: 'rawNamedReference'}>
+): ContractEntityRefV1
+{
+  if (request.expectedEntityKind === 'target')
+  {
+    const matches = targetEntityEvidenceSetV1(context.candidate.json).filter(
+      (entry) => entry.name === request.rawDisplayName &&
+        entry.targetKind === request.expectedEntitySubtype
+    )
+    if (matches.length !== 1)
+      return fail('edit.selector_ambiguous', `${request.semanticPath} named target is absent or ambiguous`)
+    return exactContractRef(context, targetBindingKeys(context, matches[0]!),
+      'target', request.expectedEntitySubtype, request.semanticPath)
+  }
+  if (request.expectedEntityKind === 'media')
+  {
+    const targetIndex = request.referenceDomain === 'backdrop'
+      ? context.candidate.json.targets.findIndex((target) => target.isStage)
+      : request.ownerTargetIndex
+    const matches = mediaRecordEntityEvidenceSetV1(context.candidate).filter(
+      (entry) => entry.targetIndex === targetIndex &&
+        entry.mediaKind === request.expectedEntitySubtype &&
+        entry.name === request.rawDisplayName
+    )
+    if (matches.length !== 1)
+      return fail('edit.selector_ambiguous', `${request.semanticPath} named media is absent or ambiguous`)
+    const evidence = matches[0]!
+    const targetLineage = targetLineageAt(context.activeLineage,
+      context.candidate.json.targets.length, evidence.targetIndex)
+    const lineage = mediaLineageAt(context.activeLineage, evidence.mediaKind,
+      targetLineage.lineageId, evidence.ordinal)
+    return exactContractRef(context, mediaContractBindingKeys(context, evidence, lineage.lineageId),
+      'media', evidence.mediaKind, request.semanticPath)
+  }
+  if (request.expectedEntityKind === 'declaration')
+  {
+    const matches = declarationEntityEvidenceSetV1(context.candidate).filter(
+      (entry) => entry.declarationKind === request.expectedEntitySubtype &&
+        entry.location.name === request.rawDisplayName
+    )
+    const owned = matches.filter((entry) => entry.targetIndex === request.ownerTargetIndex)
+    const visible = owned.length > 0 ? owned : matches.filter((entry) =>
+      context.candidate.json.targets[entry.targetIndex]?.isStage === true
+    )
+    if (visible.length !== 1)
+      return fail('edit.selector_ambiguous', `${request.semanticPath} named declaration is absent or ambiguous`)
+    return exactContractRef(context, declarationContractBindingKeys(context, visible[0]!),
+      'declaration', request.expectedEntitySubtype, request.semanticPath)
+  }
+  return fail('edit.invalid_shape', `${request.semanticPath} named reference has an unsupported entity kind`)
+}
+
 function resolveContractEntityReference(
   context: ProductionOperationContextV1,
   request: ScriptBlockContractEntityResolutionRequestV1
 ): ContractEntityRefV1
 {
+  const procedureReference = standardProcedureContractRefV2(context, request)
+  if (procedureReference) return procedureReference
+  if (request.sourceKind === 'rawNamedReference')
+    return standardRawNamedContractRefV2(context, request)
   if (request.sourceKind === 'semanticReference')
   {
     if (request.reference.entityKind === 'target')
     {
-      const evidence = resolveTargetRefV1(
-        context.candidate,
-        request.reference,
-        resolverAdapters(context).target
-      )
+      const evidence = resolveTargetSelection(context, request.reference).current
       return exactContractRef(
         context,
         targetBindingKeys(context, evidence),
@@ -3514,8 +3265,6 @@ function resolveContractEntityReference(
       request.semanticPath
     )
   }
-  // procedure references belong to the Group E resolver; Group D never
-  // produces one, so reaching here is an internal invariant break
   if (request.sourceKind !== 'rawScript')
     return fail(
       'edit.unsupported_operation',
@@ -3591,7 +3340,16 @@ function creationContentFingerprint(
       )
     blockId = matches[0]!.sourceBlockId
   }
+  const ownerBlockId = 'selectedBlock' in resolved
+    ? resolved.selectedBlock.blockId
+    : resolved.selectedScript?.topBlockId
+  if (
+    operation.kind === 'block.setInput' &&
+    retainedEditSemanticAuthorityV1(context.input).semanticAuthorityId === 'standard-v2'
+  ) blockId = ownerBlockId
   return scriptBlockCreationContentFingerprintForResultV1({
+    semanticAuthorityId: retainedEditSemanticAuthorityV1(context.input).semanticAuthorityId,
+    ...standardProcedureResolversV2(sourceContext, resolved.targetIndex, ownerBlockId),
     project: sourceProject,
     targetIndex: resolved.targetIndex,
     operation: resolved.canonicalOperation as ScriptBlockCreationOperationV1,
@@ -3604,30 +3362,6 @@ function creationContentFingerprint(
     resolveContractEntityRef: (request) =>
       resolveContractEntityReference(sourceContext, request),
   })
-}
-
-function scriptBindingKeysByLineage(
-  context: ProductionOperationContextV1,
-  targetIndex: number
-): ReadonlyMap<string, readonly string[]>
-{
-  const entries = scriptEntityEvidenceSetV1(context.candidate)
-    .filter((script) => script.targetIndex === targetIndex)
-    .map((script) =>
-    {
-      const lineage = entityLineageIn(
-        context.candidate,
-        context.activeLineage,
-        'script',
-        targetIndex,
-        `script:${script.topBlockId}`
-      )
-      return [
-        lineage.lineageId,
-        allScriptBindingKeys(context, script, lineage.lineageId),
-      ] as const
-    })
-  return new Map(entries)
 }
 
 function splitResultSlots(slots: CollectedGroupDResultSlotsV1): {
@@ -3687,9 +3421,16 @@ function executeResolvedScriptBlockOperation(
   )
   const targetEvidence = exactCurrentTarget(context, resolved.targetIndex)
   const targetKeys = targetBindingKeys(context, targetEvidence)
-  const adapters = createCuratedCoreOperationAdaptersV1(
-    curatedEntityResolver(context)
-  )
+  const authority = retainedEditSemanticAuthorityV1(context.input)
+  const ownerBlockId = 'selectedBlock' in resolved
+    ? resolved.selectedBlock.blockId
+    : resolved.selectedScript?.topBlockId
+  const adapters = authority.semanticAuthorityId === 'standard-v2'
+    ? authority.createOperationAdapters({
+        resolveEntity: curatedEntityResolver(context),
+        ...standardProcedureResolversV2(context, resolved.targetIndex, ownerBlockId),
+      })
+    : authority.createOperationAdapters(curatedEntityResolver(context))
   const applied = operation.kind.startsWith('script.')
     ? applyScriptStructuralOperationV1(
         context.candidate,
@@ -3889,7 +3630,7 @@ function executeResolvedScriptBlockOperation(
     ...slots.dynamicSlots.map((slot) => slot.lineageId),
   ])
   const effectEvidence = {
-    catalogEvidence: CURATED_CORE_BLOCK_CATALOG_EVIDENCE_V1,
+    catalogEvidence: retainedEditSemanticAuthorityV1(context.input).catalogEvidence,
     applied,
     postTargetScriptSetSha256: semanticHashV1('evidence-content', {
       targetIndex: resolved.targetIndex,

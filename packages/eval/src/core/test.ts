@@ -8,10 +8,12 @@ import { join } from 'node:path'
 import type { ProjectIR } from '@scratch-agent/ir'
 import {
   ModelChecker,
+  MODEL_EVALUATION_UNSUPPORTED_CODE_V1,
   type LoadedModels,
   type ModelRunResult,
 } from '@scratch-agent/model'
 import type {
+  DiagnosticVideoRef,
   RunIssue,
   Scenario,
   ScreenshotRef,
@@ -19,7 +21,9 @@ import type {
 } from '@scratch-agent/runner'
 import {
   createRunIssue,
+  deriveDiagnosticVideoFromScreenshots,
   RUN_ISSUE_CODES,
+  isRunnerIssueError,
   runBrowserScenario,
   runIssueMessages,
   runScenario,
@@ -53,8 +57,8 @@ export interface TestResult
   asserts: AssertResult[]
   visual: AssertResult[]
   screenshots: ScreenshotRef[]
-  // kept only when the test failed (recorded runs of passing tests are discarded)
-  video: string | null
+  // present only on failure; derived from captured PNGs, never authoritative evidence
+  diagnosticVideo: DiagnosticVideoRef | null
   // model-run result when the case carries models, else null
   model: ModelRunResult | null
   issues: LaneRunIssue[]
@@ -73,9 +77,6 @@ export interface RunOptions
   artifactBytes?: Uint8Array
   // root dir for browser screenshot artifacts; each test gets a sub-directory
   artifactDir?: string
-  // record a run video (kept on failure, discarded on pass); default true. recording holds real
-  // time per snapshot, so callers that never inspect the video can opt out to skip that cost
-  recordVideo?: boolean
 }
 
 // a filesystem-safe, collision-resistant per-test dir name (slug + a stable hash of the name)
@@ -90,22 +91,48 @@ function safeName(name: string): string
   return `${slug}-${h.toString(36)}`
 }
 
+function failedTestResult(name: string, issue: RunIssue): TestResult
+{
+  return {
+    name,
+    ok: false,
+    runtime: 'not-started',
+    snapshots: [],
+    asserts: [],
+    visual: [],
+    screenshots: [],
+    diagnosticVideo: null,
+    model: null,
+    issues: [{ lane: 'vm', issue }],
+    errors: runIssueMessages([issue]),
+  }
+}
+
 export async function runTest(
   tc: TestCase,
   options: RunOptions = {}
 ): Promise<TestResult>
 {
-  const sb3 = options.artifactBytes ?? (await tc.project.toSb3())
   // a model rides the same vm run as the asserts: one pass drives both oracles
-  const checker = tc.model
-    ? new ModelChecker(
-        {
-          programModels: tc.model.programModels,
-          endModels: tc.model.endModels,
-        },
-        { seed: tc.scenario.seed }
-      )
-    : undefined
+  let checker: ModelChecker | undefined
+  try
+  {
+    checker = tc.model
+      ? new ModelChecker(tc.model, { seed: tc.scenario.seed })
+      : undefined
+  }
+  catch (error)
+  {
+    if (
+      !isRunnerIssueError(error) ||
+      error.issue.code !== MODEL_EVALUATION_UNSUPPORTED_CODE_V1
+    )
+    {
+      throw error
+    }
+    return failedTestResult(tc.name, error.issue)
+  }
+  const sb3 = options.artifactBytes ?? (await tc.project.toSb3())
   const trace = await runScenario(sb3, tc.scenario, { observer: checker })
   const asserts = trace.issues.length === 0 ? evaluate(trace, tc.asserts) : []
   const model = checker ? checker.results() : null
@@ -116,23 +143,23 @@ export async function runTest(
 
   let visual: AssertResult[] = []
   let screenshots: ScreenshotRef[] = []
-  let video: string | null = null
+  let diagnosticVideo: DiagnosticVideoRef | null = null
   let runtime = trace.runtime
   const vmStopsEvaluation = trace.issues.some(
     (issue) => issue.responsibility !== 'project'
   )
   // a caller-supplied artifactDir persists; an omitted one gets an ephemeral temp dir we own
   let ephemeralDir: string | null = null
+  let browserArtifactDir: string | null = null
 
   if (tc.visual && tc.visual.length > 0 && !vmStopsEvaluation)
   {
     const dir = options.artifactDir
       ? join(options.artifactDir, safeName(tc.name))
       : (ephemeralDir = mkdtempSync(join(tmpdir(), 'vistest-')))
-    const recordVideo = options.recordVideo ?? true
+    browserArtifactDir = dir
     const bt = await runBrowserScenario(sb3, tc.scenario, {
       screenshotDir: dir,
-      videoDir: recordVideo ? dir : undefined,
       allowNetwork: tc.scenario.allowNetwork,
       allowedOrigins: tc.scenario.allowedOrigins,
     })
@@ -163,7 +190,7 @@ export async function runTest(
         ? evaluate(bt, tc.visual)
         : []
     screenshots = bt.screenshots
-    video = bt.video
+    diagnosticVideo = bt.diagnosticVideo
     runtime = `${trace.runtime} + ${bt.runtime}`
     issues.push(
       ...bt.issues.map((issue) => ({ lane: 'browser' as const, issue }))
@@ -176,9 +203,16 @@ export async function runTest(
     asserts.every((a) => a.ok) &&
     visual.every((a) => a.ok) &&
     modelOk
+  if (!ok && !diagnosticVideo && browserArtifactDir)
+  {
+    diagnosticVideo = await deriveDiagnosticVideoFromScreenshots(
+      browserArtifactDir,
+      screenshots
+    )
+  }
   if (ok && ephemeralDir)
   {
-    // artifacts are kept only on failure; a passing opt-out run discards its temp dir entirely
+    // artifacts are kept only on failure; a passing run discards its temp dir entirely
     try
     {
       rmSync(ephemeralDir, { recursive: true, force: true })
@@ -188,20 +222,7 @@ export async function runTest(
       // a leftover temp dir is harmless; never fail the test on cleanup
     }
     screenshots = []
-    video = null
-  }
-  else if (ok && video)
-  {
-    // artifactDir caller: keep the screenshots they own, but still discard a passing video
-    try
-    {
-      rmSync(video, { force: true })
-    }
-    catch
-    {
-      // a leftover video file is harmless; never fail the test on cleanup
-    }
-    video = null
+    diagnosticVideo = null
   }
   return {
     name: tc.name,
@@ -211,7 +232,7 @@ export async function runTest(
     asserts,
     visual,
     screenshots,
-    video,
+    diagnosticVideo,
     model,
     issues,
     errors: runIssueMessages(issues.map((tagged) => tagged.issue)),

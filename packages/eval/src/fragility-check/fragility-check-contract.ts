@@ -5,12 +5,14 @@ import type { RunVersions } from '@scratch-agent/runner'
 import type {
   FragilityFinding,
   FragilitySignatureCoverage,
+  FragilityBudgetEvidenceV1,
 } from '@scratch-agent/static'
 
 export const FRAGILITY_CHECK_ISSUE_CODES = {
   inputReadFailed: 'FRAGILITY_CHECK_INPUT_READ_FAILED',
   admissionFailed: 'FRAGILITY_CHECK_ADMISSION_FAILED',
   analysisFailed: 'FRAGILITY_CHECK_ANALYSIS_FAILED',
+  analysisBudgetExhausted: 'FRAGILITY_CHECK_ANALYSIS_BUDGET_EXCEEDED',
   internalFailed: 'FRAGILITY_CHECK_INTERNAL_FAILED',
 } as const
 
@@ -60,6 +62,10 @@ export interface FragilityCheckReport
     corroboratedBy: {
       probeScriptSha256: string
     }
+  }
+  analysis: {
+    completion: 'not-started' | 'complete' | 'incomplete'
+    budget: FragilityBudgetEvidenceV1
   }
   findings: FragilityFinding[]
   advisories: FragilityFinding[]

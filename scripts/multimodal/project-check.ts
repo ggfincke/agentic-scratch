@@ -431,8 +431,7 @@ async function main(): Promise<void>
 
   const issues: string[] = []
   const projectCheckRoot = join(runRoot, 'project-check')
-  let projectCheckStatus: MultimodalProjectCheckReportV2['projectCheck']['status'] =
-    'not-run'
+  let projectCheckStatus: MultimodalProjectCheckReportV2['projectCheck']['status']
   let projectCheckInputIdentityMatched = false
   let projectCheckJson: string | null = null
   let projectCheckMarkdown: string | null = null
@@ -560,8 +559,7 @@ async function main(): Promise<void>
   let authoritativeAgentExecution = false
   let agentBindingMatched = false
   let sourceBindingMatched = false
-  let expectedAgentDescriptor:
-    MultimodalAgentRecordReportV3['provider'] | null = null
+  let expectedAgentDescriptor: MultimodalAgentRecordReportV3['provider'] | null
   let selectedJudgmentPresent = false
   let artifactBindingMatched = false
   let rubricBindingMatched = false

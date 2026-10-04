@@ -865,7 +865,6 @@ test('Multimodal provider, localization, and opt-in repair boundaries fail close
     repairCase: ordinary.repairCase,
     artifactRoot: join(root, 'ordinary'),
     sessionId: 'ordinary-r1',
-    recordVideo: false,
   })
   const ordinaryRequest = ordinarySession.nextRequest()
   assert.ok('requestId' in ordinaryRequest)
@@ -881,7 +880,6 @@ test('Multimodal provider, localization, and opt-in repair boundaries fail close
     repairCase: blocked.repairCase,
     artifactRoot: join(root, 'blocked'),
     sessionId: 'multimodal-blocked',
-    recordVideo: false,
     multimodalEvaluator: repairEvaluator(
       blocked.repairCase.tests[0]!.scenario,
       'inconclusive',
@@ -916,7 +914,6 @@ test('Multimodal provider, localization, and opt-in repair boundaries fail close
     repairCase: passing.repairCase,
     artifactRoot: join(root, 'passing'),
     sessionId: 'multimodal-passing',
-    recordVideo: false,
     multimodalEvaluator: repairEvaluator(
       passing.repairCase.tests[0]!.scenario,
       'pass',

@@ -29,6 +29,7 @@ import {
   ProjectScenarioError,
   inspectSemanticEditArtifact,
   inspectSelectedProject,
+  inspectSelectedProjectFromAdmittedSb3,
   parseProjectScenario,
   runProjectCheckScenario,
   type ParsedProjectScenario,
@@ -37,7 +38,13 @@ import {
   type SemanticEditArtifactPreflight,
   type SelectedProjectInspection,
 } from '@scratch-agent/eval'
-import type { BrowserTrace, RunIssue, VmTrace } from '@scratch-agent/runner'
+import {
+  deriveDiagnosticVideoFromScreenshots,
+  type BrowserTrace,
+  type DiagnosticVideoRef,
+  type RunIssue,
+  type VmTrace,
+} from '@scratch-agent/runner'
 
 import { McpBoundaryError } from '../transport/errors.js'
 import {
@@ -546,10 +553,16 @@ export class ProjectSessionRegistry
             publicationClaim
           )
         : readSelectedInput(this.paths, inputPath)
-      const inspection = await inspectSelectedProject(selected.bytes)
       const editSourceAssessment = await inspectSemanticEditArtifact(
         selected.bytes
       )
+      const inspection =
+        editSourceAssessment.admission === null
+          ? await inspectSelectedProject(selected.bytes)
+          : await inspectSelectedProjectFromAdmittedSb3(
+              selected.bytes,
+              editSourceAssessment.admission.archive
+            )
       if (
         inspection.input.sha256 !== null &&
         inspection.input.sha256 !== selected.sha256
@@ -1070,6 +1083,7 @@ export class ProjectSessionRegistry
       let browser: ProjectLaneSummary | null = null
       let vmTracePath: string | null = null
       let browserTracePath: string | null = null
+      const expectedSnapshots = scenario.summary.snapshotCount
       const beforeArtifacts = new Set(
         record.store.references().map((artifact) => artifact.id)
       )
@@ -1086,6 +1100,18 @@ export class ProjectSessionRegistry
       }
       if (executed.browser)
       {
+        const complete =
+          executed.browser.ok &&
+          executed.browser.snapshots.length === expectedSnapshots &&
+          executed.browser.screenshots.length === expectedSnapshots
+        if (!complete && !executed.browser.diagnosticVideo)
+        {
+          executed.browser.diagnosticVideo =
+            await deriveDiagnosticVideoFromScreenshots(
+              record.store.absolutePath(`${runBase}/browser/screenshots`),
+              executed.browser.screenshots
+            )
+        }
         const screenshotViews: ProjectArtifactView[] = []
         const screenshotPaths: string[] = []
         for (const screenshot of executed.browser.screenshots)
@@ -1100,6 +1126,22 @@ export class ProjectSessionRegistry
           screenshotPaths.push(path)
           screenshotViews.push(this.artifactView(record, ref))
         }
+        let retainedDiagnosticVideo: DiagnosticVideoRef | null = null
+        if (executed.browser.diagnosticVideo)
+        {
+          const path = `${runBase}/browser/screenshots/${executed.browser.diagnosticVideo.relativePath}`
+          const ref = record.store.writeBytes(
+            path,
+            'browser-diagnostic-video',
+            'video/webm',
+            readFileSync(record.store.absolutePath(path))
+          )
+          retainedDiagnosticVideo = {
+            relativePath: ref.path,
+            sha256: ref.sha256,
+            byteLength: ref.byteLength,
+          }
+        }
         browser = browserSummary(executed.browser, screenshotViews)
         browserTracePath = `${runBase}/browser/trace.json`
         record.store.writeJson(browserTracePath, 'browser-trace', {
@@ -1110,7 +1152,7 @@ export class ProjectSessionRegistry
               path: screenshotPaths[index],
             })
           ),
-          video: null,
+          diagnosticVideo: retainedDiagnosticVideo,
         })
         record.store.writeText(
           `${runBase}/browser/console.log`,
@@ -1125,7 +1167,6 @@ export class ProjectSessionRegistry
           executed.browser.consoleSummary
         )
       }
-      const expectedSnapshots = scenario.summary.snapshotCount
       const status =
         (vm === null || (vm.ok && vm.snapshotCount === expectedSnapshots)) &&
         (browser === null ||
@@ -1159,10 +1200,7 @@ export class ProjectSessionRegistry
           ...publicRun(runRecord),
           sessionId: record.sessionId,
           input: { sha256: record.sha256, byteLength: record.byteLength },
-          artifacts: this.artifactViews(
-            record,
-            new Set(runRecord.artifactIds)
-          ),
+          artifacts: this.artifactViews(record, new Set(runRecord.artifactIds)),
         }
       )
       runRecord.artifactIds.push(runArtifact.id)

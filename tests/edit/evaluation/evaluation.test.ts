@@ -50,13 +50,19 @@ import { ProductionTransactionExecutorV1, TargetProductionOperationDispatcherV1,
 import { buildSourceLineageV1 } from '../../../packages/edit/src/lineage/lineage.js'
 import { verifyEditSessionReplayV1 } from '../../../packages/edit/src/replay/replay.js'
 import { EditSessionErrorV1, createEditSessionRegistryForExecutorV1, type EditInspectDomainItemV1, type EditSessionV1 } from '../../../packages/edit/src/session/session.js'
-import type { EditArtifactStorePort, EditClockPort, EditEntropyPort, HostInvocationContextV1 } from '../../../packages/edit/src/transaction/ports.js'
+import type {
+  EditArtifactStorePort,
+  EditClockPort,
+  HostInvocationContextV1,
+} from '../../../packages/edit/src/transaction/ports.js'
 import type { EditDeterministicEvaluationExecutionV1, EditDeterministicEvaluationPort, EditDeterministicEvaluationRequestV1, EditExternalEvidenceNotificationV1, EditStagedExternalEvidenceRecordV1 } from '../../../packages/edit/src/evaluation/evaluation-ports.js'
 import { assertExternalEvidenceDeadlineV1, editStagedExternalEvidenceResultSha256V1, EXTERNAL_EVIDENCE_DEADLINE_MAXIMUM_MS, evaluationProvenanceChainSha256V1 } from '../../../packages/edit/src/evaluation/evaluation-ports.js'
 import { createEditArtifactStoreHostAdapter } from '../../../packages/eval/src/artifacts/durable-artifacts.js'
 import {
   HOST_DEFAULT_LIMITS,
   HOST_HARD_LIMITS,
+  deterministicClock,
+  deterministicEntropy,
   expectedHeadRequest,
   planningHead,
   unchangedTargetCorrespondence,
@@ -74,27 +80,6 @@ function tempRoot(t: test.TestContext): string
   const root = mkdtempSync(join(tmpdir(), 'phase-8-group-g-evaluation-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   return join(root, 'store')
-}
-
-function deterministicClock(start: number): EditClockPort
-{
-  let now = start
-  return { nowEpochMs: () => ++now }
-}
-
-function deterministicEntropy(seed: number): EditEntropyPort
-{
-  let sequence = seed
-  return {
-    randomBytes(byteLength: number): Uint8Array
-    {
-      const bytes = new Uint8Array(byteLength)
-      for (let index = 0; index < byteLength; index++)
-        bytes[index] = (sequence + index * 31) & 0xff
-      sequence += byteLength + 11
-      return bytes
-    },
-  }
 }
 
 function invocation(sequence: number): HostInvocationContextV1

@@ -3,6 +3,8 @@
 
 import { join } from 'node:path'
 
+import { retainedEditSemanticAuthorityV1, editSemanticAuthorityBindingV1 } from '../authority/semantic-authority.js'
+
 import {
   parseEditToolInputV1,
   semanticHashV1,
@@ -1147,6 +1149,7 @@ async function rederiveRetainedPreviewV1(input: {
     )
   }
   const transaction = await new ProductionTransactionExecutorV1().execute({
+    ...editSemanticAuthorityBindingV1(retainedEditSemanticAuthorityV1(manifest).semanticAuthorityId),
     sessionId: input.sessionId,
     sourceBytes: await input.store.readImmutable(layout.sourceInput),
     currentBytes: await input.store.readImmutable(current.candidateKey),

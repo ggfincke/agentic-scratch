@@ -441,7 +441,8 @@ async function reserveCapacity(
           {
             throw new AggregateError(
               [error, rollbackError],
-              'VLM replay capacity reservation and rollback both failed'
+              'VLM replay capacity reservation and rollback both failed',
+              { cause: rollbackError }
             )
           }
           throw error
@@ -456,7 +457,9 @@ async function reserveCapacity(
           MAX_SLOT_FILE_BYTES
         )
         if (Buffer.from(existing).equals(marker))
-          throw new Error(`VLM replay key already has a reservation: ${key}`)
+          throw new Error(`VLM replay key already has a reservation: ${key}`, {
+            cause: error,
+          })
       }
     }
     throw new Error(
@@ -595,7 +598,8 @@ export class FileVlmReplayStore implements VlmReplayStore
         {
           throw new AggregateError(
             [error, inspectionError],
-            'VLM replay write failed and record state could not be inspected'
+            'VLM replay write failed and record state could not be inspected',
+            { cause: inspectionError }
           )
         }
       }
@@ -608,7 +612,8 @@ export class FileVlmReplayStore implements VlmReplayStore
         {
           throw new AggregateError(
             [error, rollbackError],
-            'VLM replay write and capacity rollback both failed'
+            'VLM replay write and capacity rollback both failed',
+            { cause: rollbackError }
           )
         }
       throw error

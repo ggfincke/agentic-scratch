@@ -3,9 +3,14 @@
 
 import { createHash } from 'node:crypto'
 import type { Readable, Writable } from 'node:stream'
+import {
+  clearTimeout as clearShutdownTimer,
+  setTimeout as scheduleShutdownTimer,
+} from 'node:timers'
 
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import {
+  CancelledNotificationSchema,
   JSONRPCMessageSchema,
   type JSONRPCMessage,
   type RequestId,
@@ -862,7 +867,23 @@ export interface BoundedStdioServerTransportOptionsV1
   readonly onRefusal?: (refusal: JsonlBoundaryRefusalV1) => void
   readonly onTerminal?: (terminal: JsonlTransportTerminalV1) => void
   readonly onAcceptedMessage?: (message: JSONRPCMessage) => void
+  readonly onRequestAdmission?: (
+    frame: JsonlFrameAcceptanceV1
+  ) => Promise<JsonlRequestAdmissionV1>
+  readonly admissionDrainDeadlineUnixMs?: number
+  readonly eofDrainTimeoutMs?: number
 }
+
+export interface JsonlRequestAdmissionV1
+{
+  readonly admitted: boolean
+  readonly closed: boolean
+  readonly code?: string
+  readonly complete?: (outcome: unknown) => Promise<void>
+  readonly cancelWithoutHandler?: boolean
+}
+
+export const JSONL_SHUTDOWN_DRAIN_TIMEOUT_MS_V1 = 2000
 
 export type JsonlTransportTerminalReasonV1 =
   | 'stdin-end'
@@ -874,11 +895,19 @@ export type JsonlTransportTerminalReasonV1 =
   | 'request-admission-failed'
   | 'outbound-admission-failed'
   | 'explicit-close'
+  | 'audit-failure'
+  | 'native-budget'
+  | 'interrupt'
 
 export interface JsonlTransportTerminalV1
 {
   readonly reason: JsonlTransportTerminalReasonV1
   readonly errorCode: string | null
+  readonly drainTimedOut: boolean
+  readonly pendingResponseCount: number
+  readonly pendingWriteCount: number
+  readonly queuedOutboundFrames: number
+  readonly queuedOutboundBytes: number
 }
 
 interface PendingJsonRpcResponseV1
@@ -889,6 +918,11 @@ interface PendingJsonRpcResponseV1
   readonly promise: Promise<void>
   readonly resolve: () => void
   readonly reject: (error: Error) => void
+  readonly complete?: (outcome: unknown) => Promise<void>
+  readonly cancelWithoutHandler: boolean
+  handlerSettled: boolean
+  cancelled: boolean
+  responding: boolean
 }
 
 function inboundRequestIdV1(message: JSONRPCMessage): RequestId | null
@@ -922,23 +956,32 @@ export class BoundedStdioServerTransportV1 implements Transport
   readonly #onRefusal: ((refusal: JsonlBoundaryRefusalV1) => void) | null
   readonly #onTerminal: ((terminal: JsonlTransportTerminalV1) => void) | null
   readonly #onAcceptedMessage: ((message: JSONRPCMessage) => void) | null
+  readonly #onRequestAdmission: BoundedStdioServerTransportOptionsV1['onRequestAdmission']
+  readonly #admissionDrainDeadlineUnixMs: number | undefined
+  readonly #eofDrainTimeoutMs: number
   readonly #pendingResponses: PendingJsonRpcResponseV1[] = []
   readonly #liveRequestIds = new Set<RequestId>()
   readonly #activeWriteRejectors = new Set<(error: Error) => void>()
   #started = false
   #terminal = false
   #inputEnded = false
+  #inputEndReason: JsonlTransportTerminalReasonV1 = 'stdin-end'
+  #drainTimer: ReturnType<typeof scheduleShutdownTimer> | null = null
+  #drainDeadlineUnixMs: number | null = null
+  #nativeStopRequested = false
+  #drainTimedOut = false
   #pendingWrites = 0
   #queuedOutboundFrames = 0
   #queuedOutboundBytes = 0
   #responseFlush: Promise<void> | null = null
+  #draining = false
   #writeTail = Promise.resolve()
 
   readonly #ondata = (chunk: Buffer): void =>
   {
-    if (this.#terminal) return
+    if (this.#terminal || this.#inputEnded) return
     this.#buffer.append(chunk)
-    this.#drain()
+    void this.#drain()
   }
 
   readonly #onstreamerror = (error: Error): void =>
@@ -949,11 +992,7 @@ export class BoundedStdioServerTransportV1 implements Transport
 
   readonly #onstdinend = (): void =>
   {
-    this.#buffer.finish()
-    this.#drain()
-    if (this.#terminal) return
-    this.#inputEnded = true
-    this.#finishGracefulEnd()
+    this.stopIntakeAndDrainV1('stdin-end')
   }
 
   readonly #onstdinclose = (): void =>
@@ -981,6 +1020,19 @@ export class BoundedStdioServerTransportV1 implements Transport
     this.#onRefusal = options.onRefusal ?? null
     this.#onTerminal = options.onTerminal ?? null
     this.#onAcceptedMessage = options.onAcceptedMessage ?? null
+    this.#onRequestAdmission = options.onRequestAdmission
+    this.#admissionDrainDeadlineUnixMs = options.admissionDrainDeadlineUnixMs
+    this.#eofDrainTimeoutMs =
+      options.eofDrainTimeoutMs ?? JSONL_SHUTDOWN_DRAIN_TIMEOUT_MS_V1
+    if (
+      !Number.isSafeInteger(this.#eofDrainTimeoutMs) ||
+      this.#eofDrainTimeoutMs < 1 ||
+      this.#eofDrainTimeoutMs > JSONL_SHUTDOWN_DRAIN_TIMEOUT_MS_V1
+    )
+      throw new McpBoundaryError(
+        'mcp.transport-limit-invalid',
+        'jsonl shutdown drain may only lower its 2000 ms deadline'
+      )
   }
 
   get limits(): JsonlBoundaryLimitsV1
@@ -1033,10 +1085,26 @@ export class BoundedStdioServerTransportV1 implements Transport
     {
       const pending = this.#pendingResponses.find(
         (candidate) =>
-          candidate.requestId === responseId && candidate.frame === null
+          candidate.requestId === responseId &&
+          candidate.frame === null &&
+          !candidate.responding
       )
       if (pending !== undefined)
       {
+        pending.responding = true
+        try
+        {
+          if (pending.complete) await pending.complete(message)
+        }
+        catch (error)
+        {
+          releaseOutbound()
+          const failure =
+            error instanceof Error ? error : new Error(String(error))
+          this.#notifyError(failure)
+          this.#terminate('request-admission-failed', failure)
+          throw failure
+        }
         pending.frame = frame
         pending.releaseOutbound = releaseOutbound
         this.#flushResponses()
@@ -1156,128 +1224,350 @@ export class BoundedStdioServerTransportV1 implements Transport
     this.#terminate('explicit-close')
   }
 
+  async retireCancelledRequestV1(requestId: RequestId): Promise<void>
+  {
+    const pending = this.#pendingResponses.find(
+      (entry) => entry.requestId === requestId
+    )
+    if (!pending?.complete || pending.responding) return
+    pending.responding = true
+    try
+    {
+      await pending.complete({ kind: 'cancelled', requestId })
+      const index = this.#pendingResponses.indexOf(pending)
+      if (index !== -1) this.#pendingResponses.splice(index, 1)
+      this.#liveRequestIds.delete(requestId)
+      pending.resolve()
+      this.#flushResponses()
+      this.#finishGracefulEnd()
+    }
+    catch (error)
+    {
+      const failure = error instanceof Error ? error : new Error(String(error))
+      this.#notifyError(failure)
+      this.#terminate('request-admission-failed', failure)
+      throw failure
+    }
+  }
+
+  async settleAdmittedHandlerV1(
+    requestId: RequestId,
+    cancelled: boolean
+  ): Promise<void>
+  {
+    const pending = this.#pendingResponses.find(
+      (entry) => entry.requestId === requestId
+    )
+    if (!pending?.complete) return
+    pending.handlerSettled = true
+    if (cancelled || pending.cancelled)
+      await this.retireCancelledRequestV1(requestId)
+  }
+
+  stopIntakeAndDrainV1(
+    reason: 'stdin-end' | 'audit-failure' | 'interrupt'
+  ): void
+  {
+    if (this.#terminal) return
+    if (reason === 'interrupt')
+    {
+      this.#terminate(reason)
+      return
+    }
+    if (this.#inputEnded) return
+    this.#inputEnded = true
+    this.#inputEndReason = reason
+    this.#stdin.off('data', this.#ondata)
+    this.#stdin.pause()
+    if (reason === 'stdin-end')
+    {
+      this.#buffer.finish()
+      void this.#drain()
+    }
+    else this.#buffer.clear()
+    if (this.#terminal) return
+    this.#drainDeadlineUnixMs = Date.now() + this.#eofDrainTimeoutMs
+    this.#drainTimer = scheduleShutdownTimer(() =>
+    {
+      this.#drainTimedOut = true
+      this.#terminate(this.#inputEndReason)
+    }, this.#eofDrainTimeoutMs)
+    this.#finishGracefulEnd()
+  }
+
+  stopNativeIntakeAndDrainV1(
+    deadlineUnixMs: number,
+    refuseUnclaimed = false
+  ): void
+  {
+    if (this.#terminal) return
+    if (!Number.isSafeInteger(deadlineUnixMs))
+      throw new TypeError('native admission drain deadline is invalid')
+    this.#nativeStopRequested ||= refuseUnclaimed
+    this.#drainDeadlineUnixMs = Math.min(
+      this.#drainDeadlineUnixMs ?? deadlineUnixMs,
+      deadlineUnixMs
+    )
+    if (!this.#inputEnded)
+    {
+      this.#inputEnded = true
+      this.#inputEndReason = 'native-budget'
+      this.#stdin.off('data', this.#ondata)
+      this.#stdin.pause()
+      // queued chunks remain observable attempts when the final slot closes
+      for (;;)
+      {
+        const chunk = this.#stdin.read() as Buffer | string | null
+        if (chunk === null) break
+        this.#buffer.append(
+          typeof chunk === 'string' ? Buffer.from(chunk) : chunk
+        )
+      }
+      this.#buffer.finish()
+      void this.#drain()
+    }
+    if (this.#drainTimer !== null) clearShutdownTimer(this.#drainTimer)
+    this.#drainTimer = scheduleShutdownTimer(
+      () =>
+      {
+        this.#drainTimedOut = true
+        this.#terminate(this.#inputEndReason)
+      },
+      Math.max(0, this.#drainDeadlineUnixMs - Date.now())
+    )
+    this.#finishGracefulEnd()
+  }
+
   // a refused frame is reported & skipped rather than closing the stream: the
   // reader has already resynchronized at the next newline, so a hostile frame
   // cannot deny service to the frames after it
-  #drain(): void
+  async #drain(): Promise<void>
   {
-    for (;;)
+    if (this.#draining || this.#terminal) return
+    this.#draining = true
+    try
     {
-      const outcome = this.#buffer.read()
-      if (outcome === null) return
-      if (!outcome.ok)
+      for (;;)
       {
+        const outcome = this.#buffer.read()
+        if (outcome === null) return
+        if (!outcome.ok)
+        {
+          try
+          {
+            this.#onRefusal?.(outcome)
+          }
+          catch (error)
+          {
+            const failure =
+              error instanceof Error ? error : new Error(String(error))
+            this.#notifyError(failure)
+            this.#terminate('boundary-refusal-failed', failure)
+            return
+          }
+          const failure = new JsonlBoundaryError(
+            outcome.code,
+            outcome.detail,
+            outcome
+          )
+          this.#notifyError(failure)
+          if (
+            outcome.code === 'mcp.frame-admission-queue-exceeded' ||
+            outcome.code === 'mcp.frame-inflight-exceeded'
+          )
+          {
+            this.#terminate('request-admission-failed', failure)
+            return
+          }
+          continue
+        }
+        let admission: JsonlRequestAdmissionV1 | undefined
+        if (this.#onRequestAdmission)
+        {
+          const alreadyStopped =
+            this.#inputEnded && this.#inputEndReason === 'native-budget'
+          try
+          {
+            admission = await this.#onRequestAdmission(outcome)
+          }
+          catch (error)
+          {
+            this.#notifyError(
+              error instanceof Error ? error : new Error(String(error))
+            )
+            admission = {
+              admitted: false,
+              closed: true,
+              code: 'mcp.native-budget.unavailable',
+            }
+          }
+          if (this.#terminal) return
+          if (
+            admission.admitted &&
+            outcome.value.method === 'tools/call' &&
+            (alreadyStopped || this.#nativeStopRequested)
+          )
+            admission = {
+              ...admission,
+              admitted: false,
+              closed: true,
+              code: 'mcp.native-budget.closed',
+            }
+          if (admission.closed)
+            this.stopNativeIntakeAndDrainV1(
+              this.#admissionDrainDeadlineUnixMs ?? Date.now() + 2000
+            )
+        }
+        let message: JSONRPCMessage
         try
         {
-          this.#onRefusal?.(outcome)
+          message = JSONRPCMessageSchema.parse(outcome.value)
+        }
+        catch
+        {
+          const refusal: JsonlFrameRefusalV1 = Object.freeze({
+            ok: false,
+            code: 'mcp.frame-invalid-json-rpc',
+            detail: REFUSAL_DETAILS['mcp.frame-invalid-json-rpc'],
+            offset: null,
+            metadata: outcome.metadata,
+          })
+          await admission?.complete?.({
+            kind: 'boundary-refusal',
+            code: refusal.code,
+          })
+          try
+          {
+            this.#onRefusal?.(refusal)
+          }
+          catch (error)
+          {
+            const failure =
+              error instanceof Error ? error : new Error(String(error))
+            this.#notifyError(failure)
+            this.#terminate('boundary-refusal-failed', failure)
+            return
+          }
+          this.#notifyError(
+            new JsonlBoundaryError(refusal.code, refusal.detail, refusal)
+          )
+          continue
+        }
+        const requestId = inboundRequestIdV1(message)
+        if (requestId !== null)
+        {
+          if (
+            this.#liveRequestIds.size >= MAXIMUM_INFLIGHT_JSON_RPC_REQUESTS_V1
+          )
+          {
+            await admission?.complete?.({
+              kind: 'boundary-refusal',
+              code: 'mcp.frame-inflight-exceeded',
+            })
+            this.#refuseAcceptedFrame(
+              'mcp.frame-inflight-exceeded',
+              outcome.metadata
+            )
+            return
+          }
+          if (this.#liveRequestIds.has(requestId))
+          {
+            await admission?.complete?.({
+              kind: 'boundary-refusal',
+              code: 'mcp.frame-request-id-conflict',
+            })
+            this.#refuseAcceptedFrame(
+              'mcp.frame-request-id-conflict',
+              outcome.metadata
+            )
+            return
+          }
+          let resolve!: () => void
+          let reject!: (error: Error) => void
+          const promise = new Promise<void>((onResolve, onReject) =>
+          {
+            resolve = onResolve
+            reject = onReject
+          })
+          void promise.catch(() => undefined)
+          this.#liveRequestIds.add(requestId)
+          this.#pendingResponses.push({
+            requestId,
+            frame: null,
+            releaseOutbound: null,
+            promise,
+            resolve,
+            reject,
+            complete: admission?.complete,
+            cancelWithoutHandler: admission?.cancelWithoutHandler ?? false,
+            handlerSettled: false,
+            cancelled: false,
+            responding: false,
+          })
+        }
+        else if (admission?.complete)
+        {
+          await admission.complete({
+            kind: 'boundary-refusal',
+            code: 'mcp.native-budget.request-id-required',
+          })
+          continue
+        }
+        if (admission?.admitted === false)
+        {
+          if (requestId !== null)
+            void this.send({
+              jsonrpc: '2.0',
+              id: requestId,
+              error: {
+                code: -32000,
+                message: admission.code ?? 'native admission refused',
+              },
+            }).catch(() => undefined)
+          continue
+        }
+        try
+        {
+          this.#onAcceptedMessage?.(message)
+          this.onmessage?.(message)
+          if (this.#onRequestAdmission)
+          {
+            const cancellation = CancelledNotificationSchema.safeParse(message)
+            if (cancellation.success)
+            {
+              const pending = this.#pendingResponses.find(
+                (entry) =>
+                  entry.requestId === cancellation.data.params.requestId
+              )
+              if (pending)
+              {
+                pending.cancelled = true
+                if (pending.cancelWithoutHandler || pending.handlerSettled)
+                  await this.retireCancelledRequestV1(pending.requestId)
+              }
+            }
+          }
         }
         catch (error)
         {
           const failure =
             error instanceof Error ? error : new Error(String(error))
           this.#notifyError(failure)
-          this.#terminate('boundary-refusal-failed', failure)
-          return
-        }
-        const failure = new JsonlBoundaryError(
-          outcome.code,
-          outcome.detail,
-          outcome
-        )
-        this.#notifyError(failure)
-        if (
-          outcome.code === 'mcp.frame-admission-queue-exceeded' ||
-          outcome.code === 'mcp.frame-inflight-exceeded'
-        )
-        {
           this.#terminate('request-admission-failed', failure)
           return
         }
-        continue
       }
-      let message: JSONRPCMessage
-      try
-      {
-        message = JSONRPCMessageSchema.parse(outcome.value)
-      }
-      catch
-      {
-        const refusal: JsonlFrameRefusalV1 = Object.freeze({
-          ok: false,
-          code: 'mcp.frame-invalid-json-rpc',
-          detail: REFUSAL_DETAILS['mcp.frame-invalid-json-rpc'],
-          offset: null,
-          metadata: outcome.metadata,
-        })
-        try
-        {
-          this.#onRefusal?.(refusal)
-        }
-        catch (error)
-        {
-          const failure =
-            error instanceof Error ? error : new Error(String(error))
-          this.#notifyError(failure)
-          this.#terminate('boundary-refusal-failed', failure)
-          return
-        }
-        this.#notifyError(
-          new JsonlBoundaryError(refusal.code, refusal.detail, refusal)
-        )
-        continue
-      }
-      const requestId = inboundRequestIdV1(message)
-      if (requestId !== null)
-      {
-        if (
-          this.#liveRequestIds.size >= MAXIMUM_INFLIGHT_JSON_RPC_REQUESTS_V1
-        )
-        {
-          this.#refuseAcceptedFrame(
-            'mcp.frame-inflight-exceeded',
-            outcome.metadata
-          )
-          return
-        }
-        if (this.#liveRequestIds.has(requestId))
-        {
-          this.#refuseAcceptedFrame(
-            'mcp.frame-request-id-conflict',
-            outcome.metadata
-          )
-          return
-        }
-        let resolve!: () => void
-        let reject!: (error: Error) => void
-        const promise = new Promise<void>((onResolve, onReject) =>
-        {
-          resolve = onResolve
-          reject = onReject
-        })
-        void promise.catch(() => undefined)
-        this.#liveRequestIds.add(requestId)
-        this.#pendingResponses.push({
-          requestId,
-          frame: null,
-          releaseOutbound: null,
-          promise,
-          resolve,
-          reject,
-        })
-      }
-      try
-      {
-        this.#onAcceptedMessage?.(message)
-        this.onmessage?.(message)
-      }
-      catch (error)
-      {
-        const failure =
-          error instanceof Error ? error : new Error(String(error))
-        this.#notifyError(failure)
-        this.#terminate('request-admission-failed', failure)
-        return
-      }
+    }
+    catch (error)
+    {
+      const failure = error instanceof Error ? error : new Error(String(error))
+      this.#notifyError(failure)
+      this.#terminate('request-admission-failed', failure)
+    }
+    finally
+    {
+      this.#draining = false
+      this.#finishGracefulEnd()
     }
   }
 
@@ -1326,19 +1616,20 @@ export class BoundedStdioServerTransportV1 implements Transport
     })
   }
 
-  // normal EOF closes admission but lets every admitted request publish its
-  // ordered response before terminal audit evidence is installed
+  // preserve ordered responses while draining; the wall-clock deadline bounds
+  // a response or backpressured writer that cannot complete
   #finishGracefulEnd(): void
   {
     if (
       !this.#inputEnded ||
       this.#terminal ||
+      this.#draining ||
       this.#pendingResponses.length > 0 ||
       this.#pendingWrites > 0 ||
       this.#responseFlush !== null
     )
       return
-    this.#terminate('stdin-end')
+    this.#terminate(this.#inputEndReason)
   }
 
   #rejectPendingResponses(error: Error): void
@@ -1395,7 +1686,16 @@ export class BoundedStdioServerTransportV1 implements Transport
   #terminate(reason: JsonlTransportTerminalReasonV1, error?: Error): void
   {
     if (this.#terminal) return
+    const pendingResponseCount = this.#liveRequestIds.size
+    const pendingWriteCount = this.#pendingWrites
+    const queuedOutboundFrames = this.#queuedOutboundFrames
+    const queuedOutboundBytes = this.#queuedOutboundBytes
     this.#terminal = true
+    if (this.#drainTimer !== null)
+    {
+      clearShutdownTimer(this.#drainTimer)
+      this.#drainTimer = null
+    }
     this.#stdin.off('data', this.#ondata)
     this.#stdin.off('error', this.#onstreamerror)
     this.#stdin.off('end', this.#onstdinend)
@@ -1414,6 +1714,11 @@ export class BoundedStdioServerTransportV1 implements Transport
     this.#rejectPendingResponses(closeError)
     const terminal = Object.freeze({
       reason,
+      drainTimedOut: this.#drainTimedOut,
+      pendingResponseCount,
+      pendingWriteCount,
+      queuedOutboundFrames,
+      queuedOutboundBytes,
       errorCode:
         error instanceof McpBoundaryError
           ? error.code
