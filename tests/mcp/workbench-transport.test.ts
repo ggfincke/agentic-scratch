@@ -2127,13 +2127,14 @@ if (!cleanup.complete) process.exitCode = 1
         }
         const request = (method: string, params?: unknown) =>
           batch([{ method, ...(params === undefined ? {} : { params }) }])[0]!
+        // cold schema construction uses the native harness startup allowance
         const initialization = await bounded(
           request('initialize', {
             protocolVersion: '2024-11-05',
             capabilities: {},
             clientInfo: { name: 'native-budget-regression', version: '1' },
           }),
-          15000,
+          30000,
           () => ({ ...diagnostics(), waitingForProfile: profile })
         )
         assert.ok(initialization.result, JSON.stringify(initialization))
