@@ -39,7 +39,8 @@ jobs:
       - name: Check lint
         run: npm --ignore-scripts run lint
       - name: Run the full test suite including compressed audio
-        run: npm --ignore-scripts run test
+        # keep unrelated browser suites from starving bounded process lifecycle tests
+        run: npm --ignore-scripts run test -- --test-concurrency=1
       - name: Reconcile the pinned authoring catalog
         run: npm --ignore-scripts run authoring-catalog-check
       - name: Run deterministic repair acceptance
