@@ -479,7 +479,11 @@ function deferred<T>()
   return { promise, done }
 }
 
-async function bounded<T>(operation: Promise<T>, milliseconds = 18000)
+async function bounded<T>(
+  operation: Promise<T>,
+  milliseconds = 18000,
+  diagnostics?: () => unknown
+)
 {
   let timer: ReturnType<typeof setTimeout> | undefined
   try
@@ -490,7 +494,12 @@ async function bounded<T>(operation: Promise<T>, milliseconds = 18000)
       {
         timer = setTimeout(
           () =>
-            reject(new Error('workbench lifecycle exceeded its test deadline')),
+            reject(
+              new Error(
+                'workbench lifecycle exceeded its test deadline' +
+                  (diagnostics ? `: ${JSON.stringify(diagnostics())}` : '')
+              )
+            ),
           milliseconds
         )
       }),
@@ -1876,6 +1885,25 @@ test(
     {
       const selected = await fixture(t)
       const startedAtUnixMs = Date.now()
+      let phase = 'creating shared admission budget'
+      const childDiagnostics: Array<() => unknown> = []
+      const diagnostics = () => ({
+        queuedOverflow,
+        phase,
+        elapsedMs: Date.now() - startedAtUnixMs,
+        children: childDiagnostics.map((inspect) => inspect()),
+      })
+      const progress = (next: string) =>
+      {
+        phase = next
+        t.diagnostic(
+          JSON.stringify({
+            queuedOverflow,
+            phase,
+            elapsedMs: Date.now() - startedAtUnixMs,
+          })
+        )
+      }
       const budget = await createNativeAdmissionBudgetV1({
         root: join(selected.root, 'native-budget'),
         runId: 'synthetic_native_admission_run_v1',
@@ -1901,6 +1929,9 @@ import {
 } from ${JSON.stringify(import.meta.resolve('@scratch-agent/mcp'))}
 const profile = process.argv[2]
 const root = process.argv[3]
+const startedAt = Date.now()
+const progress = phase => process.stderr.write(JSON.stringify({ profile, phase, elapsedMs: Date.now() - startedAt, activeResources: process.getActiveResourcesInfo() }) + '\\n')
+progress('imports-ready')
 const authoring = profile === 'authoring-v1'
 const profileSha256 = authoring
   ? productionEditProfileAuthoritySha256V1(EDIT_STATEFUL_RESPONSE_PROJECTOR_VERSION_V1, 'standard-v2')
@@ -1913,32 +1944,39 @@ const host = {
     assert.match(id, /^(authoring|development)-[a-f0-9]{32}$/)
     await writeFile(join(root, 'effects', id), JSON.stringify({ name, id }), { flag: 'wx' })
     if (id.endsWith('c'.repeat(32))) {
+      progress('cancellation-call-entered')
       assert.ok(context?.signal, 'SDK cancellation signal must reach the host')
       if (!context.signal.aborted)
         await new Promise(resolve => context.signal.addEventListener('abort', resolve, { once: true }))
       await writeFile(join(root, 'completed', id), 'cancelled', { flag: 'wx' })
+      progress('cancellation-call-disposed')
       throw new Error('synthetic admitted request cancelled after disposal')
     }
     if (id.endsWith('f'.repeat(32))) {
+      progress('final-call-held')
       for (;;) {
         if (context?.signal?.aborted) throw new Error('admitted call was cancelled before release')
         try { await readFile(join(root, 'release')); break }
         catch (error) { if (error.code !== 'ENOENT') throw error }
         await delay(10)
       }
+      progress('final-call-released')
     }
     await writeFile(join(root, 'completed', id), 'complete', { flag: 'wx' })
     return { id, retained: true }
   },
   async closeAll() {
+    progress('owned-cleanup-started')
     const effects = await readdir(join(root, 'effects'))
     const completed = await readdir(join(root, 'completed'))
     const result = { complete: effects.length === completed.length, issues: [] }
     await writeFile(join(root, 'cleanup.json'), JSON.stringify({ ...result, effects, completed }))
+    progress('owned-cleanup-retained')
     return result
   }
 }
 const workbenchAudit = await WorkbenchCallAuditV1.create(join(root, 'audit'), profileSha256)
+progress('audit-ready')
 const options = {
   profile, workbenchAudit,
   nativeAdmissionBudget: await openNativeAdmissionBudgetV1({
@@ -1947,6 +1985,7 @@ const options = {
   }),
   ...(authoring ? { authoringHost: host } : { developmentHost: host })
 }
+progress('admission-budget-ready')
 if (authoring) {
   const principalSha256 = '1'.repeat(64)
   const storeRoot = join(root, 'edit-artifacts')
@@ -1980,18 +2019,23 @@ if (authoring) {
     keys: { activeKey: async () => material, verificationKey: async () => material }
   })
 }
+progress('edit-host-ready')
 const built = createScratchMcpServer({
   inputRoot: ${JSON.stringify(selected.sources)},
   outputRoot: join(root, 'output'), artifactRoot: join(root, 'artifacts')
 }, options)
+progress('server-created')
 let finish
 const terminal = new Promise(resolve => { finish = resolve })
 await connectScratchMcpStdioV1(built, { onTerminal: finish })
+progress('stdio-connected')
 const closed = await terminal
+progress('transport-terminal')
 const cleanup = await built.closeOwnedResourcesV1()
 await writeFile(join(root, 'terminal.json'), JSON.stringify({ closed, cleanup, auditDirectory: workbenchAudit.directory }))
 await built.server.close()
 process.stdin.destroy()
+progress('server-closed')
 if (!cleanup.complete) process.exitCode = 1
 `
       )
@@ -2010,6 +2054,17 @@ if (!cleanup.complete) process.exitCode = 1
         let serial = 0
         let stdout = ''
         let stderr = ''
+        childDiagnostics.push(() => ({
+          profile,
+          pid: child.pid,
+          exitCode: child.exitCode,
+          signalCode: child.signalCode,
+          killed: child.killed,
+          lastRequestId: serial,
+          pendingResponseIds: [...responses.keys()],
+          stderr: stderr.slice(-8192),
+          pendingStdout: stdout.slice(-2048),
+        }))
         child.stderr.on('data', (chunk: Buffer) =>
         {
           stderr += chunk.toString('utf8')
@@ -2078,9 +2133,13 @@ if (!cleanup.complete) process.exitCode = 1
             capabilities: {},
             clientInfo: { name: 'native-budget-regression', version: '1' },
           }),
-          15000
+          15000,
+          () => ({ ...diagnostics(), waitingForProfile: profile })
         )
         assert.ok(initialization.result, JSON.stringify(initialization))
+        t.diagnostic(
+          `${profile} initialized after ${Date.now() - startedAtUnixMs} ms`
+        )
         child.stdin.write(
           `${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`
         )
@@ -2095,6 +2154,7 @@ if (!cleanup.complete) process.exitCode = 1
           errors: () => stderr,
         }
       }
+      progress('initializing both MCP profiles')
       const [authoring, development] = await Promise.all([
         launch('authoring-v1'),
         launch('development-v1'),
@@ -2113,8 +2173,11 @@ if (!cleanup.complete) process.exitCode = 1
           }
           await delay(10)
         }
-        assert.fail(`bounded child evidence did not arrive: ${path}`)
+        assert.fail(
+          `bounded child evidence did not arrive: ${path}; ${JSON.stringify(diagnostics())}`
+        )
       }
+      progress('checking uncharged protocol and resource traffic')
       for (const server of [authoring, development])
         for (const method of ['ping', 'tools/list', 'resources/list'])
           assert.ok((await server.request(method)).result)
@@ -2145,6 +2208,7 @@ if (!cleanup.complete) process.exitCode = 1
         'tools/call',
         parameters(development, 'c'.repeat(32))
       )
+      progress('waiting for cancellation call entry')
       const cancelledRequestId = development.lastRequestId()
       await waitForFile(
         join(development.root, 'effects', `development-${'c'.repeat(32)}`)
@@ -2159,13 +2223,18 @@ if (!cleanup.complete) process.exitCode = 1
           },
         })}\n`
       )
+      progress('waiting for cancellation call disposal')
       await waitForFile(
         join(development.root, 'completed', `development-${'c'.repeat(32)}`)
       )
-      assert.ok((await bounded(development.request('ping'), 15000)).result)
+      progress('waiting for ping after cancellation')
+      assert.ok(
+        (await bounded(development.request('ping'), 15000, diagnostics)).result
+      )
       const cancelledBudget = await verifyNativeAdmissionBudgetV1(budget)
       assert.equal(cancelledBudget.admittedCount, 3)
       assert.equal(cancelledBudget.completedCount, 3)
+      progress('admitting calls four through sixty-two')
       for (let index = 0; index < 59; index++)
       {
         const server = index % 2 === 0 ? authoring : development
@@ -2183,6 +2252,7 @@ if (!cleanup.complete) process.exitCode = 1
         (await verifyNativeAdmissionBudgetV1(budget)).admittedCount,
         62
       )
+      progress('holding final admitted calls')
       const lastAuthoring = authoring.request(
         'tools/call',
         parameters(authoring, 'f'.repeat(32))
@@ -2219,6 +2289,7 @@ if (!cleanup.complete) process.exitCode = 1
         })
       }
       // budget exhaustion must outlive the ordinary two-second EOF drain
+      progress('checking final calls survive the EOF drain interval')
       await delay(2200)
       for (const server of [authoring, development])
         await assert.rejects(readFile(join(server.root, 'cleanup.json')), {
@@ -2229,9 +2300,11 @@ if (!cleanup.complete) process.exitCode = 1
           writeFile(join(server.root, 'release'), 'release')
         )
       )
+      progress('waiting for final admitted replies after release')
       const finalReplies = await bounded(
         Promise.all([lastAuthoring, lastDevelopment!]),
-        15000
+        15000,
+        diagnostics
       )
       for (const response of finalReplies)
         assert.equal(
@@ -2241,12 +2314,14 @@ if (!cleanup.complete) process.exitCode = 1
         )
       if (overflow)
       {
-        const rejectedOverflow = await bounded(overflow, 15000)
+        progress('waiting for overflow refusal')
+        const rejectedOverflow = await bounded(overflow, 15000, diagnostics)
         assert.ok(rejectedOverflow.error || rejectedOverflow.connectionClosed)
       }
       for (const server of [authoring, development])
       {
-        const exit = await bounded(server.exited, 15000)
+        progress(`waiting for ${server.profile} process exit`)
+        const exit = await bounded(server.exited, 15000, diagnostics)
         assert.equal(exit.signal, null, server.errors())
         assert.equal(exit.code, 0, server.errors())
         const cleanup = JSON.parse(
@@ -2312,6 +2387,7 @@ if (!cleanup.complete) process.exitCode = 1
         await readFile(selected.sourcePath),
         Buffer.from(selected.bytes)
       )
+      progress('verified both audits and all sixty-four admissions')
     }
   }
 )

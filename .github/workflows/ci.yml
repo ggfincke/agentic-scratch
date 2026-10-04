@@ -38,6 +38,8 @@ jobs:
         run: npm --ignore-scripts run boundaries
       - name: Check lint
         run: npm --ignore-scripts run lint
+      - name: Check native admission lifecycle before the full suite
+        run: node --import tsx --test --test-name-pattern="two real MCP processes share" tests/mcp/workbench-transport.test.ts
       - name: Run the full test suite including compressed audio
         # keep unrelated browser suites from starving bounded process lifecycle tests
         run: node --import tsx --test --test-concurrency=1 "tests/**/*.test.ts" "eslint-rules/**/*.test.js"
