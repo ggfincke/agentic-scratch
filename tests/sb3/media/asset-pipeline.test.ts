@@ -75,6 +75,68 @@ function pngFixture()
   })
 }
 
+// 64x48 pixel art: a transparent 2px border, an alpha 128 ring just inside it,
+// then flat 8x12 blocks cycling through four opaque colors
+function pixelArtRgba(): Buffer
+{
+  const width = 64
+  const height = 48
+  const palette = [
+    [32, 64, 160],
+    [248, 248, 248],
+    [224, 96, 32],
+    [16, 16, 16],
+  ] as const
+  const rgba = Buffer.alloc(width * height * 4)
+  for (let y = 2; y < height - 2; y += 1)
+  {
+    for (let x = 2; x < width - 2; x += 1)
+    {
+      const color = palette[(Math.floor(x / 8) + Math.floor(y / 12)) % 4]!
+      const edge = x === 2 || y === 2 || x === width - 3 || y === height - 3
+      rgba.set([...color, edge ? 128 : 255], (y * width + x) * 4)
+    }
+  }
+  return rgba
+}
+
+// * the pins are specific to the zlib build behind pngjs (Node 24 per .nvmrc);
+// a Node upgrade that moves them re-pins deliberately, because every MSIS3
+// costume md5 changes w/ it
+test('canonical PNG encoding is pinned', async () =>
+{
+  const rgba = pixelArtRgba()
+  const source = new PNG({ width: 64, height: 48 })
+  source.data = Buffer.from(rgba)
+  const bytes = PNG.sync.write(source, {
+    colorType: 6,
+    bitDepth: 8,
+    inputHasAlpha: true,
+  })
+  const frame = await new AssetPipelineJobV2().preparePngFrame({ bytes })
+  assert.equal(
+    frame.outputSha256,
+    '3003bb135b5b6d7d35e5aaf9f81368a5c066bc55260a17da0eb079f8f129259c'
+  )
+  assert.equal(
+    frame.transformSha256,
+    '7f1897a368b0fba9729e3bce53c77eba51375634fec199e25536a3f175f30985'
+  )
+  assert.deepEqual(PNG.sync.read(Buffer.from(frame.bytes)).data, rgba)
+  const runLength = new PNG({ width: 64, height: 48 })
+  runLength.data = Buffer.from(rgba)
+  const runLengthBytes = PNG.sync.write(runLength, {
+    bitDepth: 8,
+    colorType: 6,
+    inputColorType: 6,
+    inputHasAlpha: true,
+    filterType: 0,
+    deflateLevel: 9,
+    deflateStrategy: 3,
+  })
+  assert.ok(frame.bytes.byteLength < runLengthBytes.byteLength)
+})
+
 test('PNG slicing and transforms preserve independently expected pixels, alpha and pivots', async () =>
 {
   const bytes = pngFixture()

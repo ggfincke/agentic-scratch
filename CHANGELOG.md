@@ -215,3 +215,5 @@ args[]}` conditions & effects), Zod-validated and lowered to a runtime FSM. No
 - The browser lane replaced its wall-clock settle (fixed per-tick sleeps) with
   frame-exact manual stepping; `runVm`/`runBrowser` remain thin compatibility
   projections over the shared scenario driver.
+- Canonical PNGs use zlib's default strategy at level 9 with filter 0 (about
+  7.5x smaller for pixel art); transform evidence is now `png-preprocessing-v3`.

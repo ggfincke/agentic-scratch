@@ -150,6 +150,20 @@ const MAX_PALETTE_MAPPINGS = 256
 const SHA256 = /^[a-f0-9]{64}$/u
 const STREAM_WORKING_BYTES = 64 * 1024
 
+// pngjs defaults deflateStrategy to 3 (run-length only), ~7.5x larger than
+// zlib's default for flat pixel art; filter 0 stays since adaptive filtering is
+// larger & ~3x slower there. the transform evidence hashes these params
+const CANONICAL_PNG_ENCODING_V3 = Object.freeze({
+  bitDepth: 8,
+  colorType: 6,
+  inputColorType: 6,
+  inputHasAlpha: true,
+  filterType: 0,
+  deflateLevel: 9,
+  deflateStrategy: 0,
+} as const)
+const PNG_PIPELINE_TAG = 'png-preprocessing-v3'
+
 function invalid(message: string): never
 {
   throw new AssetPipelineErrorV2(ASSET_PIPELINE_CODES_V2.invalidInput, message)
@@ -739,7 +753,8 @@ export class AssetPipelineJobV2
           height,
           outputSha256: sha256(bytes),
           transformSha256: evidenceHash({
-            pipeline: 'png-preprocessing-v2',
+            pipeline: PNG_PIPELINE_TAG,
+            encoding: CANONICAL_PNG_ENCODING_V3,
             mode,
             frames: frames.map((frame) => ({
               outputSha256: frame.outputSha256,
@@ -1039,7 +1054,8 @@ export class AssetPipelineJobV2
         pivot: Object.freeze(pivotCopy(pivot)),
         sourceSha256: sourceHash,
         transformSha256: evidenceHash({
-          pipeline: 'png-preprocessing-v2',
+          pipeline: PNG_PIPELINE_TAG,
+          encoding: CANONICAL_PNG_ENCODING_V3,
           sourceSha256: sourceHash,
           sourceWidth: source.width,
           sourceHeight: source.height,
@@ -1076,15 +1092,7 @@ export class AssetPipelineJobV2
       png.height = image.height
       png.data = image.data
       png.gamma = 0
-      const bytes = PNG.sync.write(png, {
-        bitDepth: 8,
-        colorType: 6,
-        inputColorType: 6,
-        inputHasAlpha: true,
-        filterType: 0,
-        deflateLevel: 9,
-        deflateStrategy: 3,
-      })
+      const bytes = PNG.sync.write(png, { ...CANONICAL_PNG_ENCODING_V3 })
       if (bytes.byteLength > DEFAULT_SB3_LIMITS.maxAssetBytes)
       {
         throw new AssetPipelineErrorV2(
