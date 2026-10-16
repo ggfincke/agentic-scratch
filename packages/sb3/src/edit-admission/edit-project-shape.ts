@@ -619,6 +619,22 @@ export function validateEditProjectShape(
       (entry, index) => string(entry, child(extensionsPath, index))
     )
   }
+  // TurboWarp roots are type-checked only; the authoring profile owns the allowlist
+  optional(root, 'extensionURLs', '$', (entry, path) =>
+  {
+    for (const [id, url] of scratchRecordEntries(record(entry, path)))
+    {
+      const urlPath = child(path, id)
+      const text = string(url, urlPath)
+      if (!text.startsWith('https://') || text.length > 2048)
+        shape(urlPath, 'expected an https URL of at most 2048 characters')
+    }
+  })
+  optional(root, 'extensionStorage', '$', (entry, path) =>
+  {
+    for (const [id, value] of scratchRecordEntries(record(entry, path)))
+      record(value, child(path, id))
+  })
   const metaPath = '$/meta'
   const meta = record(required(root, 'meta', '$'), metaPath)
   string(required(meta, 'semver', metaPath), child(metaPath, 'semver'))

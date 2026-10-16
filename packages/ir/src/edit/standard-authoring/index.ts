@@ -2,6 +2,7 @@
 // expose versioned standard authoring independently of approved A0 contracts
 
 export * from './catalog.js'
+export * from './turbowarp-extensions.js'
 export * from './sources.js'
 export * from './inventory.js'
 export * from './types.js'

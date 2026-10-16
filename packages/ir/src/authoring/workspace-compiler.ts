@@ -10,6 +10,7 @@ import {
   deriveAuthoringMediaIdentity,
   defineScratchRecordValue,
   normalizeAssetsByPath,
+  TURBOWARP_EXTENSION_ALLOWLIST_V1,
   type Block,
   type BlockEntry,
   type DerivedMediaAssetIdentity,
@@ -35,8 +36,11 @@ import {
 } from '../edit/graph/graph-primitives.js'
 import {
   StandardBlockLowererV2,
+  TURBOWARP_EXTENSION_PROFILE_V1,
+  assertTurboWarpExtensionProfileV1,
   getStandardAuthoritySha256V2,
   standardExtensionIdsV2,
+  turbowarpExtensionIdsV1,
   type StandardProcedureScopeV2,
 } from '../edit/standard-authoring/index.js'
 import type {
@@ -345,6 +349,21 @@ function translateRoot(
   }
 }
 
+// sorted keys keep the root bytes stable; an emptied root is removed, never left as {}
+function setRoot(
+  candidate: ProjectIR,
+  key: 'extensionURLs' | 'extensionStorage',
+  value: Record<string, unknown>
+): void
+{
+  const sorted = Object.fromEntries(
+    Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  )
+  if (Object.keys(sorted).length > 0)
+    (candidate.json as unknown as Record<string, unknown>)[key] = sorted
+  else delete candidate.json[key]
+}
+
 function install(
   project: ProjectIR,
   targetIndex: number,
@@ -514,6 +533,8 @@ export async function compileScratchWorkspaceV2(
   if (sourceByPath.size !== files.length)
     fail('sources', 'duplicate source path')
   const manifest = expandScratchWorkspaceManifestV2(originalManifest, files)
+  const extensionProfile = manifest.extensionProfile
+  if (extensionProfile !== undefined) assertTurboWarpExtensionProfileV1()
   const source = (path: string) =>
     sourceByPath.get(path) ??
     fail(path, 'declared source is absent from the immutable closure')
@@ -1020,6 +1041,7 @@ export async function compileScratchWorkspaceV2(
   }
   const procedures = new Map<string, ProcedureBinding>()
   const lowerer = new StandardBlockLowererV2({
+    ...(extensionProfile === undefined ? {} : { extensionProfile }),
     resolveEntity: resolver(bindings, stageIndex, candidate),
     resolveProcedure: (request) =>
     {
@@ -1188,7 +1210,16 @@ export async function compileScratchWorkspaceV2(
       Array.isArray(entry) ? [] : [entry.opcode]
     )
   )
-  const knownExtensions = new Set(['pen', 'music', 'videoSensing'])
+  const allowlist =
+    extensionProfile === undefined ? [] : TURBOWARP_EXTENSION_ALLOWLIST_V1
+  const knownExtensions = new Set([
+    'pen',
+    'music',
+    'videoSensing',
+    ...allowlist.map((entry) => entry.id),
+  ])
+  const profileExtensions =
+    extensionProfile === undefined ? [] : turbowarpExtensionIdsV1(opcodes)
   const extensions = [
     ...new Set([
       ...(candidate.json.extensions ?? []).filter(
@@ -1197,10 +1228,42 @@ export async function compileScratchWorkspaceV2(
           opcodes.some((opcode) => opcode.startsWith(`${id}_`))
       ),
       ...standardExtensionIdsV2(opcodes),
+      ...profileExtensions,
     ]),
   ].sort()
   if (candidate.json.extensions !== undefined || extensions.length > 0)
     candidate.json.extensions = extensions
+  // without the opt-in both TurboWarp roots pass through untouched
+  if (extensionProfile !== undefined)
+  {
+    const allowlisted = new Map(allowlist.map((entry) => [entry.id, entry]))
+    const urls: Record<string, string> = Object.create(null)
+    for (const [id, url] of Object.entries(
+      candidate.json.extensionURLs ?? {}
+    ))
+    {
+      const entry = allowlisted.get(id)
+      if (entry === undefined) urls[id] = url
+      else if (url !== entry.url)
+        fail(
+          'baseline',
+          `extension ${id} URL differs from the TurboWarp allowlist`
+        )
+    }
+    const storage: Record<string, Record<string, unknown>> = Object.create(null)
+    for (const [id, value] of Object.entries(
+      candidate.json.extensionStorage ?? {}
+    ))
+      if (!allowlisted.has(id)) storage[id] = value
+    for (const id of profileExtensions)
+    {
+      urls[id] = allowlisted.get(id)!.url
+      const value = manifest.extensionStorage?.[id]
+      if (value !== undefined) storage[id] = structuredClone(value)
+    }
+    setRoot(candidate, 'extensionURLs', urls)
+    setRoot(candidate, 'extensionStorage', storage)
+  }
   const clips: ResolvedAnimationClipV2[] = []
   for (const targetSource of manifest.targets)
   {
@@ -1292,12 +1355,17 @@ export async function compileScratchWorkspaceV2(
           ? 1
           : 0
     )
+  const profileEvidence =
+    extensionProfile === undefined
+      ? {}
+      : { extensionProfileSha256: TURBOWARP_EXTENSION_PROFILE_V1.profileSha256 }
   const compilerIdentity =
     input.compilerIdentitySha256 ??
     hashJson({
       kind: 'scratch-workspace-compiler-v2',
       schemaVersion: 2,
       standardAuthoritySha256: getStandardAuthoritySha256V2(),
+      ...profileEvidence,
     })
   if (!/^[a-f\d]{64}$/.test(compilerIdentity))
     fail('compilerIdentity', 'expected a SHA-256')
@@ -1308,6 +1376,7 @@ export async function compileScratchWorkspaceV2(
     baselineArtifactSha256: baselineHash,
     sourceSetSha256: hashJson(sourceFiles),
     standardAuthoritySha256: getStandardAuthoritySha256V2(),
+    ...profileEvidence,
     compilerIdentitySha256: compilerIdentity,
     candidateSha256: sha256(candidateBytes),
     sourceFiles,

@@ -206,6 +206,12 @@ export interface ScratchWorkspaceManifestV2
   readonly assetManifestPaths?: readonly string[]
   readonly clipManifestPaths?: readonly string[]
   readonly runtimeTargets?: readonly WorkspaceRuntimeTargetV2[]
+  // opts a TurboWarp-only build into the allowlisted extension opcodes
+  readonly extensionProfile?: 'turbowarp-v1'
+  // written as the project's extensionStorage for the allowlisted ids it uses
+  readonly extensionStorage?: Readonly<
+    Record<string, Readonly<Record<string, WorkspaceScalarV2>>>
+  >
   readonly scenarios?: readonly {
     readonly id: string
     readonly scenario: unknown
@@ -284,6 +290,8 @@ export interface WorkspaceBuildPlanV2
   readonly baselineArtifactSha256: string
   readonly sourceSetSha256: string
   readonly standardAuthoritySha256: string
+  // present only when the manifest opts into the TurboWarp extension profile
+  readonly extensionProfileSha256?: string
   readonly compilerIdentitySha256: string
   readonly candidateSha256: string
   readonly planSha256: string

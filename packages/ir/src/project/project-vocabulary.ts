@@ -7,6 +7,8 @@ export const KNOWN_ROOT_FIELDS: ReadonlySet<string> = new Set([
   'targets',
   'monitors',
   'extensions',
+  'extensionURLs',
+  'extensionStorage',
   'meta',
 ])
 

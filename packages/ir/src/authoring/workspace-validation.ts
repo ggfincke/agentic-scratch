@@ -3,6 +3,7 @@
 
 import {
   DEFAULT_EDIT_ADMISSION_LIMITS,
+  TURBOWARP_EXTENSION_ALLOWLIST_V1,
   scanStrictJson,
 } from '@scratch-agent/sb3'
 import { canonicalProcedureSignatureV1 } from '../edit/operations/procedure-operations.js'
@@ -405,6 +406,8 @@ export function parseScratchWorkspaceManifestV2(
     'assetManifestPaths',
     'clipManifestPaths',
     'runtimeTargets',
+    'extensionProfile',
+    'extensionStorage',
     'scenarios',
     'assertions',
     'output',
@@ -643,6 +646,42 @@ export function parseScratchWorkspaceManifestV2(
       'workspace/runtimeTargets',
       'duplicate runtime profile'
     )
+  if (v.extensionProfile !== undefined)
+  {
+    choice(v.extensionProfile, 'workspace/extensionProfile', ['turbowarp-v1'])
+    // * fail closed: an official Scratch target can never load these extensions
+    if (
+      runtimeTargets.length === 0 ||
+      runtimeTargets.some(
+        (target) => (target as { runtime: unknown }).runtime !== 'turbowarp'
+      )
+    )
+      workspaceSourceFailureV2(
+        'workspace/extensionProfile',
+        'the TurboWarp extension profile requires every runtime target to be turbowarp'
+      )
+  }
+  if (v.extensionStorage !== undefined)
+  {
+    const path = 'workspace/extensionStorage'
+    if (v.extensionProfile === undefined)
+      workspaceSourceFailureV2(
+        path,
+        'extension storage requires extensionProfile'
+      )
+    const ids = TURBOWARP_EXTENSION_ALLOWLIST_V1.map((entry) => entry.id)
+    const storage = object(v.extensionStorage, path, ids)
+    for (const [id, entry] of Object.entries(storage))
+      for (const [key, value] of Object.entries(
+        object(entry, `${path}/${id}`, Object.keys(entry ?? {}))
+      ))
+      {
+        text(key, `${path}/${id}`)
+        scalar(value, `${path}/${id}/${key}`)
+      }
+    if (new TextEncoder().encode(JSON.stringify(storage)).byteLength > 4096)
+      workspaceSourceFailureV2(path, 'extension storage exceeds 4096 bytes')
+  }
   const scenarios = array(v.scenarios ?? [], 'workspace/scenarios', 64)
   scenarios.forEach((s, i) =>
   {

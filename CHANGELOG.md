@@ -8,6 +8,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Opt-in TurboWarp extension profile `turbowarp-v1` for workspace builds: the
+  manifest's `extensionProfile` admits the 14 public `Gamepad` and
+  `localstorage` opcodes (pinned to the vendored gallery scripts by
+  `TURBOWARP_EXTENSION_ALLOWLIST_V1` and `PINNED_TURBOWARP_EXTENSION_PROFILE_SHA256_V1`)
+  only when every runtime target is `turbowarp`, and writes `extensions`,
+  `extensionURLs` and the manifest's `extensionStorage` for the ids a build
+  uses. The standard catalog, its authority sha and edit sessions are
+  unchanged, and builds without the opt-in are byte-identical. Edit admission
+  type-checks the `extensionURLs` and `extensionStorage` roots.
 - Interactive drive-and-observe harness in `@scratch-agent/runner`: one
   callback-scoped, serialized TurboWarp session accepts a closed command union
   for green flag, held keyboard/mouse state, exact natural-tick advance,

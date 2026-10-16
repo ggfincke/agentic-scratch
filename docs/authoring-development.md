@@ -128,6 +128,44 @@ continuation constraints. Use its returned cursor for later pages. Procedure
 parameters are scoped to their owning definition. Terminal `stop` options and
 `sensing_of` property ownership are validated before promotion.
 
+### TurboWarp extension profile
+
+A manifest can opt into `extensionProfile: 'turbowarp-v1'`, a separate
+descriptor profile for two allowlisted TurboWarp gallery extensions: `Gamepad`
+(`Gamepad_gamepadConnected`, `buttonDown`, `buttonValue`, `axisValue`,
+`axisDirection`, `axisMagnitude`, `rumble`, `setAxisDeadzone`) and
+`localstorage` (`localstorage_get`, `set`, `remove`, `removeAll`, the
+`whenChanged` hat, `setProjectId`). Menu arguments lower to
+`Gamepad_menu_<menu>` shadows that accept reporters. The standard catalog and
+its pinned authority stay unchanged, and edit sessions remain standard-only.
+
+```json
+{
+  "runtimeTargets": [
+    {
+      "schemaVersion": 1,
+      "runtime": "turbowarp",
+      "scheduler": "deterministic",
+      "tickRate": 30
+    }
+  ],
+  "extensionProfile": "turbowarp-v1",
+  "extensionStorage": { "localstorage": { "namespace": "my-game" } }
+}
+```
+
+The profile is refused unless every runtime target is `turbowarp`, since
+official Scratch cannot load these extensions. An opted-in build adds the used
+ids to `extensions`, writes `extensionURLs` with each used id's pinned gallery
+URL (a baseline entry with another URL for an allowlisted id is refused), and
+writes `extensionStorage` from the manifest for the used ids. Set the Local
+Storage namespace there so the extension does not invent a random one and later
+saves stay byte-stable. `extensionStorage` requires the profile, accepts only
+allowlisted ids with scalar values, and is capped at 4,096 bytes. The plan and compiler
+identity gain `extensionProfileSha256` only when opted in; without the opt-in,
+output is byte-identical to a build without the profile, and both TurboWarp
+root fields in a baseline pass through untouched.
+
 PNG preparation supports explicit-grid or rectangle slicing, crop, nearest
 resize, horizontal/vertical flip, simultaneous exact RGB palette replacement,
 and pivot updates. Alpha is preserved; output is canonical RGBA8 PNG. Transform

@@ -32,6 +32,7 @@ import {
   type StandardInputDescriptorV2,
   type StandardFieldDescriptorV2,
 } from './catalog.js'
+import { getTurboWarpDescriptorV1 } from './turbowarp-extensions.js'
 import {
   validateStandardSemanticTreeV2,
   validateStandardSemanticSequenceV2,
@@ -106,6 +107,17 @@ export interface StandardLoweredInputV2 extends Omit<
   readonly rootId: string | null
   readonly tailId: string | null
   readonly input: BlockInput | null
+}
+
+// the standard catalog, widened by the TurboWarp rows only when the context opts in
+function descriptorFor(state: State, opcode: string)
+{
+  return (
+    getStandardDescriptorV2(opcode) ??
+    (state.context.extensionProfile === 'turbowarp-v1'
+      ? getTurboWarpDescriptorV1(opcode)
+      : null)
+  )
 }
 
 function fail(code: string, message: string): never
@@ -836,7 +848,7 @@ function lowerTree(
       fail('procedure-argument', 'call must explicitly supply every parameter')
     return id
   }
-  const descriptor = getStandardDescriptorV2(node.opcode)
+  const descriptor = descriptorFor(state, node.opcode)
   if (descriptor === null || descriptor.availability !== 'supported')
     fail('unsupported-opcode', 'opcode is not public ordinary authoring')
   if (!standardShapeFitsPlacementV2(descriptor.shape, placement))
@@ -934,6 +946,7 @@ function validate(
       : ('sprite' as const),
     procedureScope: state.scope,
     placement,
+    descriptorLookup: (opcode: string) => descriptorFor(state, opcode),
     procedureCallParameterType: (
       call: ProcedureCallBlockTreeV1,
       argument: ProcedureCallArgumentV1
@@ -1020,7 +1033,7 @@ export class StandardBlockLowererV2
       validate(s, root.value)
       const shape =
         root.value.nodeKind === 'ordinary'
-          ? getStandardDescriptorV2(root.value.opcode)?.shape
+          ? descriptorFor(s, root.value.opcode)?.shape
           : parameter(s, root.value.parameter, 'root/value').parameterType ===
               'boolean'
             ? 'boolean'
@@ -1069,7 +1082,7 @@ export class StandardBlockLowererV2
     validate(s, replacement.value)
     const shape =
       replacement.value.nodeKind === 'ordinary'
-        ? getStandardDescriptorV2(replacement.value.opcode)?.shape
+        ? descriptorFor(s, replacement.value.opcode)?.shape
         : parameter(s, replacement.value.parameter, 'replacement')
               .parameterType === 'boolean'
           ? 'boolean'
@@ -1100,8 +1113,8 @@ export class StandardBlockLowererV2
     if (owner === undefined || Array.isArray(owner))
       fail('invalid-input', 'input owner is absent')
     let descriptor = [
-      ...(getStandardDescriptorV2(owner.opcode)?.requiredInputs ?? []),
-      ...(getStandardDescriptorV2(owner.opcode)?.optionalInputs ?? []),
+      ...(descriptorFor(s, owner.opcode)?.requiredInputs ?? []),
+      ...(descriptorFor(s, owner.opcode)?.optionalInputs ?? []),
     ].find((x) => x.name === input.name)
     if (owner.opcode === 'procedures_call' && s.scope !== undefined)
       descriptor =
@@ -1171,9 +1184,9 @@ export class StandardBlockLowererV2
     const owner = project.json.targets[targetIndex]!.blocks[ownerBlockId]
     if (owner === undefined || Array.isArray(owner))
       fail('invalid-field', 'field owner is absent')
-    const descriptor = getStandardDescriptorV2(
-      owner.opcode
-    )?.requiredFields.find((x) => x.name === fieldName)
+    const descriptor = descriptorFor(s, owner.opcode)?.requiredFields.find(
+      (x) => x.name === fieldName
+    )
     if (descriptor === undefined)
       fail('invalid-field', 'field is absent from authority')
     let selectedOwner: number | null = null
