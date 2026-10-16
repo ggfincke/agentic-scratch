@@ -166,6 +166,12 @@ identity gain `extensionProfileSha256` only when opted in; without the opt-in,
 output is byte-identical to a build without the profile, and both TurboWarp
 root fields in a baseline pass through untouched.
 
+The rendered TurboWarp lane loads the allowlisted scripts offline: the host
+serves the vendored copies in `packages/runner/vendor/turbowarp-extensions/`
+after checking each sha against `TURBOWARP_EXTENSION_ALLOWLIST_V1`, the page
+loads them unsandboxed from those routes, and any other extension URL is
+refused.
+
 PNG preparation supports explicit-grid or rectangle slicing, crop, nearest
 resize, horizontal/vertical flip, simultaneous exact RGB palette replacement,
 and pivot updates. Alpha is preserved; output is canonical RGBA8 PNG. Transform

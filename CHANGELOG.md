@@ -17,6 +17,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   uses. The standard catalog, its authority sha and edit sessions are
   unchanged, and builds without the opt-in are byte-identical. Edit admission
   type-checks the `extensionURLs` and `extensionStorage` roots.
+- The rendered TurboWarp lane loads the allowlisted `Gamepad` and
+  `localstorage` extensions offline from vendored, sha-checked copies through
+  a page extension security manager; other extension URLs stay refused and the
+  network stays denied.
 - Interactive drive-and-observe harness in `@scratch-agent/runner`: one
   callback-scoped, serialized TurboWarp session accepts a closed command union
   for green flag, held keyboard/mouse state, exact natural-tick advance,

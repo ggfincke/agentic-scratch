@@ -1,9 +1,12 @@
 // packages/runner/src/browser/browser-host.ts
 // shared rendered-page launch, routing, network, input-guard, identity, & teardown policy
 
+import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { TURBOWARP_EXTENSION_ALLOWLIST_V1 } from '@scratch-agent/sb3'
 
 import {
   chromium,
@@ -388,6 +391,31 @@ async function installPhysicalInputGuard(page: Page): Promise<void>
   }, PHYSICAL_INPUT_EVENTS)
 }
 
+// the vendored allowlisted extension scripts by offline route, each sha-checked
+function turboWarpExtensionScripts(): {
+  routes: Record<string, string>
+  scripts: Map<string, Buffer>
+}
+{
+  const vendor = fileURLToPath(
+    new URL('../../vendor/turbowarp-extensions/', import.meta.url)
+  )
+  const routes: Record<string, string> = {}
+  const scripts = new Map<string, Buffer>()
+  for (const entry of TURBOWARP_EXTENSION_ALLOWLIST_V1)
+  {
+    const bytes = readFileSync(
+      join(vendor, basename(new URL(entry.url).pathname))
+    )
+    if (createHash('sha256').update(bytes).digest('hex') !== entry.scriptSha256)
+      throw new Error(`vendored ${entry.id} extension differs from its pin`)
+    const route = `/__extensions/${entry.id}.js`
+    routes[entry.url] = route
+    scripts.set(route, bytes)
+  }
+  return { routes, scripts }
+}
+
 async function installOfflineRoute(
   page: Page,
   sb3: Uint8Array,
@@ -403,6 +431,13 @@ async function installOfflineRoute(
   const runtimeAssets = new Map(
     runtime.served.map((asset) => [asset.routePath, asset.bytes])
   )
+  const extensions = turboWarpExtensionScripts()
+  await page.addInitScript((routes) =>
+  {
+    ;(
+      window as unknown as { __turbowarpExtensionRoutes: typeof routes }
+    ).__turbowarpExtensionRoutes = routes
+  }, extensions.routes)
   await page.route('**/*', async (route) =>
   {
     const url = route.request().url()
@@ -438,7 +473,9 @@ async function installOfflineRoute(
       })
       return
     }
-    const runtimeAsset = runtimeAssets.get(parsed.pathname)
+    const runtimeAsset =
+      runtimeAssets.get(parsed.pathname) ??
+      extensions.scripts.get(parsed.pathname)
     if (parsed.origin === ORIGIN && runtimeAsset)
     {
       await route.fulfill({
