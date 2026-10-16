@@ -71,9 +71,34 @@ function boundedText(value: string, role: string, maximum = 256): string
   return value
 }
 
+// the host injects the allowlisted extension url -> offline route map before
+// this bundle runs; a project may load only those, unsandboxed from the route.
+// vanilla scratch-vm has no extension security manager & loads none of them
+function installExtensionSecurityManager(vm: ScratchVm): void
+{
+  const routes: Readonly<Record<string, string>> =
+    (
+      window as unknown as {
+        __turbowarpExtensionRoutes?: Record<string, string>
+      }
+    ).__turbowarpExtensionRoutes ?? {}
+  const manager = (
+    vm as unknown as {
+      extensionManager?: { securityManager?: Record<string, unknown> }
+    }
+  ).extensionManager?.securityManager
+  if (!manager) return
+  Object.assign(manager, {
+    getSandboxMode: () => 'unsandboxed',
+    canLoadExtensionFromProject: (url: string) => Object.hasOwn(routes, url),
+    rewriteExtensionURL: (url: string) => routes[url] ?? url,
+  })
+}
+
 export function installProjectDebugPageV1(host: ProjectDebugPageHostV1): void
 {
   const vm = host.vm
+  installExtensionSecurityManager(vm)
   const runtime = vm.runtime
   const input = new InputController(vm)
   const realSetInterval = window.setInterval.bind(window)

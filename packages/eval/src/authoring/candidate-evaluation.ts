@@ -6,6 +6,7 @@ import { constants } from 'node:fs'
 import { mkdtemp, mkdir, open, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
+import { inflateRawSync } from 'node:zlib'
 
 import {
   assertStandardAuthoringAuthorityV2,
@@ -26,7 +27,10 @@ import {
   type Scenario,
   type VmTrace,
 } from '@scratch-agent/runner'
-import { DEFAULT_SB3_LIMITS } from '@scratch-agent/sb3'
+import {
+  DEFAULT_SB3_LIMITS,
+  TURBOWARP_EXTENSION_ALLOWLIST_V1,
+} from '@scratch-agent/sb3'
 import { canonicalJsonBytesV1 } from '@scratch-agent/sb3/canonical-json'
 
 import { validateScenarioAssertionsV1 } from '../candidate/candidate.js'
@@ -232,6 +236,13 @@ const AUTHORING_EVALUATION_POLICY_V3 = Object.freeze({
   historicalValidation: 'recorded-identities-without-current-installation',
 })
 
+// vanilla scratch-vm cannot load a TurboWarp extension, so such a candidate
+// has no headless baseline & its selected TurboWarp profile is the mandatory lane
+const TURBOWARP_EXTENSION_LANE_POLICY = Object.freeze({
+  mandatoryLane: 'turboWarpBrowser',
+  clock: 'selected-profile',
+})
+
 function sha256(bytes: Uint8Array): string
 {
   return createHash('sha256').update(bytes).digest('hex')
@@ -253,18 +264,101 @@ function record(value: unknown): value is Record<string, unknown>
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
+// runtime identities cover every lane the targets can select; a TurboWarp
+// extension candidate executes only its rendered lanes
 function expectedLanes(
-  targets: readonly AuthoringRuntimeTargetV2[]
+  targets: readonly AuthoringRuntimeTargetV2[],
+  turboWarpExtensions = false
 ): AuthoringEvaluationLaneV2[]
 {
-  return [
-    'officialHeadless',
-    ...targets.map((target): AuthoringEvaluationLaneV2 =>
-      target.runtime === 'scratch-official'
-        ? 'officialBrowser'
-        : 'turboWarpBrowser'
-    ),
-  ]
+  const rendered = targets.map((target): AuthoringEvaluationLaneV2 =>
+    target.runtime === 'scratch-official'
+      ? 'officialBrowser'
+      : 'turboWarpBrowser'
+  )
+  return turboWarpExtensions ? rendered : ['officialHeadless', ...rendered]
+}
+
+// the parsed project.json of exact candidate bytes, or null when unreadable;
+// policy hashing is synchronous, & preflight admission still judges the archive
+function candidateProjectJson(bytes: Uint8Array): unknown
+{
+  try
+  {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    // the end-of-central-directory record is within the last 64 KiB + 22 bytes
+    for (
+      let end = bytes.byteLength - 22;
+      end >= Math.max(0, bytes.byteLength - 65_557);
+      end--
+    )
+    {
+      if (view.getUint32(end, true) !== 0x06054b50) continue
+      let entry = view.getUint32(end + 16, true)
+      for (let index = 0; index < view.getUint16(end + 10, true); index++)
+      {
+        if (view.getUint32(entry, true) !== 0x02014b50) return null
+        const nameLength = view.getUint16(entry + 28, true)
+        const name = new TextDecoder().decode(
+          bytes.subarray(entry + 46, entry + 46 + nameLength)
+        )
+        if (name === 'project.json')
+        {
+          const local = view.getUint32(entry + 42, true)
+          const start =
+            local +
+            30 +
+            view.getUint16(local + 26, true) +
+            view.getUint16(local + 28, true)
+          const data = bytes.subarray(
+            start,
+            start + view.getUint32(entry + 20, true)
+          )
+          const text =
+            view.getUint16(entry + 10, true) === 0
+              ? data
+              : inflateRawSync(data, {
+                  maxOutputLength: DEFAULT_SB3_LIMITS.maxProjectJsonBytes,
+                })
+          return JSON.parse(new TextDecoder().decode(text))
+        }
+        entry +=
+          46 +
+          nameLength +
+          view.getUint16(entry + 30, true) +
+          view.getUint16(entry + 32, true)
+      }
+      return null
+    }
+  }
+  catch
+  {
+    return null
+  }
+  return null
+}
+
+// * only an extension-profile build writes allowlisted extensionURLs, & that
+// profile requires every runtime target to be TurboWarp
+function usesTurboWarpExtensions(
+  request: AuthoringCandidateEvaluationRequestV2,
+  targets: readonly AuthoringRuntimeTargetV2[]
+): boolean
+{
+  if (
+    targets.length === 0 ||
+    targets.some((target) => target.runtime !== 'turbowarp') ||
+    !(request.candidateBytes instanceof Uint8Array)
+  )
+    return false
+  const project = candidateProjectJson(request.candidateBytes)
+  const urls = record(project) ? project.extensionURLs : undefined
+  return (
+    record(urls) &&
+    TURBOWARP_EXTENSION_ALLOWLIST_V1.some(
+      (entry) => Object.hasOwn(urls, entry.id) && urls[entry.id] === entry.url
+    )
+  )
 }
 
 function profileForLane(
@@ -498,11 +592,13 @@ function preparePolicy(
   version: 2 | 3 = 2
 ): {
   targets: readonly AuthoringRuntimeTargetV2[]
+  lanes: AuthoringEvaluationLaneV2[]
   scenarios: PreparedScenarioV2[]
   policySha256: string
 }
 {
   const targets = prepareTargets(request.runtimeTargets)
+  const turboWarpExtensions = usesTurboWarpExtensions(request, targets)
   const suppliedScenarios = request.scenarios ?? []
   const suppliedAssertions = request.assertions ?? []
   if (
@@ -592,12 +688,15 @@ function preparePolicy(
   }
   return {
     targets,
+    lanes: expectedLanes(targets, turboWarpExtensions),
     scenarios,
     policySha256: recordHash({
-      policy:
-        version === 2
+      policy: {
+        ...(version === 2
           ? AUTHORING_EVALUATION_POLICY_V2
-          : AUTHORING_EVALUATION_POLICY_V3,
+          : AUTHORING_EVALUATION_POLICY_V3),
+        ...(turboWarpExtensions ? TURBOWARP_EXTENSION_LANE_POLICY : {}),
+      },
       targets,
       scenarios,
     }),
@@ -796,13 +895,14 @@ function validateCandidateEvaluation(
       throw new Error(
         'historical validation requires recorded runtime identities'
       )
-    const lanes = expectedLanes(policy.targets)
+    const lanes = policy.lanes
+    const identityLanes = expectedLanes(policy.targets)
     if (mode !== 'current-v2')
     {
       if (
         !Array.isArray(runtimeIdentities) ||
-        runtimeIdentities.length !== lanes.length ||
-        lanes.some(
+        runtimeIdentities.length !== identityLanes.length ||
+        identityLanes.some(
           (lane) =>
             runtimeIdentities.filter((identity) => identity.lane === lane)
               .length !== 1
@@ -1157,7 +1257,7 @@ async function evaluateCandidate(
     {
       for (const scenario of policy.scenarios)
       {
-        for (const lane of expectedLanes(policy.targets))
+        for (const lane of policy.lanes)
         {
           assertEvaluationActive(request.signal)
           const directory = join(result.evidenceRoot, `${cells.length}-${lane}`)

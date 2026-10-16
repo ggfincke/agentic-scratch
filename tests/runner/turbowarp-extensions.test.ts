@@ -1,17 +1,24 @@
 // tests/runner/turbowarp-extensions.test.ts
-// load allowlisted TurboWarp extensions offline in the rendered TurboWarp lane
+// load allowlisted TurboWarp extensions offline in the rendered TurboWarp lanes
 
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
+import {
+  evaluateAuthoringCandidateV3,
+  validateAuthoringCandidateEvaluationV3,
+} from '@scratch-agent/eval'
 import { blankProject } from '@scratch-agent/ir'
+import { getStandardAuthoritySha256V2 } from '@scratch-agent/ir/edit'
 import { runBrowserScenario } from '@scratch-agent/runner'
 import { TURBOWARP_EXTENSION_ALLOWLIST_V1 } from '@scratch-agent/sb3'
 
-test('the TurboWarp lane runs Local Storage and Gamepad blocks with no network', async () =>
+// stores & reads a Local Storage value, then polls a gamepad at green flag
+async function extensionProjectBytes(): Promise<Uint8Array>
 {
   const project = blankProject()
   const stage = project.json.targets[0]!
@@ -100,8 +107,13 @@ test('the TurboWarp lane runs Local Storage and Gamepad blocks with no network',
     TURBOWARP_EXTENSION_ALLOWLIST_V1.map((entry) => [entry.id, entry.url])
   )
   project.json.extensionStorage = { localstorage: { namespace: 'runner-test' } }
+  return await project.toSb3()
+}
+
+test('the TurboWarp lane runs Local Storage and Gamepad blocks with no network', async () =>
+{
   const trace = await runBrowserScenario(
-    await project.toSb3(),
+    await extensionProjectBytes(),
     {
       steps: [
         { do: 'greenFlag' },
@@ -116,4 +128,66 @@ test('the TurboWarp lane runs Local Storage and Gamepad blocks with no network',
   const done = trace.snapshots.find((snapshot) => snapshot.label === 'done')
   assert.equal(done?.variables.got, 'stored')
   assert.equal(done?.variables.pad, false)
+})
+
+test('candidate evaluation runs an extension candidate on its mandatory TurboWarp lane', async () =>
+{
+  const bytes = await extensionProjectBytes()
+  const request = {
+    candidateBytes: bytes,
+    candidateSha256: createHash('sha256').update(bytes).digest('hex'),
+    standardAuthoritySha256: getStandardAuthoritySha256V2(),
+    compilerIdentitySha256: 'c'.repeat(64),
+    runtimeTargets: [
+      {
+        schemaVersion: 1,
+        runtime: 'turbowarp',
+        scheduler: 'deterministic',
+        tickRate: 60,
+      } as const,
+    ],
+    scenarios: [
+      {
+        id: 'storage',
+        scenario: {
+          seed: 1,
+          fixedDateMs: 0,
+          maxTicks: 10,
+          steps: [
+            { do: 'greenFlag' },
+            { do: 'wait', ticks: 2 },
+            { do: 'snapshot', label: 'done' },
+          ],
+        },
+      },
+    ],
+    assertions: [
+      {
+        scenarioId: 'storage',
+        assertion: {
+          at: 'done',
+          probe: { on: 'var', name: 'got' },
+          match: { kind: 'equals', value: 'stored' },
+        },
+      },
+    ],
+    evidenceRoot: mkdtempSync(
+      join(tmpdir(), 'turbowarp-extension-evaluation-')
+    ),
+  }
+  // vanilla scratch-vm cannot load the extensions, so no headless lane runs
+  const evaluation = await evaluateAuthoringCandidateV3(request)
+  assert.equal(
+    evaluation.disposition,
+    'accepted',
+    JSON.stringify(evaluation.issues)
+  )
+  assert.deepEqual(
+    evaluation.lanes.map((cell) => [cell.lane, cell.assertions[0]?.ok]),
+    [['turboWarpBrowser', true]]
+  )
+  assert.deepEqual(
+    validateAuthoringCandidateEvaluationV3(evaluation, request),
+    []
+  )
 })
