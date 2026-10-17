@@ -3264,6 +3264,14 @@ export class AuthoringWorkspaceServiceV1
       runtimeIdentities: plan.tools.runtimeIdentities,
       scenarios: plan.plan.scenarios,
       assertions: plan.plan.assertions,
+      // * validation & replay rebuild the request, so its limits come from the plan
+      archiveLimits: {
+        maxEntries: plan.plan.limits.maximumArchiveEntries,
+        maxCompressedBytes: plan.plan.limits.maximumSb3Bytes,
+        maxProjectJsonBytes: plan.plan.limits.maximumProjectJsonBytes,
+        maxTotalAssetBytes: plan.plan.limits.maximumAssetBytes,
+        maxAssetBytes: plan.plan.limits.maximumBytesPerAsset,
+      },
     }
   }
 

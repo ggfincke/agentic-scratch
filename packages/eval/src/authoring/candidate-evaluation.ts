@@ -30,6 +30,7 @@ import {
 import {
   DEFAULT_SB3_LIMITS,
   TURBOWARP_EXTENSION_ALLOWLIST_V1,
+  type Sb3LimitOptions,
 } from '@scratch-agent/sb3'
 import { canonicalJsonBytesV1 } from '@scratch-agent/sb3/canonical-json'
 
@@ -80,6 +81,8 @@ export interface AuthoringCandidateEvaluationRequestV2
   runtimeTargets?: readonly AuthoringRuntimeTargetV2[]
   scenarios?: readonly AuthoringEvaluationScenarioV2[]
   assertions?: readonly AuthoringEvaluationAssertionV2[]
+  // the build's resolved archive limits; absent keys keep the defaults
+  archiveLimits?: Sb3LimitOptions
   evidenceRoot?: string
   signal?: AbortSignal
 }
@@ -1264,7 +1267,9 @@ async function evaluateCandidate(
       join(request.evidenceRoot ?? tmpdir(), 'scratch-authoring-evaluation-')
     )
     assertEvaluationActive(request.signal)
-    result.inspection = await inspectSelectedProject(bytes)
+    result.inspection = await inspectSelectedProject(bytes, {
+      archiveLimits: request.archiveLimits,
+    })
     assertEvaluationActive(request.signal)
     issues.push(...inspectionIssues(result.inspection))
     if (result.inspection.input.sha256 !== request.candidateSha256)
