@@ -17,6 +17,7 @@ import { readSnapshot, readBoundedSnapshot } from '../observation/snapshot.js'
 import {
   createRuntimeObservationBudget,
   DEFAULT_RUNTIME_OBSERVATION_CAPS,
+  MAX_RUNTIME_OBSERVATION_CAPS,
 } from '../observation/observation.js'
 import type { ScratchVm, ScratchTarget } from '../vm/vm-api.js'
 import { readVisual, type PageRenderer } from './visual.js'
@@ -950,9 +951,16 @@ export function installProjectDebugPageV1(host: ProjectDebugPageHostV1): void
     {
       if (!prepared) throw new Error('debug runtime is not prepared')
       boundedText(label, 'snapshot label')
+      // admitted projects may hold up to the hard runtime scalar ceiling,
+      // and their tagged list data up to the hard snapshot byte ceiling
       readBoundedSnapshot(
         runtime,
-        createRuntimeObservationBudget(),
+        createRuntimeObservationBudget({
+          ...DEFAULT_RUNTIME_OBSERVATION_CAPS,
+          scalarSlotsPerSnapshot:
+            MAX_RUNTIME_OBSERVATION_CAPS.scalarSlotsPerSnapshot,
+          snapshotBytes: MAX_RUNTIME_OBSERVATION_CAPS.snapshotBytes,
+        }),
         tick,
         label
       )
@@ -963,7 +971,11 @@ export function installProjectDebugPageV1(host: ProjectDebugPageHostV1): void
           throw new Error('nonfinite raw snapshot cannot be serialized exactly')
         return entry
       })
-      if (new TextEncoder().encode(checked).byteLength > 128 * 1024)
+      // * profile-scenario bounds the trace total that these snapshots add up to
+      if (
+        new TextEncoder().encode(checked).byteLength >
+        DEFAULT_RUNTIME_OBSERVATION_CAPS.snapshotBytes
+      )
         throw new Error('raw snapshot exceeds its byte bound')
       return value
     },

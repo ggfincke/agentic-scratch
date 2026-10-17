@@ -426,6 +426,20 @@ export function mediaLineageAt(
   return selected
 }
 
+type ActiveEntityLineageIndexV1 = ReadonlyMap<
+  string,
+  ReadonlyMap<
+    string | null,
+    ReadonlyMap<string, readonly SemanticLineageRecord[]>
+  >
+>
+
+// only internally validated frozen snapshots retain reusable identity lookups
+const activeEntityLineageIndexes = new WeakMap<
+  SemanticLineageSnapshot,
+  ActiveEntityLineageIndexV1
+>()
+
 export function entityLineageIn(
   project: ProjectIR,
   lineage: SemanticLineageSnapshot,
@@ -434,18 +448,34 @@ export function entityLineageIn(
   rawIdentity: string
 ): SemanticLineageRecord
 {
+  const validated = validateSemanticLineageSnapshot(lineage)
   const owner = targetLineageAt(
-    lineage,
+    validated,
     project.json.targets.length,
     targetIndex
   )
-  const matches = lineage.records.filter(
-    (record) =>
-      record.status === 'active' &&
-      record.kind === kind &&
-      record.ownerLineageId === owner.lineageId &&
-      record.rawIdentity === rawIdentity
-  )
+  let index = activeEntityLineageIndexes.get(validated)
+  if (!index)
+  {
+    const byKind = new Map<
+      string,
+      Map<string | null, Map<string, SemanticLineageRecord[]>>
+    >()
+    for (const record of validated.records)
+    {
+      if (record.status !== 'active') continue
+      const byOwner = byKind.get(record.kind) ?? new Map()
+      const byIdentity = byOwner.get(record.ownerLineageId) ?? new Map()
+      const matches = byIdentity.get(record.rawIdentity) ?? []
+      matches.push(record)
+      byIdentity.set(record.rawIdentity, matches)
+      byOwner.set(record.ownerLineageId, byIdentity)
+      byKind.set(record.kind, byOwner)
+    }
+    index = byKind
+    activeEntityLineageIndexes.set(validated, index)
+  }
+  const matches = index.get(kind)?.get(owner.lineageId)?.get(rawIdentity) ?? []
   if (matches.length !== 1)
     return fail(
       'edit.internal_invariant',
@@ -1116,6 +1146,70 @@ function currentBlockForPreBatchEvidence(
   return matches[0]!
 }
 
+// completion keeps source refs canonical & names new blocks through typed results
+export function planningBlockSelectionRef(
+  context: ProductionOperationContextV1,
+  current: BlockEntityEvidenceV1
+): BlockRefV1
+{
+  const lineageId = blockLineage(context, current).lineageId
+  const prior = context.preBatchLineage.records.find(
+    (record) =>
+      record.kind === 'block' &&
+      record.status === 'active' &&
+      record.lineageId === lineageId
+  )
+  if (prior)
+  {
+    const targetIndex = activeOrderedSemanticLineages(
+      context.preBatchLineage,
+      'target',
+      null
+    ).findIndex((record) => record.lineageId === prior.ownerLineageId)
+    const canonical = blockEntityEvidenceSetV1(context.preBatch).find(
+      (block) =>
+        block.targetIndex === targetIndex &&
+        `block:${block.blockId}` === prior.rawIdentity
+    )
+    if (!canonical)
+      return fail('edit.internal_invariant', 'source block lineage is absent')
+    return exactBlockRef(canonical)
+  }
+  const slot = priorCreatedSlotForLineage(context, 'block', lineageId)
+  if (!slot)
+    return fail(
+      'edit.created_result_invalid',
+      'signature call is not backed by a prior typed result'
+    )
+  for (const opId of context.operationResultsById.keys())
+  {
+    const result = targetProductionResult(context, opId)
+    if (![...result.fixedSlots, ...(result.dynamicSlots ?? [])].includes(slot))
+      continue
+    if (
+      slot.slotKind === 'fixed' &&
+      (slot.name === 'rootBlock' || slot.name === 'sourceGapRootBlock')
+    )
+      return {
+        entityKind: 'block',
+        refKind: 'created',
+        opId,
+        slot: { slotKind: 'fixed', name: slot.name },
+      }
+    if (
+      (slot.slotKind === 'blockAlias' || slot.slotKind === 'cloneAlias') &&
+      typeof slot.alias === 'string'
+    )
+      return {
+        entityKind: 'block',
+        refKind: 'created',
+        opId,
+        slot: { slotKind: slot.slotKind, alias: slot.alias },
+      }
+  }
+  return fail('edit.created_result_invalid', 'signature call result is invalid')
+}
+
 export function resolveBlockSelectionRef(
   context: ProductionOperationContextV1,
   reference: BlockRefV1
@@ -1430,14 +1524,17 @@ function commentBindingKeys(
 
 export function scriptBindingKeys(
   context: ProductionOperationContextV1,
-  evidence: ScriptEntityEvidenceV1
+  evidence: ScriptEntityEvidenceV1,
+  sourceScripts: readonly ScriptEntityEvidenceV1[] = scriptEntityEvidenceSetV1(
+    context.source
+  )
 ): readonly string[]
 {
   const lineage = scriptLineage(context, evidence)
   const source = sourceEvidenceByLineage(
     context,
     lineage,
-    scriptEntityEvidenceSetV1(context.source),
+    sourceScripts,
     (candidate) => `script:${candidate.topBlockId}`,
     (candidate) => candidate.targetIndex
   )
@@ -1475,11 +1572,14 @@ export function blockBindingKeys(
 export function allScriptBindingKeys(
   context: ProductionOperationContextV1,
   evidence: ScriptEntityEvidenceV1,
-  lineageId: string
+  lineageId: string,
+  sourceScripts: readonly ScriptEntityEvidenceV1[] = scriptEntityEvidenceSetV1(
+    context.source
+  )
 ): readonly string[]
 {
   return uniqueSorted([
-    ...scriptBindingKeys(context, evidence),
+    ...scriptBindingKeys(context, evidence, sourceScripts),
     ...futureBindingKeysForLineage(
       context.input.changeContractSha256,
       context.contract.entityBindings,
@@ -1511,6 +1611,8 @@ export function scriptBindingKeysByLineage(
   targetIndex: number
 ): ReadonlyMap<string, readonly string[]>
 {
+  // source evidence stays fixed during this scan; hash each script once
+  const sourceScripts = scriptEntityEvidenceSetV1(context.source)
   const entries = scriptEntityEvidenceSetV1(context.candidate)
     .filter((script) => script.targetIndex === targetIndex)
     .map((script) =>
@@ -1524,7 +1626,7 @@ export function scriptBindingKeysByLineage(
       )
       return [
         lineage.lineageId,
-        allScriptBindingKeys(context, script, lineage.lineageId),
+        allScriptBindingKeys(context, script, lineage.lineageId, sourceScripts),
       ] as const
     })
   return new Map(entries)

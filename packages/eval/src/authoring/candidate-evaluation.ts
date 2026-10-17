@@ -37,6 +37,11 @@ import { validateScenarioAssertionsV1 } from '../candidate/candidate.js'
 import type { Assertion, AssertResult, Probe } from '../core/assert.js'
 import { evaluate } from '../core/evaluate.js'
 import {
+  authoringEvidenceSha256V1,
+  authoringTraceBytesV1,
+  encodeAuthoringEvidenceV1,
+} from './bounded-evidence.js'
+import {
   inspectSelectedProject,
   type SelectedProjectInspection,
 } from '../project-check/project-inspection.js'
@@ -257,6 +262,14 @@ function recordHash(value: unknown): string
 function evidenceBytes(value: unknown): Uint8Array
 {
   return canonicalJsonBytesV1(JSON.parse(JSON.stringify(value)))
+}
+
+// v3 traces snapshot every admitted list, so they hash under trace limits
+function traceHash(trace: unknown, version: 2 | 3): string
+{
+  return version === 3
+    ? sha256(authoringTraceBytesV1(JSON.parse(JSON.stringify(trace))))
+    : recordHash(trace)
 }
 
 function record(value: unknown): value is Record<string, unknown>
@@ -829,7 +842,7 @@ export function authoringCandidateEvaluationEvidenceSha256V3(
   value: Omit<AuthoringCandidateEvaluationV3, 'evidenceSha256'>
 ): string
 {
-  return recordHash(value)
+  return authoringEvidenceSha256V1(JSON.parse(JSON.stringify(value)))
 }
 
 export function authoringEvaluationPolicySha256V3(
@@ -973,7 +986,10 @@ function validateCandidateEvaluation(
       value.compilerIdentitySha256 !== request.compilerIdentitySha256 ||
       value.evaluationPolicySha256 !== policy.policySha256 ||
       recordHash(value.runtimeTargets) !== recordHash(policy.targets) ||
-      evidenceSha256 !== recordHash(content)
+      evidenceSha256 !==
+        (version === 3
+          ? authoringEvidenceSha256V1(JSON.parse(JSON.stringify(content)))
+          : recordHash(content))
     )
       issues.push(
         'evaluation identity or evidence hash does not match its exact request'
@@ -1053,7 +1069,7 @@ function validateCandidateEvaluation(
           !cell.accepted ||
           cell.issues.length !== 0 ||
           cell.scenarioSha256 !== scenario.scenarioSha256 ||
-          cell.traceSha256 !== recordHash(cell.trace) ||
+          cell.traceSha256 !== traceHash(cell.trace, version) ||
           !runtimeMatches ||
           recordHash(cell.runtimeDescriptor) !==
             recordHash(cell.trace.runtimeDescriptor) ||
@@ -1333,7 +1349,7 @@ async function evaluateCandidate(
             runtimeIdentitySha256,
             ...(version === 3 ? { browserInstallationIdentity } : {}),
             runtimeDescriptor: trace.runtimeDescriptor,
-            traceSha256: recordHash(trace),
+            traceSha256: traceHash(trace, version),
             assertions: results,
             accepted: cellIssues.length === 0,
             issues: cellIssues,
@@ -1425,15 +1441,38 @@ async function evaluateCandidate(
   result.disposition = issues.length === 0 ? 'accepted' : 'refused'
   let completed = {
     ...result,
-    evidenceSha256: recordHash(result),
+    evidenceSha256:
+      version === 3
+        ? authoringEvidenceSha256V1(JSON.parse(JSON.stringify(result)))
+        : recordHash(result),
   } as AuthoringCandidateEvaluation
   if (result.evidenceRoot)
   {
     try
     {
-      const bytes = evidenceBytes(completed)
+      const encoded =
+        version === 3
+          ? encodeAuthoringEvidenceV1(JSON.parse(JSON.stringify(completed)))
+          : { bytes: evidenceBytes(completed), components: [] }
+      const bytes = encoded.bytes
       if (bytes.byteLength > AUTHORING_EVALUATION_POLICY_V2.maxEvidenceBytes)
         throw new Error('authoring evaluation evidence exceeds its byte limit')
+      if (encoded.components.length)
+      {
+        const directory = join(result.evidenceRoot, 'components')
+        await mkdir(directory, { mode: 0o700 })
+        const retained = new Set<string>()
+        for (const component of encoded.components)
+        {
+          if (retained.has(component.sha256)) continue
+          await writeFile(
+            join(directory, `${component.sha256}.json`),
+            component.bytes,
+            { flag: 'wx' }
+          )
+          retained.add(component.sha256)
+        }
+      }
       await writeFile(join(result.evidenceRoot, 'evaluation.json'), bytes, {
         flag: 'wx',
       })
@@ -1449,7 +1488,10 @@ async function evaluateCandidate(
       ]
       completed = {
         ...result,
-        evidenceSha256: recordHash(result),
+        evidenceSha256:
+          version === 3
+            ? authoringEvidenceSha256V1(JSON.parse(JSON.stringify(result)))
+            : recordHash(result),
       } as AuthoringCandidateEvaluation
     }
   }

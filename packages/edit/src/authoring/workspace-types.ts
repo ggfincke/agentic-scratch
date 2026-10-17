@@ -18,7 +18,7 @@ export const AUTHORING_WORKSPACE_LIMITS_V1 = Object.freeze({
   maxPlans: 16,
   maxBuilds: 32,
   maxEvaluations: 32,
-  maxRetainedBytes: 512 * 1024 * 1024,
+  maxRetainedBytes: 1024 * 1024 * 1024,
   maxRetainedArtifacts: 16384,
   maxInspectionPageSize: 64,
   maxArtifactReadBytes: 1024 * 1024,

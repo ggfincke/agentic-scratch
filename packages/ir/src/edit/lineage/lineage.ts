@@ -56,6 +56,13 @@ export interface SemanticLineageSnapshot
   records: readonly SemanticLineageRecord[]
 }
 
+// only this validator's deeply frozen outputs carry reusable validation authority
+const validatedSnapshots = new WeakSet<SemanticLineageSnapshot>()
+const orderedCollections = new WeakMap<
+  SemanticLineageSnapshot,
+  Map<string, Map<string | null, readonly SemanticLineageRecord[]>>
+>()
+
 class SemanticLineageError extends Error
 {
   constructor(
@@ -85,6 +92,7 @@ export function validateSemanticLineageSnapshot(
   snapshot: SemanticLineageSnapshot
 ): SemanticLineageSnapshot
 {
+  if (validatedSnapshots.has(snapshot)) return snapshot
   if (
     snapshot === null ||
     typeof snapshot !== 'object' ||
@@ -194,12 +202,14 @@ export function validateSemanticLineageSnapshot(
       ownerId = byId.get(ownerId)?.ownerLineageId ?? null
     }
   }
-  return Object.freeze({
+  const validated = Object.freeze({
     version: SEMANTIC_LINEAGE_VERSION_V1,
     records: Object.freeze(
       records.sort((a, b) => compareText(a.lineageId, b.lineageId))
     ),
   })
+  validatedSnapshots.add(validated)
+  return validated
 }
 
 export function semanticLineageById(
@@ -217,6 +227,11 @@ export function activeOrderedSemanticLineages(
 ): readonly SemanticLineageRecord[]
 {
   const validated = validateSemanticLineageSnapshot(snapshot)
+  const cached = orderedCollections
+    .get(validated)
+    ?.get(kind)
+    ?.get(ownerLineageId)
+  if (cached) return cached
   const records = validated.records
     .filter(
       (record) =>
@@ -237,5 +252,15 @@ export function activeOrderedSemanticLineages(
         `active ${kind} lineage ordinals for ${ownerLineageId ?? 'project'} must be contiguous`
       )
   }
-  return Object.freeze([...records])
+  const ordered = Object.freeze([...records])
+  // empty arbitrary-owner queries do not grow the cache
+  if (ordered.length > 0)
+  {
+    const byKind = orderedCollections.get(validated) ?? new Map()
+    const byOwner = byKind.get(kind) ?? new Map()
+    byOwner.set(ownerLineageId, ordered)
+    byKind.set(kind, byOwner)
+    orderedCollections.set(validated, byKind)
+  }
+  return ordered
 }

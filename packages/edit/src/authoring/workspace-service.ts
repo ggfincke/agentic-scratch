@@ -7,6 +7,8 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 
 import {
   authoringRuntimeIdentitiesV3,
+  encodeAuthoringEvidenceV1,
+  decodeAuthoringEvidenceV1,
   authoringCandidateEvaluationEvidenceSha256V3,
   authoringEvaluationPolicySha256V3,
   evaluateAuthoringCandidateV3,
@@ -188,6 +190,7 @@ interface EvaluationRecord
   disposition: 'accepted' | 'refused'
   candidateSha256: string
   result: AuthoringArtifactRefV1
+  componentArtifacts?: readonly AuthoringArtifactRefV1[]
   mediaArtifacts: readonly {
     sourcePath: string
     artifact: AuthoringArtifactRefV1
@@ -839,9 +842,25 @@ export class AuthoringWorkspaceServiceV1
         buildId: build.buildId,
         evidenceSha256: result.evidenceSha256,
       })
-      const resultRef = await workspace.retention.retainJson(
+      const encoded = encodeAuthoringEvidenceV1(
+        JSON.parse(JSON.stringify(result))
+      )
+      const componentArtifacts: AuthoringArtifactRefV1[] = []
+      for (const component of encoded.components)
+      {
+        assertActive()
+        componentArtifacts.push(
+          await workspace.retention.retain(
+            `evaluation-components/${component.sha256}.json`,
+            component.bytes,
+            'application/json'
+          )
+        )
+      }
+      const resultRef = await workspace.retention.retain(
         `evaluations/${evaluationId}/result.json`,
-        result
+        encoded.bytes,
+        'application/json'
       )
       const evaluation: EvaluationRecord = {
         schemaVersion: 1,
@@ -851,6 +870,7 @@ export class AuthoringWorkspaceServiceV1
         disposition: result.disposition,
         candidateSha256: result.candidateSha256,
         result: resultRef,
+        ...(componentArtifacts.length ? { componentArtifacts } : {}),
         mediaArtifacts,
       }
       assertActive()
@@ -870,6 +890,7 @@ export class AuthoringWorkspaceServiceV1
           artifacts: this.#catalog(workspace.state.artifacts, [
             artifact,
             resultRef,
+            ...componentArtifacts,
             ...mediaArtifacts.map((media) => media.artifact),
           ]),
         },
@@ -1409,10 +1430,32 @@ export class AuthoringWorkspaceServiceV1
       )
     const bytes = await workspace.retention.read(build.candidate)
     assertAuthoringActiveV1(signal)
-    const result =
-      await workspace.retention.readJson<AuthoringCandidateEvaluation>(
-        accepted.result
-      )
+    const componentArtifacts = accepted.componentArtifacts ?? []
+    const usedComponents = new Set<number>()
+    const result = (await decodeAuthoringEvidenceV1(
+      await workspace.retention.read(accepted.result),
+      async (component) =>
+      {
+        const index = componentArtifacts.findIndex(
+          (artifact, index) =>
+            !usedComponents.has(index) &&
+            artifact.workspaceId === workspace.state.workspaceId &&
+            artifact.key === `evaluation-components/${component.sha256}.json` &&
+            artifact.path === join(workspace.retention.root, artifact.key) &&
+            artifact.mimeType === 'application/json' &&
+            artifact.sha256 === component.sha256 &&
+            artifact.byteLength === component.byteLength
+        )
+        if (index < 0)
+          throw new Error(
+            'authoring evaluation component has no exact retained identity'
+          )
+        usedComponents.add(index)
+        return workspace.retention.read(componentArtifacts[index]!)
+      }
+    )) as AuthoringCandidateEvaluation
+    if (usedComponents.size !== componentArtifacts.length)
+      throw new Error('authoring evaluation component membership differs')
     if (published)
     {
       if (

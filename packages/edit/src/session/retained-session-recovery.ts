@@ -3,12 +3,16 @@
 
 import { join } from 'node:path'
 
-import { retainedEditSemanticAuthorityV1, editSemanticAuthorityBindingV1 } from '../authority/semantic-authority.js'
+import {
+  retainedEditSemanticAuthorityV1,
+  editSemanticAuthorityBindingV1,
+} from '../authority/semantic-authority.js'
 
 import {
   parseEditToolInputV1,
   semanticHashV1,
   type EditToolName,
+  type SemanticAuthoringAuthorityIdV2,
 } from '@scratch-agent/ir/edit'
 import { scanStrictJson } from '@scratch-agent/sb3'
 import { canonicalJsonBytesV1 } from '@scratch-agent/sb3/canonical-json'
@@ -309,7 +313,7 @@ interface RetainedTerminalPlanV1
   readonly recoveryReservationId: string
   readonly recoveryReservedBytes: number
   readonly recoveryActualBytes: number
-  readonly idempotencyPointerExpectedSha256: string
+  readonly idempotencyPointerExpectedSha256: string | null
   readonly idempotencyPointerBytesHex: string
   readonly reportPointerExpectedSha256: string | null
   readonly reportPointerBytesHex: string | null
@@ -730,7 +734,12 @@ function recoveredAttemptProjectionV1(input: {
     receiptFreeOutcome: input.receiptFreeOutcome ?? null,
     preHead: input.pending.attempt.preHead,
     postHead,
-    budget: input.budget,
+    // historical attempt budgets stay separate from terminal recovery charges
+    budget:
+      resultRecord?.['budget'] !== null &&
+      typeof resultRecord?.['budget'] === 'object'
+        ? (resultRecord['budget'] as EditKernelReportV1['budget'])
+        : input.budget,
     events: recoveredEvents,
     evidenceIds: Object.freeze([...evidenceIds].sort()),
     transportAuthority: Object.freeze({
@@ -1149,7 +1158,9 @@ async function rederiveRetainedPreviewV1(input: {
     )
   }
   const transaction = await new ProductionTransactionExecutorV1().execute({
-    ...editSemanticAuthorityBindingV1(retainedEditSemanticAuthorityV1(manifest).semanticAuthorityId),
+    ...editSemanticAuthorityBindingV1(
+      retainedEditSemanticAuthorityV1(manifest).semanticAuthorityId
+    ),
     sessionId: input.sessionId,
     sourceBytes: await input.store.readImmutable(layout.sourceInput),
     currentBytes: await input.store.readImmutable(current.candidateKey),
@@ -1444,7 +1455,8 @@ async function retainedSameHeadAuthorityV1(input: {
       operationResultSetSha256:
         rederived.predicted.revision.hashProjection.operationResultSetSha256,
       operationResultLineageCorrespondenceSha256:
-        rederived.transaction.operationResultLineageCorrespondenceSha256,
+        rederived.predicted.revision.hashProjection
+          .operationResultLineageCorrespondenceSha256,
       applyGuardSha256: expectedApplyGuardSha256,
       operationResults: rederived.transaction.operationResults,
       operationResultSummaries: rederived.transaction.operationResultSummaries,
@@ -1457,8 +1469,27 @@ async function retainedSameHeadAuthorityV1(input: {
       Object.keys(expectedPreviewProjection).map((key) => [key, preview[key]])
     )
     const budget = authority['budget'] as EditKernelReportV1['budget']
+    const retainedEntries = (
+      await input.store.listImmutable(layout.prefix)
+    ).filter((entry) => !mutableSessionPointerV1(layout, entry.key))
+    const eventKey = layout.event(event.projection.sequence, event.eventSha256)
+    const postSnapshotKeys = new Set([key, eventKey])
+    if (
+      retainedEntries.filter((entry) => postSnapshotKeys.has(entry.key))
+        .length !== 2
+    )
+      return refuse(
+        `session ${input.sessionKey} preview accounting evidence is absent`
+      )
+    // the authority snapshots its budget before retaining itself & the preview event
+    const snapshotArtifactBytes = retainedEntries.reduce(
+      (total, entry) =>
+        total + (postSnapshotKeys.has(entry.key) ? 0 : entry.byteLength),
+      0
+    )
     const budgetWithoutPreviewCount = {
       ...budget,
+      artifactBytesUsed: input.preBudget.artifactBytesUsed,
       retainedPreviews: input.preBudget.retainedPreviews,
     }
     if (
@@ -1469,6 +1500,7 @@ async function retainedSameHeadAuthorityV1(input: {
         editCanonicalSha256V1(expectedPreviewProjection) ||
       !Number.isSafeInteger(budget.retainedPreviews) ||
       budget.retainedPreviews < 1 ||
+      budget.artifactBytesUsed !== snapshotArtifactBytes ||
       editCanonicalSha256V1(budgetWithoutPreviewCount) !==
         editCanonicalSha256V1(input.preBudget) ||
       sha256Hex(candidate) !== preview['predictedCandidateSha256'] ||
@@ -2884,13 +2916,15 @@ function exactFieldsV1(
 // domain authority, w/ the two projections still describing one exact call
 function assertRetainedTransportDomainBindingV1(
   pending: RetainedPendingAttemptV1,
-  sessionId: string
+  sessionId: string,
+  semanticAuthorityId: SemanticAuthoringAuthorityIdV2
 ): void
 {
   const failure = retainedStatefulRequestBindingFailureV1({
     toolName: pending.attempt.toolName,
     requestId: pending.attempt.requestId,
     sessionId,
+    semanticAuthorityId,
     boundaryKind: pending.invocationCorrelation.boundaryKind,
     request: pending.request,
     transportRequest: pending.transportRequest,
@@ -3139,7 +3173,8 @@ async function pendingAttemptsV1(
   store: EditArtifactStorePort,
   sessionKey: string,
   sessionId: string,
-  index: RetainedAttemptIndexV1
+  index: RetainedAttemptIndexV1,
+  semanticAuthorityId: SemanticAuthoringAuthorityIdV2
 ): Promise<readonly RetainedPendingAttemptV1[]>
 {
   const layout = editSessionLayoutV1(sessionKey)
@@ -3195,7 +3230,11 @@ async function pendingAttemptsV1(
         retained.invocationCorrelation.boundaryKind !== 'mcp')
     )
       return refuse(`session ${sessionKey} pending attempt authority differs`)
-    assertRetainedTransportDomainBindingV1(retained, sessionId)
+    assertRetainedTransportDomainBindingV1(
+      retained,
+      sessionId,
+      semanticAuthorityId
+    )
     pending.push(retained)
   }
   return Object.freeze(pending)
@@ -4075,18 +4114,47 @@ async function buildTerminalPlanV1(
     layout.report(reportPointer.reportJsonSha256, 'report.json'),
     `session ${sessionKey} current report`
   )
-  const indexBytes = await input.artifactStore.readImmutable(
-    layout.idempotencyIndex
+  const retainedEntries = await input.artifactStore.listImmutable(layout.prefix)
+  const indexPresent = retainedEntries.some(
+    (entry) => entry.key === layout.idempotencyIndex
   )
-  const index = decodeJsonV1<RetainedAttemptIndexV1>(
-    indexBytes,
-    `session ${sessionKey} idempotency index`
+  // planning before the first request has no idempotency index to recover
+  if (
+    !indexPresent &&
+    (replay.finalHead.revisionNumber !== 0 ||
+      replay.verifiedRevisionCount !== 1 ||
+      replay.verifiedEventCount !== 1 ||
+      replay.verifiedPendingAttemptCount !== 0 ||
+      replay.verifiedCertificateCount !== 0 ||
+      replay.verifiedExportCount !== 0 ||
+      retainedEntries.some((entry) =>
+        entry.key.startsWith(`${layout.prefix}/attempts/`)
+      ))
   )
+    return refuse(`session ${sessionKey} is missing its request index`)
+  const indexBytes = indexPresent
+    ? await input.artifactStore.readImmutable(layout.idempotencyIndex)
+    : null
+  const index: RetainedAttemptIndexV1 =
+    indexBytes === null
+      ? Object.freeze({ schemaVersion: 1, entries: Object.freeze([]) })
+      : decodeJsonV1<RetainedAttemptIndexV1>(
+          indexBytes,
+          `session ${sessionKey} idempotency index`
+        )
+  const manifest = await readJsonV1<EditKernelSessionManifestV1>(
+    input.artifactStore,
+    layout.session,
+    `session ${sessionKey} manifest`
+  )
+  const semanticAuthorityId =
+    retainedEditSemanticAuthorityV1(manifest).semanticAuthorityId
   const pending = await pendingAttemptsV1(
     input.artifactStore,
     sessionKey,
     replay.sessionId,
-    index
+    index,
+    semanticAuthorityId
   )
   const previewAuthorities = (
     await input.artifactStore.listImmutable(`${layout.prefix}/attempts`)
@@ -4782,7 +4850,8 @@ async function buildTerminalPlanV1(
           recoveryReservationId,
           recoveryReservedBytes,
           recoveryActualBytes,
-          idempotencyPointerExpectedSha256: sha256Hex(indexBytes),
+          idempotencyPointerExpectedSha256:
+            indexBytes === null ? null : sha256Hex(indexBytes),
           idempotencyPointerBytesHex: plannedImmutableBytesHexV1(
             canonicalJsonBytesV1(nextIndex)
           ),
@@ -5021,7 +5090,8 @@ async function buildTerminalPlanV1(
       recoveryReservationId,
       recoveryReservedBytes,
       recoveryActualBytes,
-      idempotencyPointerExpectedSha256: sha256Hex(indexBytes),
+      idempotencyPointerExpectedSha256:
+        indexBytes === null ? null : sha256Hex(indexBytes),
       idempotencyPointerBytesHex: plannedImmutableBytesHexV1(
         canonicalJsonBytesV1(nextIndex)
       ),
@@ -5375,6 +5445,7 @@ async function retainedTransportOutcomesV1(
   }
   interface SessionRecoveryCacheV1
   {
+    readonly semanticAuthorityId: SemanticAuthoringAuthorityIdV2
     readonly report: EditKernelReportV1
     readonly indexByNamespace: ReadonlyMap<string, RetainedAttemptIndexEntryV1>
     readonly events: readonly EditKernelSemanticEventV1[]
@@ -5387,6 +5458,13 @@ async function retainedTransportOutcomesV1(
     const cached = sessionCaches.get(sessionKey)
     if (cached !== undefined) return cached
     const layout = editSessionLayoutV1(sessionKey)
+    const manifest = await readJsonV1<EditKernelSessionManifestV1>(
+      store,
+      layout.session,
+      `session ${sessionKey} manifest`
+    )
+    const semanticAuthorityId =
+      retainedEditSemanticAuthorityV1(manifest).semanticAuthorityId
     const pointer = await readJsonV1<RetainedPointerV1>(
       store,
       layout.currentReport,
@@ -5415,6 +5493,7 @@ async function retainedTransportOutcomesV1(
       (left, right) => left.projection.sequence - right.projection.sequence
     )
     const value = Object.freeze({
+      semanticAuthorityId,
       report,
       indexByNamespace: new Map(
         index.entries.map((entry) => [entry.namespaceSha256, entry])
@@ -5451,8 +5530,12 @@ async function retainedTransportOutcomesV1(
       ],
       `session ${sessionKey} retained request authority`
     )
-    assertRetainedTransportDomainBindingV1(pending, session.sessionId)
     const cache = await loadSession(sessionKey)
+    assertRetainedTransportDomainBindingV1(
+      pending,
+      session.sessionId,
+      cache.semanticAuthorityId
+    )
     const indexed = cache.indexByNamespace.get(pending.attempt.namespaceSha256)
     if (
       indexed === undefined ||
@@ -5534,18 +5617,13 @@ async function retainedTransportOutcomesV1(
           }
         : {}),
     })
-    const resultBudget =
-      resultRecordValue?.['budget'] !== null &&
-      typeof resultRecordValue?.['budget'] === 'object'
-        ? (resultRecordValue['budget'] as EditKernelReportV1['budget'])
-        : cache.report.budget
     recovered.push(
       recoveredAttemptProjectionV1({
         sessionId: session.sessionId,
         sessionKey,
         pending,
         outcome,
-        budget: resultBudget,
+        budget: cache.report.budget,
         events: cache.events,
         ...(receiptFreeOutcome === undefined ? {} : { receiptFreeOutcome }),
       })

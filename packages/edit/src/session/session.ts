@@ -1534,24 +1534,22 @@ function inspectionMediaLineageV1(
   lineage: SemanticLineageSnapshot,
   targetLineageId: string,
   mediaKind: 'costume' | 'sound',
-  assetId: string,
-  dataFormat: string,
-  ordinal: number
+  ordinal: number,
+  mediaCount: number
 ): SemanticLineageRecord
 {
-  const matches = lineage.records.filter(
-    (record) =>
-      record.status === 'active' &&
-      record.kind === mediaKind &&
-      record.ownerLineageId === targetLineageId &&
-      record.rawIdentity === `${mediaKind}:${assetId}:${dataFormat}:${ordinal}`
+  const ordered = activeOrderedSemanticLineages(
+    lineage,
+    mediaKind,
+    targetLineageId
   )
-  if (matches.length !== 1)
+  const selected = ordered[ordinal]
+  if (ordered.length !== mediaCount || !selected)
     throw new EditSessionErrorV1(
       'edit.internal_invariant',
       'inspection media evidence does not have one active lineage'
     )
-  return matches[0]!
+  return selected
 }
 
 function boundedInspectionDisplayStringV1(
@@ -2968,6 +2966,7 @@ export class EditSessionV1
       toolName,
       requestId,
       sessionId: this.sessionId,
+      semanticAuthorityId: this.#semanticAuthorityId,
       boundaryKind: correlationBoundaryKind(invocation.boundaryKind),
       request: requestProjection,
       transportRequest: transportRequestProjection,
@@ -4917,9 +4916,10 @@ export class EditSessionV1
                 activeLineage,
                 targetLineage.lineageId,
                 evidence.mediaKind,
-                evidence.assetId,
-                evidence.dataFormat,
-                evidence.ordinal
+                evidence.ordinal,
+                project.json.targets[evidence.targetIndex]![
+                  evidence.mediaKind === 'costume' ? 'costumes' : 'sounds'
+                ].length
               ).lineageId,
             }
           })
@@ -11223,19 +11223,22 @@ export class EditSessionRegistryV1
       beginNamespaceSha256,
       purpose: 'session-begin',
     })
-    const reservedBytes = intake.bytes.byteLength * 3 + 4 * 1024 * 1024
-    const beginRecoveryAuthorityBytes = editCanonicalBytesV1({
+    let reservedBytes = 0
+    const beginRecoveryAuthority = {
       schemaVersion: 1,
       kind: 'edit-session-begin-recovery-authority-v1',
       sessionId,
       sessionKey,
       beginNamespaceSha256,
       reservationId,
-      reservedBytes,
       sourceArtifactSha256: intake.expectedArtifactSha256,
       semanticSourceSha256,
       changeContractSha256: bound.registration.semanticContractSha256,
       capabilityProfileSha256: profile.capabilityProfileSha256,
+    }
+    let beginRecoveryAuthorityBytes = editCanonicalBytesV1({
+      ...beginRecoveryAuthority,
+      reservedBytes,
     })
     const effectiveArtifactByteLimit = Math.min(
       this.#policy.artifactByteLimit,
@@ -11363,12 +11366,13 @@ export class EditSessionRegistryV1
       profile.capabilityProfileSha256,
       [revision]
     )
-    const preReportRetainedBytes = [
-      beginRecoveryAuthorityBytes,
+    const fixedRetainedBytes = [
       ...sourceArtifacts.map(([, bytes]) => bytes),
       ...revisionArtifacts.map(([, bytes]) => bytes),
       eventBytes,
     ].reduce((total, bytes) => total + bytes.byteLength, 0)
+    let preReportRetainedBytes =
+      fixedRetainedBytes + beginRecoveryAuthorityBytes.byteLength
     let report: EditKernelReportV1 = {
       semanticProjection: semanticReport.projection,
       semanticProjectionSha256: semanticReport.sha256,
@@ -11406,6 +11410,14 @@ export class EditSessionRegistryV1
     let reportManifestBytes: Uint8Array = new Uint8Array()
     for (let iteration = 0; iteration < 16; iteration += 1)
     {
+      // reserve actual retained records, including the size of this reservation
+      reservedBytes = projectedArtifactBytes
+      beginRecoveryAuthorityBytes = editCanonicalBytesV1({
+        ...beginRecoveryAuthority,
+        reservedBytes,
+      })
+      preReportRetainedBytes =
+        fixedRetainedBytes + beginRecoveryAuthorityBytes.byteLength
       report = {
         ...report,
         budget: {
@@ -11591,6 +11603,7 @@ export class EditSessionRegistryV1
         sessionManifestBytes
       )
       retainedBytes += retainedSessionManifest.byteLength
+      recoveryMaterial.retainedBytes = retainedBytes
       headCommitted = true
       recoveryMaterial.headPointerSha256 = headPointer.sha256
       const reportPointer = await compareAndReconcilePointer(

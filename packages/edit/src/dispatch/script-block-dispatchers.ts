@@ -10,6 +10,7 @@ import {
   applyScriptStructuralOperationV1,
   blockFieldFingerprintV1,
   blockInputFingerprintV1,
+  blockEntityEvidenceSetV1,
   commentEntityEvidenceSetV1,
   commentSetSha256V1,
   declarationEntityEvidenceSetV1,
@@ -72,8 +73,6 @@ import {
   exactContractRefV1 as exactContractRef,
   exactPlanningChoiceValueV1,
   futureBindingAlreadyRealizedV1 as futureBindingAlreadyRealized,
-  resultBlockEvidenceV1 as resultBlockEvidence,
-  resultScriptEvidenceV1 as resultScriptEvidence,
   targetCommentRawIdentitiesV1 as targetCommentRawIdentities,
   targetPlanningProjectionV1 as planningTarget,
   targetScriptRawIdentitiesV1 as targetScriptRawIdentities,
@@ -1425,6 +1424,23 @@ function resolveBlockDispatch(
   }
 }
 
+function planningFactProjectionFromResolvedV1(
+  context: ProductionOperationContextV1,
+  resolved: ResolvedScriptDispatchV1 | ResolvedBlockDispatchV1
+): ScriptBlockPlanningFactProjectionV1
+{
+  return {
+    kind: 'group-d-graph-planning-fact-set',
+    schemaVersion: 1,
+    operationKind: resolved.operation.kind,
+    opId: resolved.operation.opId,
+    selectedEntities: resolved.planningEntities,
+    selectedLineageIds: resolved.selectedLineageIds,
+    catalogEvidence: retainedEditSemanticAuthorityV1(context.input).catalogEvidence,
+    facts: resolved.facts,
+  }
+}
+
 function productionGroupDPlanningFactProjectionV1(
   context: ProductionOperationContextV1,
   operation: ScriptBlockOperationV1
@@ -1433,16 +1449,7 @@ function productionGroupDPlanningFactProjectionV1(
   const resolved = operation.kind.startsWith('script.')
     ? resolveScriptDispatch(context, operation as ScriptBlockScriptOperationV1)
     : resolveBlockDispatch(context, operation as ScriptBlockBlockOperationV1)
-  return {
-    kind: 'group-d-graph-planning-fact-set',
-    schemaVersion: 1,
-    operationKind: operation.kind,
-    opId: operation.opId,
-    selectedEntities: resolved.planningEntities,
-    selectedLineageIds: resolved.selectedLineageIds,
-    catalogEvidence: retainedEditSemanticAuthorityV1(context.input).catalogEvidence,
-    facts: resolved.facts,
-  }
+  return planningFactProjectionFromResolvedV1(context, resolved)
 }
 
 export function productionScriptBlockPlanningFactSetSha256V1(
@@ -1856,9 +1863,17 @@ export function productionScriptBlockChoicePlanningCompletionV1(
         '/comments'
       ) as SemanticEditOperationScriptRemoveV1['comments'],
     }
-    const plan = resolveScriptDispatch(context, provisional).sourceScriptPlan
-    if (!plan)
-      return fail('edit.internal_invariant', 'script closure plan is absent')
+    const resolved = resolveScriptDispatch(context, provisional)
+    if (!resolved.selectedScript)
+      return fail('edit.internal_invariant', 'selected script is absent')
+    // closure guards describe the candidate after the planned prefix
+    const plan = closurePlanningEvidence(
+      context.candidate,
+      resolved.targetIndex,
+      resolved.selectedScript.topBlockId,
+      'script',
+      context
+    )
     operation = {
       ...provisional,
       expectedClosureSha256: plan.closureSha256,
@@ -2034,7 +2049,17 @@ export function productionScriptBlockChoicePlanningCompletionV1(
         : {}),
     } as SemanticEditOperationBlockMoveV1 | SemanticEditOperationBlockRemoveV1
     const initialResolved = resolveBlockDispatch(context, provisional)
-    const plan = initialResolved.selectedClosurePlan
+    // removal guards describe the owner after the planned prefix rewires it
+    const plan =
+      goal.kind === 'block.remove'
+        ? closurePlanningEvidence(
+            context.candidate,
+            initialResolved.selectedBlock.targetIndex,
+            initialResolved.selectedBlock.blockId,
+            'ownedBlock',
+            context
+          )
+        : initialResolved.selectedClosurePlan
     if (!plan)
       return fail('edit.internal_invariant', 'block closure plan is absent')
     const sourceGap = completedSourceGapV1(
@@ -2780,10 +2805,53 @@ interface CollectedGroupDResultSlotsV1
   readonly dynamicSlots: readonly ProductionDynamicBlockResultSlotV1[]
 }
 
+interface PostOperationResultEvidenceV1
+{
+  readonly block: (blockId: string) => BlockEntityEvidenceV1
+  readonly script: (topBlockId: string) => ScriptEntityEvidenceV1
+}
+
+// result collection & scope matching read the same unchanged post-operation graph
+function postOperationResultEvidence(
+  project: ProjectIR,
+  targetIndex: number
+): PostOperationResultEvidenceV1
+{
+  let blocks: readonly BlockEntityEvidenceV1[] | undefined
+  let scripts: readonly ScriptEntityEvidenceV1[] | undefined
+  return {
+    block: (blockId) =>
+    {
+      const matches = (blocks ??= blockEntityEvidenceSetV1(project)).filter(
+        (evidence) =>
+          evidence.targetIndex === targetIndex && evidence.blockId === blockId
+      )
+      if (matches.length !== 1)
+        return fail(
+          'edit.internal_invariant',
+          'created block does not have one exact post-operation evidence row'
+        )
+      return matches[0]!
+    },
+    script: (topBlockId) =>
+    {
+      const matches = (scripts ??= scriptEntityEvidenceSetV1(project)).filter(
+        (evidence) =>
+          evidence.targetIndex === targetIndex && evidence.topBlockId === topBlockId
+      )
+      if (matches.length !== 1)
+        return fail(
+          'edit.internal_invariant',
+          'created script does not have one exact post-operation evidence row'
+        )
+      return matches[0]!
+    },
+  }
+}
+
 function collectScriptResultSlots(
-  context: ProductionOperationContextV1,
+  evidence: PostOperationResultEvidenceV1,
   operation: ScriptBlockScriptOperationV1,
-  targetIndex: number,
   targetLineageId: string,
   activeLineage: SemanticLineageSnapshot,
   applied: AppliedScriptStructuralOperationV1
@@ -2791,16 +2859,8 @@ function collectScriptResultSlots(
 {
   if (applied.createdTopBlockId === null)
     return { fixedSlots: Object.freeze([]), dynamicSlots: Object.freeze([]) }
-  const scriptEvidence = resultScriptEvidence(
-    context.candidate,
-    targetIndex,
-    applied.createdTopBlockId
-  )
-  const rootEvidence = resultBlockEvidence(
-    context.candidate,
-    targetIndex,
-    applied.createdTopBlockId
-  )
+  const scriptEvidence = evidence.script(applied.createdTopBlockId)
+  const rootEvidence = evidence.block(applied.createdTopBlockId)
   const scriptLineage = activeLineageForEvidence(
     activeLineage,
     targetLineageId,
@@ -2817,20 +2877,16 @@ function collectScriptResultSlots(
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([alias, blockId]) =>
     {
-      const evidence = resultBlockEvidence(
-        context.candidate,
-        targetIndex,
-        blockId
-      )
+      const blockEvidence = evidence.block(blockId)
       const lineage = activeLineageForEvidence(
         activeLineage,
         targetLineageId,
-        evidence
+        blockEvidence
       )
       return dynamicBlockSlot(
         aliasKind,
         alias,
-        evidence,
+        blockEvidence,
         lineage.lineageId,
         targetLineageId
       )
@@ -2857,8 +2913,7 @@ function collectScriptResultSlots(
 }
 
 function collectBlockResultSlots(
-  context: ProductionOperationContextV1,
-  targetIndex: number,
+  evidence: PostOperationResultEvidenceV1,
   targetLineageId: string,
   activeLineage: SemanticLineageSnapshot,
   lineage: ReconciledGroupDLineageV1,
@@ -2873,40 +2928,32 @@ function collectBlockResultSlots(
   ): void =>
   {
     if (blockId === null) return
-    const evidence = resultBlockEvidence(
-      context.candidate,
-      targetIndex,
-      blockId
-    )
+    const blockEvidence = evidence.block(blockId)
     const record = activeLineageForEvidence(
       activeLineage,
       targetLineageId,
-      evidence
+      blockEvidence
     )
     fixedSlots.push(
-      resultSlot('block', name, evidence, record.lineageId, targetLineageId)
+      resultSlot('block', name, blockEvidence, record.lineageId, targetLineageId)
     )
   }
   addFixedBlock('rootBlock', applied.rootBlockId)
   addFixedBlock('sourceGapRootBlock', applied.sourceGapRootBlockId)
   if (applied.destinationScriptRootBlockId !== null)
   {
-    const evidence = resultScriptEvidence(
-      context.candidate,
-      targetIndex,
-      applied.destinationScriptRootBlockId
-    )
+    const scriptEvidence = evidence.script(applied.destinationScriptRootBlockId)
     const record = activeLineageForEvidence(
       activeLineage,
       targetLineageId,
-      evidence
+      scriptEvidence
     )
     if (lineage.createdScriptLineageIds.includes(record.lineageId))
       fixedSlots.push(
         resultSlot(
           'script',
           'destinationScript',
-          evidence,
+          scriptEvidence,
           record.lineageId,
           targetLineageId
         )
@@ -2916,21 +2963,17 @@ function collectBlockResultSlots(
     ([left], [right]) => left.localeCompare(right)
   ))
   {
-    const evidence = resultBlockEvidence(
-      context.candidate,
-      targetIndex,
-      blockId
-    )
+    const blockEvidence = evidence.block(blockId)
     const record = activeLineageForEvidence(
       activeLineage,
       targetLineageId,
-      evidence
+      blockEvidence
     )
     dynamicSlots.push(
       dynamicBlockSlot(
         'blockAlias',
         alias,
-        evidence,
+        blockEvidence,
         record.lineageId,
         targetLineageId
       )
@@ -2940,21 +2983,17 @@ function collectBlockResultSlots(
     applied.sourceGapAliasBlockIds
   ).sort(([left], [right]) => left.localeCompare(right)))
   {
-    const evidence = resultBlockEvidence(
-      context.candidate,
-      targetIndex,
-      blockId
-    )
+    const blockEvidence = evidence.block(blockId)
     const record = activeLineageForEvidence(
       activeLineage,
       targetLineageId,
-      evidence
+      blockEvidence
     )
     dynamicSlots.push(
       dynamicBlockSlot(
         'blockAlias',
         alias,
-        evidence,
+        blockEvidence,
         record.lineageId,
         targetLineageId
       )
@@ -3047,6 +3086,9 @@ function matchResultBindings(
     results.map((slot) =>
     {
       const role = creationRoleForSlot(slot)
+      let slotScriptBindingKeys: readonly string[] | undefined
+      const scriptKeys = () =>
+        slotScriptBindingKeys ??= scriptBindingKeysForSlot(slot)
       const matches = context.contract.entityBindings
         .filter(
           (binding): binding is ScriptBlockFutureContractBindingV1 =>
@@ -3069,7 +3111,7 @@ function matchResultBindings(
             !futureBindingScopeMatches(
               binding,
               targetBindingKeysForCreation,
-              scriptBindingKeysForSlot(slot)
+              scriptKeys()
             )
           )
             return false
@@ -3450,19 +3492,21 @@ function executeResolvedScriptBlockOperation(
     beforeScriptRawIdentities,
     applied
   )
+  const resultEvidence = postOperationResultEvidence(
+    context.candidate,
+    resolved.targetIndex
+  )
   const slots =
     'createdTopBlockId' in applied
       ? collectScriptResultSlots(
-          context,
+          resultEvidence,
           operation as ScriptBlockScriptOperationV1,
-          resolved.targetIndex,
           resolved.targetLineageId,
           lineage.activeLineage,
           applied
         )
       : collectBlockResultSlots(
-          context,
-          resolved.targetIndex,
+          resultEvidence,
           resolved.targetLineageId,
           lineage.activeLineage,
           lineage,
@@ -3512,21 +3556,13 @@ function executeResolvedScriptBlockOperation(
         'edit.internal_invariant',
         'created block identity is invalid'
       )
-    const block = resultBlockEvidence(
-      context.candidate,
-      resolved.targetIndex,
-      blockId
-    )
+    const block = resultEvidence.block(blockId)
     if (block.scriptTopBlockId === null)
       return fail(
         'edit.internal_invariant',
         'created result block has no exact owning script'
       )
-    const script = resultScriptEvidence(
-      context.candidate,
-      resolved.targetIndex,
-      block.scriptTopBlockId
-    )
+    const script = resultEvidence.script(block.scriptTopBlockId)
     const scriptLineage = activeLineageForEvidence(
       lineage.activeLineage,
       resolved.targetLineageId,
@@ -3708,9 +3744,9 @@ class ScriptStructuralProductionOperationDispatcherV1 implements ProductionOpera
       )
     const scriptOperation = operation as ScriptBlockScriptOperationV1
     const resolved = resolveScriptDispatch(context, scriptOperation)
-    const planningFactProjection = productionGroupDPlanningFactProjectionV1(
+    const planningFactProjection = planningFactProjectionFromResolvedV1(
       context,
-      scriptOperation
+      resolved
     )
     return executeResolvedScriptBlockOperation(
       context,
@@ -3745,9 +3781,9 @@ class BlockStructuralProductionOperationDispatcherV1 implements ProductionOperat
       )
     const blockOperation = operation as ScriptBlockBlockOperationV1
     const resolved = resolveBlockDispatch(context, blockOperation)
-    const planningFactProjection = productionGroupDPlanningFactProjectionV1(
+    const planningFactProjection = planningFactProjectionFromResolvedV1(
       context,
-      blockOperation
+      resolved
     )
     return executeResolvedScriptBlockOperation(
       context,
