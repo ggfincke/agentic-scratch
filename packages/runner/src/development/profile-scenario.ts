@@ -29,7 +29,10 @@ import {
   type RuntimeExecutionProfileV1,
 } from './execution-profile.js'
 import { openProfileBrowserEngineV1 } from './profile-browser-engine.js'
-import type { ProfileBrowserEngineV1 } from './profile-browser-types.js'
+import type {
+  OpenProfileBrowserEngineOptionsV1,
+  ProfileBrowserEngineV1,
+} from './profile-browser-types.js'
 import { profileRuntimeDescriptorBeforeLaunchV1 } from '../browser/browser-host.js'
 
 export interface ExecuteProfileScenarioOptionsV1
@@ -38,6 +41,7 @@ export interface ExecuteProfileScenarioOptionsV1
   readonly screenshotDir: string
   readonly signal?: AbortSignal
   readonly maxDurationMs?: number
+  readonly archiveLimits?: OpenProfileBrowserEngineOptionsV1['archiveLimits']
 }
 export interface ProfileScenarioTraceV1 extends BrowserTrace
 {
@@ -123,6 +127,7 @@ export async function executeProfileScenarioV1(
         maxDurationMs,
         maxStateFrames: Math.max(1, maxTicks),
       },
+      archiveLimits: options.archiveLimits,
       signal: options.signal,
     })
     runtimeDescriptor = engine.runtimeDescriptor

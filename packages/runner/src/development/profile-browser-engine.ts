@@ -2,7 +2,11 @@
 // retain isolated profile browsers w/ ordered input delivery & close-safe state drains
 
 import { createHash } from 'node:crypto'
-import { unpackSb3, type ProjectJson } from '@scratch-agent/sb3'
+import {
+  resolveHardBoundedSb3Limits,
+  unpackSb3,
+  type ProjectJson,
+} from '@scratch-agent/sb3'
 import {
   openRenderedPageHost,
   type RenderedPageHost,
@@ -78,7 +82,9 @@ export async function openProfileBrowserEngineV1(
     throw new Error('seed & fixed date must be safe integers')
   const sb3 = Uint8Array.from(options.sb3)
   const sourceSha256 = createHash('sha256').update(sb3).digest('hex')
-  const admitted = await unpackSb3(sb3)
+  const admitted = await unpackSb3(sb3, {
+    limits: resolveHardBoundedSb3Limits(options.archiveLimits),
+  })
   const json = JSON.parse(admitted.projectJsonText) as ProjectJson
   const targets = json.targets.map((target, targetIndex) => ({
     targetIndex,

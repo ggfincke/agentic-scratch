@@ -1323,6 +1323,7 @@ async function evaluateCandidate(
                   screenshotDir: directory,
                   maxDurationMs:
                     AUTHORING_EVALUATION_POLICY_V2.maxRuntimeDurationMs,
+                  archiveLimits: request.archiveLimits,
                   signal: request.signal,
                 })
           assertEvaluationActive(request.signal)
