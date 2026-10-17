@@ -185,7 +185,7 @@ Audio preparation preserves supported sample rate and mono/stereo channels by
 default and emits PCM16 WAV. Sources remain immutable, with source,
 transformation, output, and configured decoder identities retained.
 
-Whole builds enforce 6,144 costumes, 1,024 costumes per target, 100 MiB asset
+Whole builds enforce 6,144 costumes, 2,048 costumes per target, 100 MiB asset
 payload, 50 MiB `.sb3`, and 256 MiB estimated decoded costume memory by
 default; build limits may raise each up to its hard ceiling. Sequential
 preparation also caps each frame at sixteen transforms, live decoded buffers at

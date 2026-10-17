@@ -143,7 +143,7 @@ export const HARD_WORKSPACE_BUILD_LIMITS_V2: Readonly<WorkspaceBuildLimitsV2> =
       HARD_EDIT_ADMISSION_LIMITS,
       HARD_SB3_LIMITS
     ),
-    maximumSourceBytes: 160 * 1024 * 1024,
+    maximumSourceBytes: 512 * 1024 * 1024,
     maximumPreparedAssets: 4096,
     maximumSourceFiles: 4096,
   })
