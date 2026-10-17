@@ -3,7 +3,10 @@
 
 import { createHash } from 'node:crypto'
 
-import { DEFAULT_EDIT_ADMISSION_LIMITS } from '@scratch-agent/sb3'
+import {
+  resolveEditAdmissionLimits,
+  type EditAdmissionLimits,
+} from '@scratch-agent/sb3'
 import {
   canonicalJsonBytesV1,
   canonicalJsonV1,
@@ -21,13 +24,33 @@ const CATALOG_KEYS = [
   'declarations',
   'diagnostics',
 ] as const
-// runtime traces snapshot every admitted list, so they get edit-admission limits
-const TRACE_LIMITS = Object.freeze({
-  maxDepth: DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonDepth,
-  maxNodes: DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonNodes,
-  maxMembers: DEFAULT_EDIT_ADMISSION_LIMITS.maxMembersPerContainer,
-  maxStringCodeUnits: DEFAULT_CANONICAL_JSON_LIMITS.maxStringCodeUnits,
-})
+
+// the edit-admission keys a build's resolved limits may raise for its traces
+export type AuthoringTraceLimitOptionsV1 = Partial<
+  Pick<EditAdmissionLimits, 'maxJsonNodes' | 'maxMembersPerContainer'>
+>
+
+// runtime traces snapshot every admitted list, so they get edit-admission limits,
+// resolved up to the hard ceilings; the limits decide refusal, never the bytes
+export function authoringTraceLimitsV1(
+  options: AuthoringTraceLimitOptionsV1 = {}
+)
+{
+  const limits = resolveEditAdmissionLimits({
+    ...(options.maxJsonNodes === undefined
+      ? {}
+      : { maxJsonNodes: options.maxJsonNodes }),
+    ...(options.maxMembersPerContainer === undefined
+      ? {}
+      : { maxMembersPerContainer: options.maxMembersPerContainer }),
+  })
+  return Object.freeze({
+    maxDepth: limits.maxJsonDepth,
+    maxNodes: limits.maxJsonNodes,
+    maxMembers: limits.maxMembersPerContainer,
+    maxStringCodeUnits: DEFAULT_CANONICAL_JSON_LIMITS.maxStringCodeUnits,
+  })
+}
 
 type Encode = (value: unknown) => Uint8Array
 
@@ -63,9 +86,14 @@ function boundedBytes(value: unknown): Uint8Array
 }
 
 // * trace hashes, stored trace components, & their decode check share this
-export function authoringTraceBytesV1(value: unknown): Uint8Array
+export function authoringTraceBytesV1(
+  value: unknown,
+  traceLimits: AuthoringTraceLimitOptionsV1 = {}
+): Uint8Array
 {
-  return new TextEncoder().encode(canonicalJsonV1(value, TRACE_LIMITS))
+  return new TextEncoder().encode(
+    canonicalJsonV1(value, authoringTraceLimitsV1(traceLimits))
+  )
 }
 
 function aggregate(bytes: Uint8Array, lengths: readonly number[]): void
@@ -89,7 +117,8 @@ function exceedsDocumentBudget(error: unknown): boolean
 
 // ordinary small records keep their exact historical canonical bytes
 export function encodeAuthoringEvidenceV1(
-  value: unknown
+  value: unknown,
+  traceLimits: AuthoringTraceLimitOptionsV1 = {}
 ): EncodedAuthoringEvidenceV1
 {
   try
@@ -102,13 +131,14 @@ export function encodeAuthoringEvidenceV1(
   {
     if (!exceedsDocumentBudget(error)) throw error
   }
-  return componentEvidence(value, true)
+  return componentEvidence(value, true, traceLimits)
 }
 
 // refusal identities remain computable when retention must reject the byte total
 function componentEvidence(
   value: unknown,
-  retain: boolean
+  retain: boolean,
+  traceLimits: AuthoringTraceLimitOptionsV1
 ): EncodedAuthoringEvidenceV1
 {
   const content = record(value)
@@ -156,7 +186,12 @@ function componentEvidence(
   const lanes = content.lanes.map((value) =>
   {
     const lane = record(value)
-    return { ...lane, trace: put(lane.trace, authoringTraceBytesV1) }
+    return {
+      ...lane,
+      trace: put(lane.trace, (part) =>
+        authoringTraceBytesV1(part, traceLimits)
+      ),
+    }
   })
   const bytes = boundedBytes({
     kind: KIND,
@@ -168,7 +203,10 @@ function componentEvidence(
   return { bytes, components }
 }
 
-export function authoringEvidenceSha256V1(value: unknown): string
+export function authoringEvidenceSha256V1(
+  value: unknown,
+  traceLimits: AuthoringTraceLimitOptionsV1 = {}
+): string
 {
   try
   {
@@ -178,7 +216,7 @@ export function authoringEvidenceSha256V1(value: unknown): string
   {
     if (!exceedsDocumentBudget(error)) throw error
   }
-  return hash(componentEvidence(value, false).bytes)
+  return hash(componentEvidence(value, false, traceLimits).bytes)
 }
 
 function component(value: unknown): AuthoringEvidenceComponentV1
@@ -199,7 +237,8 @@ function component(value: unknown): AuthoringEvidenceComponentV1
 // callers provide an owner-bound immutable reader, never paths from the envelope
 export async function decodeAuthoringEvidenceV1(
   bytes: Uint8Array,
-  read: (component: AuthoringEvidenceComponentV1) => Promise<Uint8Array>
+  read: (component: AuthoringEvidenceComponentV1) => Promise<Uint8Array>,
+  traceLimits: AuthoringTraceLimitOptionsV1 = {}
 ): Promise<unknown>
 {
   if (bytes.byteLength > MAX_BYTES)
@@ -259,7 +298,12 @@ export async function decodeAuthoringEvidenceV1(
   const lanes = content.lanes.map((value) =>
   {
     const lane = record(value)
-    return { lane, ref: register(lane.trace, authoringTraceBytesV1) }
+    return {
+      lane,
+      ref: register(lane.trace, (part) =>
+        authoringTraceBytesV1(part, traceLimits)
+      ),
+    }
   })
   aggregate(
     bytes,
@@ -308,7 +352,7 @@ export async function decodeAuthoringEvidenceV1(
     })),
   }
   if (
-    !Buffer.from(encodeAuthoringEvidenceV1(restored).bytes).equals(
+    !Buffer.from(encodeAuthoringEvidenceV1(restored, traceLimits).bytes).equals(
       Buffer.from(bytes)
     )
   )

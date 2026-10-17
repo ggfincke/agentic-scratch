@@ -371,6 +371,15 @@ export async function createAuthoringWorkspaceServiceV1(
   )
 }
 
+// evaluation traces & their retained components charge the plan's resolved JSON limits
+function traceLimitsOf(plan: PlanRecord)
+{
+  return {
+    maxJsonNodes: plan.plan.limits.maximumJsonNodes,
+    maxMembersPerContainer: plan.plan.limits.maximumMembersPerContainer,
+  }
+}
+
 export class AuthoringWorkspaceServiceV1
 {
   #workspaces = new Map<string, Workspace>()
@@ -780,7 +789,10 @@ export class AuthoringWorkspaceServiceV1
           result.evaluationPolicySha256 !==
             authoringEvaluationPolicySha256V3(request) ||
           evidenceSha256 !==
-            authoringCandidateEvaluationEvidenceSha256V3(content) ||
+            authoringCandidateEvaluationEvidenceSha256V3(
+              content,
+              request.editLimits
+            ) ||
           !['accepted', 'refused'].includes(result.disposition) ||
           !result.evidenceRoot ||
           !isPathWithinRootV1(stage, result.evidenceRoot)
@@ -843,7 +855,8 @@ export class AuthoringWorkspaceServiceV1
         evidenceSha256: result.evidenceSha256,
       })
       const encoded = encodeAuthoringEvidenceV1(
-        JSON.parse(JSON.stringify(result))
+        JSON.parse(JSON.stringify(result)),
+        request.editLimits
       )
       const componentArtifacts: AuthoringArtifactRefV1[] = []
       for (const component of encoded.components)
@@ -1452,7 +1465,8 @@ export class AuthoringWorkspaceServiceV1
           )
         usedComponents.add(index)
         return workspace.retention.read(componentArtifacts[index]!)
-      }
+      },
+      traceLimitsOf(plan)
     )) as AuthoringCandidateEvaluation
     if (usedComponents.size !== componentArtifacts.length)
       throw new Error('authoring evaluation component membership differs')
@@ -3272,6 +3286,7 @@ export class AuthoringWorkspaceServiceV1
         maxTotalAssetBytes: plan.plan.limits.maximumAssetBytes,
         maxAssetBytes: plan.plan.limits.maximumBytesPerAsset,
       },
+      editLimits: traceLimitsOf(plan),
     }
   }
 

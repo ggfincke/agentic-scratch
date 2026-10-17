@@ -41,6 +41,7 @@ import {
   authoringEvidenceSha256V1,
   authoringTraceBytesV1,
   encodeAuthoringEvidenceV1,
+  type AuthoringTraceLimitOptionsV1,
 } from './bounded-evidence.js'
 import {
   inspectSelectedProject,
@@ -83,6 +84,8 @@ export interface AuthoringCandidateEvaluationRequestV2
   assertions?: readonly AuthoringEvaluationAssertionV2[]
   // the build's resolved archive limits; absent keys keep the defaults
   archiveLimits?: Sb3LimitOptions
+  // the build's resolved JSON node & member limits for v3 traces
+  editLimits?: AuthoringTraceLimitOptionsV1
   evidenceRoot?: string
   signal?: AbortSignal
 }
@@ -268,10 +271,16 @@ function evidenceBytes(value: unknown): Uint8Array
 }
 
 // v3 traces snapshot every admitted list, so they hash under trace limits
-function traceHash(trace: unknown, version: 2 | 3): string
+function traceHash(
+  trace: unknown,
+  version: 2 | 3,
+  traceLimits: AuthoringTraceLimitOptionsV1 = {}
+): string
 {
   return version === 3
-    ? sha256(authoringTraceBytesV1(JSON.parse(JSON.stringify(trace))))
+    ? sha256(
+        authoringTraceBytesV1(JSON.parse(JSON.stringify(trace)), traceLimits)
+      )
     : recordHash(trace)
 }
 
@@ -842,10 +851,14 @@ export function authoringEvaluationPolicySha256V2(
 }
 
 export function authoringCandidateEvaluationEvidenceSha256V3(
-  value: Omit<AuthoringCandidateEvaluationV3, 'evidenceSha256'>
+  value: Omit<AuthoringCandidateEvaluationV3, 'evidenceSha256'>,
+  traceLimits: AuthoringTraceLimitOptionsV1 = {}
 ): string
 {
-  return authoringEvidenceSha256V1(JSON.parse(JSON.stringify(value)))
+  return authoringEvidenceSha256V1(
+    JSON.parse(JSON.stringify(value)),
+    traceLimits
+  )
 }
 
 export function authoringEvaluationPolicySha256V3(
@@ -991,7 +1004,10 @@ function validateCandidateEvaluation(
       recordHash(value.runtimeTargets) !== recordHash(policy.targets) ||
       evidenceSha256 !==
         (version === 3
-          ? authoringEvidenceSha256V1(JSON.parse(JSON.stringify(content)))
+          ? authoringEvidenceSha256V1(
+              JSON.parse(JSON.stringify(content)),
+              request.editLimits
+            )
           : recordHash(content))
     )
       issues.push(
@@ -1072,7 +1088,8 @@ function validateCandidateEvaluation(
           !cell.accepted ||
           cell.issues.length !== 0 ||
           cell.scenarioSha256 !== scenario.scenarioSha256 ||
-          cell.traceSha256 !== traceHash(cell.trace, version) ||
+          cell.traceSha256 !==
+            traceHash(cell.trace, version, request.editLimits) ||
           !runtimeMatches ||
           recordHash(cell.runtimeDescriptor) !==
             recordHash(cell.trace.runtimeDescriptor) ||
@@ -1354,7 +1371,7 @@ async function evaluateCandidate(
             runtimeIdentitySha256,
             ...(version === 3 ? { browserInstallationIdentity } : {}),
             runtimeDescriptor: trace.runtimeDescriptor,
-            traceSha256: traceHash(trace, version),
+            traceSha256: traceHash(trace, version, request.editLimits),
             assertions: results,
             accepted: cellIssues.length === 0,
             issues: cellIssues,
@@ -1448,7 +1465,10 @@ async function evaluateCandidate(
     ...result,
     evidenceSha256:
       version === 3
-        ? authoringEvidenceSha256V1(JSON.parse(JSON.stringify(result)))
+        ? authoringEvidenceSha256V1(
+            JSON.parse(JSON.stringify(result)),
+            request.editLimits
+          )
         : recordHash(result),
   } as AuthoringCandidateEvaluation
   if (result.evidenceRoot)
@@ -1457,7 +1477,10 @@ async function evaluateCandidate(
     {
       const encoded =
         version === 3
-          ? encodeAuthoringEvidenceV1(JSON.parse(JSON.stringify(completed)))
+          ? encodeAuthoringEvidenceV1(
+              JSON.parse(JSON.stringify(completed)),
+              request.editLimits
+            )
           : { bytes: evidenceBytes(completed), components: [] }
       const bytes = encoded.bytes
       if (bytes.byteLength > AUTHORING_EVALUATION_POLICY_V2.maxEvidenceBytes)
@@ -1495,7 +1518,10 @@ async function evaluateCandidate(
         ...result,
         evidenceSha256:
           version === 3
-            ? authoringEvidenceSha256V1(JSON.parse(JSON.stringify(result)))
+            ? authoringEvidenceSha256V1(
+                JSON.parse(JSON.stringify(result)),
+                request.editLimits
+              )
             : recordHash(result),
       } as AuthoringCandidateEvaluation
     }
