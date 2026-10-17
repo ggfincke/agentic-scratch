@@ -40,8 +40,9 @@ evidence roots. For example:
 }
 ```
 
-Configurations may lower resource limits. Project files cannot grant roots or
-raise limits. A configured `ffmpeg.executablePath` enables MP3 and IMA-ADPCM WAV
+Configurations may lower resource limits, and may raise edit and archive
+admission limits up to the toolkit's hard ceilings. Project files cannot grant
+roots or raise limits. A configured `ffmpeg.executablePath` enables MP3 and IMA-ADPCM WAV
 decoding; no executable is installed automatically. Integer PCM WAV decoding
 uses the native implementation.
 
@@ -184,8 +185,9 @@ Audio preparation preserves supported sample rate and mono/stereo channels by
 default and emits PCM16 WAV. Sources remain immutable, with source,
 transformation, output, and configured decoder identities retained.
 
-Whole builds enforce 4,096 costumes, 1,024 costumes per target, 100 MiB asset
-payload, 50 MiB `.sb3`, and 256 MiB estimated decoded costume memory. Sequential
+Whole builds enforce 6,144 costumes, 1,024 costumes per target, 100 MiB asset
+payload, 50 MiB `.sb3`, and 256 MiB estimated decoded costume memory by
+default; build limits may raise each up to its hard ceiling. Sequential
 preparation also caps each frame at sixteen transforms, live decoded buffers at
 128 MiB, and each job at 268,435,456 pixel visits. Shared payloads and repeated
 costume references have distinct accounting; bulk builds use one global budget.

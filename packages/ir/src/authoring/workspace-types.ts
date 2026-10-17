@@ -281,6 +281,18 @@ export interface WorkspaceBuildLimitsV2
   readonly maximumProjectJsonBytes: number
   readonly maximumDecodedCostumeBytes: number
   readonly maximumSourceBytes: number
+  readonly maximumRuntimeScalarSlots: number
+  readonly maximumSounds: number
+  readonly maximumSoundsPerTarget: number
+  readonly maximumIndexedSemanticRecords: number
+  readonly maximumJsonNodes: number
+  readonly maximumMembersPerContainer: number
+  readonly maximumListItemsPerList: number
+  readonly maximumStringCodeUnits: number
+  readonly maximumArchiveEntries: number
+  readonly maximumBytesPerAsset: number
+  readonly maximumPreparedAssets: number
+  readonly maximumSourceFiles: number
 }
 export interface WorkspaceBuildPlanV2
 {

@@ -6,6 +6,9 @@ export interface EditAdmissionLimits
   maxJsonDepth: number
   maxMembersPerContainer: number
   maxJsonNodes: number
+  // admission bounds strings only through project.json bytes; workspace compiles charge authored source strings
+  // against this & evidence hashes accept strings up to its hard value
+  maxStringCodeUnits: number
   maxTargets: number
   maxBlockRecords: number
   maxScriptRoots: number
@@ -43,6 +46,7 @@ export const DEFAULT_EDIT_ADMISSION_LIMITS: Readonly<EditAdmissionLimits> =
     maxJsonDepth: 128,
     maxMembersPerContainer: 100_000,
     maxJsonNodes: 2_000_000,
+    maxStringCodeUnits: 1024 * 1024,
     maxTargets: 256,
     maxBlockRecords: 40_000,
     maxScriptRoots: 4_096,
@@ -78,6 +82,7 @@ export const HARD_EDIT_ADMISSION_LIMITS: Readonly<EditAdmissionLimits> =
     maxJsonDepth: 128,
     maxMembersPerContainer: 100_000,
     maxJsonNodes: 2_000_000,
+    maxStringCodeUnits: 10 * 1024 * 1024,
     maxTargets: 512,
     maxBlockRecords: 50_000,
     maxScriptRoots: 8_192,

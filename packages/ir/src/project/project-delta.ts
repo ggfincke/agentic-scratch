@@ -4,8 +4,7 @@
 import { createHash } from 'node:crypto'
 
 import {
-  DEFAULT_EDIT_ADMISSION_LIMITS,
-  DEFAULT_SB3_LIMITS,
+  HARD_EDIT_ADMISSION_LIMITS,
   isBlockEntry,
   type Asset,
   type Block,
@@ -1412,15 +1411,16 @@ function decodedPointerPart(value: string): string
   return value.replaceAll('~1', '/').replaceAll('~0', '~')
 }
 
+// fingerprints admitted projects, so the hard admission ceilings bound it
 function valueFingerprint(value: unknown): string
 {
   return createHash('sha256')
     .update(
       canonicalJsonV1(value, {
-        maxDepth: DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonDepth,
-        maxNodes: DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonNodes,
-        maxMembers: DEFAULT_EDIT_ADMISSION_LIMITS.maxMembersPerContainer,
-        maxStringCodeUnits: DEFAULT_SB3_LIMITS.maxProjectJsonBytes,
+        maxDepth: HARD_EDIT_ADMISSION_LIMITS.maxJsonDepth,
+        maxNodes: HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes,
+        maxMembers: HARD_EDIT_ADMISSION_LIMITS.maxMembersPerContainer,
+        maxStringCodeUnits: HARD_EDIT_ADMISSION_LIMITS.maxStringCodeUnits,
       })
     )
     .digest('hex')

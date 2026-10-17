@@ -34,6 +34,8 @@ import { blankProject } from '@scratch-agent/ir'
 import {
   expandScratchWorkspaceManifestV2,
   parseScratchWorkspaceManifestV2,
+  workspaceAdmissionBuildLimitsV2,
+  WORKSPACE_BUILD_LIMITS_V2,
   type ScratchWorkspaceManifestV2,
   type WorkspaceBuildLimitsV2,
   type WorkspaceBuildPlanV2,
@@ -48,6 +50,8 @@ import {
   AUDIO_PIPELINE_DEFAULT_LIMITS_V1,
   DEFAULT_EDIT_ADMISSION_LIMITS,
   DEFAULT_SB3_LIMITS,
+  HARD_EDIT_ADMISSION_LIMITS,
+  HARD_SB3_LIMITS,
   normalizeAudioV1,
   type AssetPipelineLimitsV2,
   type AudioPipelineLimitsV1,
@@ -248,7 +252,12 @@ function fail(code: string, message: string): never
   throw new AuthoringWorkspaceErrorV1(code, message)
 }
 
-function lowered<T extends object>(defaults: T, options: Partial<T> = {}): T
+// host limits start from defaults & may only lower them, or raise them up to a hard table when one is given
+function lowered<T extends object>(
+  defaults: T,
+  options: Partial<T> = {},
+  maximums: T = defaults
+): T
 {
   const result = { ...defaults }
   for (const key of Object.keys(options))
@@ -257,7 +266,7 @@ function lowered<T extends object>(defaults: T, options: Partial<T> = {}): T
       return fail('authoring.invalid_permissions', `unknown host limit ${key}`)
     const name = key as keyof T
     const value = options[name]
-    const maximum = defaults[name]
+    const maximum = maximums[name]
     if (
       typeof value !== 'number' ||
       typeof maximum !== 'number' ||
@@ -267,7 +276,9 @@ function lowered<T extends object>(defaults: T, options: Partial<T> = {}): T
     )
       return fail(
         'authoring.invalid_permissions',
-        `${key} can only lower its finite default`
+        maximums === defaults
+          ? `${key} can only lower its finite default`
+          : `${key} must be a nonnegative safe integer at most ${maximum}`
       )
     result[name] = value as T[keyof T]
   }
@@ -282,17 +293,13 @@ function identity(prefix: string, content: unknown): string
 function compilationLimits(permissions: Permissions): WorkspaceBuildLimitsV2
 {
   return {
-    maximumTargets: permissions.editLimits.maxTargets,
-    maximumBlocks: permissions.editLimits.maxBlockRecords,
-    maximumScripts: permissions.editLimits.maxScriptRoots,
-    maximumDeclarations: permissions.editLimits.maxDeclarationRecords,
-    maximumCostumes: permissions.editLimits.maxCostumeRecords,
-    maximumCostumesPerTarget: permissions.editLimits.maxCostumesPerTarget,
-    maximumAssetBytes: permissions.archiveLimits.maxTotalAssetBytes,
-    maximumSb3Bytes: permissions.archiveLimits.maxCompressedBytes,
-    maximumProjectJsonBytes: permissions.archiveLimits.maxProjectJsonBytes,
-    maximumDecodedCostumeBytes: permissions.editLimits.maxPngDecodedRgbaBytes,
+    ...workspaceAdmissionBuildLimitsV2(
+      permissions.editLimits,
+      permissions.archiveLimits
+    ),
     maximumSourceBytes: permissions.limits.maxTotalSourceBytes,
+    maximumPreparedAssets: WORKSPACE_BUILD_LIMITS_V2.maximumPreparedAssets,
+    maximumSourceFiles: permissions.limits.maxSourceFiles,
   }
 }
 
@@ -337,8 +344,16 @@ export async function createAuthoringWorkspaceServiceV1(
     evidenceRoot,
     outputRoots,
     limits: lowered(AUTHORING_WORKSPACE_LIMITS_V1, input.limits),
-    archiveLimits: lowered(DEFAULT_SB3_LIMITS, input.archiveLimits),
-    editLimits: lowered(DEFAULT_EDIT_ADMISSION_LIMITS, input.editLimits),
+    archiveLimits: lowered(
+      DEFAULT_SB3_LIMITS,
+      input.archiveLimits,
+      HARD_SB3_LIMITS
+    ),
+    editLimits: lowered(
+      DEFAULT_EDIT_ADMISSION_LIMITS,
+      input.editLimits,
+      HARD_EDIT_ADMISSION_LIMITS
+    ),
     preprocessingLimits: lowered(
       ASSET_PIPELINE_LIMITS_V2,
       input.preprocessingLimits

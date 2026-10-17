@@ -2,7 +2,6 @@
 // resolve, guard, apply, & prove exact target-family semantic edits
 
 import {
-  DEFAULT_SB3_LIMITS,
   defineScratchRecordValue,
   HARD_EDIT_ADMISSION_LIMITS,
   isBlockEntry,
@@ -202,7 +201,7 @@ export const EDIT_EVIDENCE_CANONICAL_LIMITS_V1 = Object.freeze({
     HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes +
     HARD_EDIT_ADMISSION_LIMITS.maxIndexedSemanticRecords * 4,
   maxMembers: HARD_EDIT_ADMISSION_LIMITS.maxMembersPerContainer,
-  maxStringCodeUnits: DEFAULT_SB3_LIMITS.maxProjectJsonBytes,
+  maxStringCodeUnits: HARD_EDIT_ADMISSION_LIMITS.maxStringCodeUnits,
 })
 
 const CANONICAL_RESOURCE_LIMIT_CODES = new Set([

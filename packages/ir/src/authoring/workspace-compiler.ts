@@ -5,6 +5,8 @@ import { createHash } from 'node:crypto'
 import {
   DEFAULT_EDIT_ADMISSION_LIMITS,
   DEFAULT_SB3_LIMITS,
+  HARD_EDIT_ADMISSION_LIMITS,
+  HARD_SB3_LIMITS,
   ASSET_PIPELINE_LIMITS_V2,
   admitSb3ForEdit,
   deriveAuthoringMediaIdentity,
@@ -14,6 +16,8 @@ import {
   type Block,
   type BlockEntry,
   type DerivedMediaAssetIdentity,
+  type EditAdmissionLimits,
+  type Sb3Limits,
 } from '@scratch-agent/sb3'
 import { ProjectIR } from '../project/project-ir.js'
 import { computeProjectDelta } from '../project/project-delta.js'
@@ -88,21 +92,60 @@ import type {
   WorkspaceScriptRootV2,
 } from './workspace-types.js'
 
+type WorkspaceSourceBuildLimitKeyV2 =
+  'maximumSourceBytes' | 'maximumPreparedAssets' | 'maximumSourceFiles'
+
+// names the admission ceilings a build charges; the default & hard tables & host permissions map through it
+export function workspaceAdmissionBuildLimitsV2(
+  edit: Readonly<EditAdmissionLimits>,
+  archive: Readonly<Sb3Limits>
+): Omit<WorkspaceBuildLimitsV2, WorkspaceSourceBuildLimitKeyV2>
+{
+  return {
+    maximumTargets: edit.maxTargets,
+    maximumBlocks: edit.maxBlockRecords,
+    maximumScripts: edit.maxScriptRoots,
+    maximumDeclarations: edit.maxDeclarationRecords,
+    maximumCostumes: edit.maxCostumeRecords,
+    maximumCostumesPerTarget: edit.maxCostumesPerTarget,
+    maximumAssetBytes: archive.maxTotalAssetBytes,
+    maximumSb3Bytes: archive.maxCompressedBytes,
+    maximumProjectJsonBytes: archive.maxProjectJsonBytes,
+    maximumDecodedCostumeBytes: edit.maxPngDecodedRgbaBytes,
+    maximumRuntimeScalarSlots: edit.maxRuntimeScalarSlots,
+    maximumSounds: edit.maxSoundRecords,
+    maximumSoundsPerTarget: edit.maxSoundsPerTarget,
+    maximumIndexedSemanticRecords: edit.maxIndexedSemanticRecords,
+    maximumJsonNodes: edit.maxJsonNodes,
+    maximumMembersPerContainer: edit.maxMembersPerContainer,
+    maximumListItemsPerList: edit.maxListItemsPerList,
+    maximumStringCodeUnits: edit.maxStringCodeUnits,
+    maximumArchiveEntries: archive.maxEntries,
+    maximumBytesPerAsset: archive.maxAssetBytes,
+  }
+}
+
 export const WORKSPACE_BUILD_LIMITS_V2: Readonly<WorkspaceBuildLimitsV2> =
   Object.freeze({
-    maximumTargets: DEFAULT_EDIT_ADMISSION_LIMITS.maxTargets,
-    maximumBlocks: DEFAULT_EDIT_ADMISSION_LIMITS.maxBlockRecords,
-    maximumScripts: DEFAULT_EDIT_ADMISSION_LIMITS.maxScriptRoots,
-    maximumDeclarations: DEFAULT_EDIT_ADMISSION_LIMITS.maxDeclarationRecords,
-    maximumCostumes: DEFAULT_EDIT_ADMISSION_LIMITS.maxCostumeRecords,
-    maximumCostumesPerTarget:
-      DEFAULT_EDIT_ADMISSION_LIMITS.maxCostumesPerTarget,
-    maximumAssetBytes: DEFAULT_SB3_LIMITS.maxTotalAssetBytes,
-    maximumSb3Bytes: DEFAULT_SB3_LIMITS.maxCompressedBytes,
-    maximumProjectJsonBytes: DEFAULT_SB3_LIMITS.maxProjectJsonBytes,
-    maximumDecodedCostumeBytes:
-      DEFAULT_EDIT_ADMISSION_LIMITS.maxPngDecodedRgbaBytes,
+    ...workspaceAdmissionBuildLimitsV2(
+      DEFAULT_EDIT_ADMISSION_LIMITS,
+      DEFAULT_SB3_LIMITS
+    ),
     maximumSourceBytes: 160 * 1024 * 1024,
+    maximumPreparedAssets: 4096,
+    maximumSourceFiles: 4096,
+  })
+
+// the most a build input may raise each limit to
+export const HARD_WORKSPACE_BUILD_LIMITS_V2: Readonly<WorkspaceBuildLimitsV2> =
+  Object.freeze({
+    ...workspaceAdmissionBuildLimitsV2(
+      HARD_EDIT_ADMISSION_LIMITS,
+      HARD_SB3_LIMITS
+    ),
+    maximumSourceBytes: 160 * 1024 * 1024,
+    maximumPreparedAssets: 4096,
+    maximumSourceFiles: 4096,
   })
 
 interface EntityBinding
@@ -149,11 +192,26 @@ function limitsFor(
     if (!Object.hasOwn(limits, key))
       fail('limits', `unknown build limit ${key}`)
     const name = key as keyof WorkspaceBuildLimitsV2
-    if (!Number.isSafeInteger(value) || value < 0 || value > limits[name])
-      fail('limits', `${key} can only lower its ceiling ${limits[name]}`)
+    const hard = HARD_WORKSPACE_BUILD_LIMITS_V2[name]
+    if (!Number.isSafeInteger(value) || value < 0 || value > hard)
+      fail(
+        'limits',
+        `${key} must be a nonnegative safe integer at most ${hard}`
+      )
     limits[name] = value
   }
   return limits
+}
+
+// the longest string anywhere in a parsed source value
+function longestString(value: unknown): number
+{
+  if (typeof value === 'string') return value.length
+  if (value === null || typeof value !== 'object') return 0
+  let longest = 0
+  for (const child of Object.values(value))
+    longest = Math.max(longest, longestString(child))
+  return longest
 }
 
 function charge(label: string, observed: number, ceiling: number): void
@@ -499,8 +557,12 @@ export async function compileScratchWorkspaceV2(
 ): Promise<WorkspaceCompilationResultV2>
 {
   const limits = limitsFor(input.limits)
-  charge('prepared asset count', input.preparedAssets.length, 4096)
-  charge('source file count', input.files.length, 4096)
+  charge(
+    'prepared asset count',
+    input.preparedAssets.length,
+    limits.maximumPreparedAssets
+  )
+  charge('source file count', input.files.length, limits.maximumSourceFiles)
   if (!(input.baselineBytes instanceof Uint8Array))
     fail('baseline', 'payload must be a Uint8Array')
   charge(
@@ -515,6 +577,11 @@ export async function compileScratchWorkspaceV2(
     limits.maximumAssetBytes
   )
   const originalManifest = parseScratchWorkspaceManifestV2(input.manifest)
+  charge(
+    'source string code units',
+    longestString(originalManifest),
+    limits.maximumStringCodeUnits
+  )
   const baselineBytes = Uint8Array.from(input.baselineBytes)
   const files = input.files.map((file) => ({
     ...file,
@@ -570,12 +637,21 @@ export async function compileScratchWorkspaceV2(
     maxCostumesPerTarget: limits.maximumCostumesPerTarget,
     maxPngDecodedRgbaBytes: limits.maximumDecodedCostumeBytes,
     maxPngReferencePixels: Math.floor(limits.maximumDecodedCostumeBytes / 4),
+    maxRuntimeScalarSlots: limits.maximumRuntimeScalarSlots,
+    maxSoundRecords: limits.maximumSounds,
+    maxSoundsPerTarget: limits.maximumSoundsPerTarget,
+    maxIndexedSemanticRecords: limits.maximumIndexedSemanticRecords,
+    maxJsonNodes: limits.maximumJsonNodes,
+    maxMembersPerContainer: limits.maximumMembersPerContainer,
+    maxListItemsPerList: limits.maximumListItemsPerList,
+    maxStringCodeUnits: limits.maximumStringCodeUnits,
   }
   const archiveLimits = {
-    ...DEFAULT_SB3_LIMITS,
     maxCompressedBytes: limits.maximumSb3Bytes,
-    maxTotalAssetBytes: limits.maximumAssetBytes,
+    maxEntries: limits.maximumArchiveEntries,
     maxProjectJsonBytes: limits.maximumProjectJsonBytes,
+    maxAssetBytes: limits.maximumBytesPerAsset,
+    maxTotalAssetBytes: limits.maximumAssetBytes,
   }
   const admitted = await admitSb3ForEdit(baselineBytes, {
     editLimits,
@@ -613,7 +689,7 @@ export async function compileScratchWorkspaceV2(
       charge(
         'archive entries',
         candidate.assets.length + 2,
-        DEFAULT_SB3_LIMITS.maxEntries
+        limits.maximumArchiveEntries
       )
     }
   }
@@ -776,7 +852,7 @@ export async function compileScratchWorkspaceV2(
           charge(
             'runtime scalar slots',
             counts.runtimeScalarSlots,
-            DEFAULT_EDIT_ADMISSION_LIMITS.maxRuntimeScalarSlots
+            limits.maximumRuntimeScalarSlots
           )
           target.lists![id]![1] = [...declaration.initialItems]
         }
@@ -803,7 +879,7 @@ export async function compileScratchWorkspaceV2(
         charge(
           'runtime scalar slots',
           counts.runtimeScalarSlots,
-          DEFAULT_EDIT_ADMISSION_LIMITS.maxRuntimeScalarSlots
+          limits.maximumRuntimeScalarSlots
         )
         id = candidate.uids.next(
           declaration.kind === 'variable'
@@ -995,15 +1071,11 @@ export async function compileScratchWorkspaceV2(
       if (identity.mediaKind !== 'sound')
         fail(sound.assetId, 'sound kind differs')
       counts.sounds += 1
-      charge(
-        'sound records',
-        counts.sounds,
-        DEFAULT_EDIT_ADMISSION_LIMITS.maxSoundRecords
-      )
+      charge('sound records', counts.sounds, limits.maximumSounds)
       charge(
         'target sounds',
         target.sounds.length + 1,
-        DEFAULT_EDIT_ADMISSION_LIMITS.maxSoundsPerTarget
+        limits.maximumSoundsPerTarget
       )
       reserveAsset(identity.md5ext, asset.bytes)
       candidate.addAsset({ path: identity.md5ext, bytes: asset.bytes })
@@ -1104,6 +1176,11 @@ export async function compileScratchWorkspaceV2(
     {
       const targetIndex = targetIndexes.get(targetSource.id)!
       const source = parseWorkspaceProcedureFileV2(sourceJSON(ref.path))
+      charge(
+        'source string code units',
+        longestString(source),
+        limits.maximumStringCodeUnits
+      )
       const decoded = canonicalProcedureSignatureV1(source.signature)
       charge(
         'block records',
@@ -1186,6 +1263,11 @@ export async function compileScratchWorkspaceV2(
     {
       const targetIndex = targetIndexes.get(targetSource.id)!
       const file = parseWorkspaceScriptFileV2(sourceJSON(ref.path))
+      charge(
+        'source string code units',
+        longestString(file),
+        limits.maximumStringCodeUnits
+      )
       const graph = lowerer.lowerTopLevelRoot(
         candidate,
         targetIndex,
@@ -1305,7 +1387,7 @@ export async function compileScratchWorkspaceV2(
     assets.reduce((sum, asset) => sum + asset.bytes.byteLength, 0),
     limits.maximumAssetBytes
   )
-  charge('archive entries', assets.length + 1, DEFAULT_SB3_LIMITS.maxEntries)
+  charge('archive entries', assets.length + 1, limits.maximumArchiveEntries)
   const preprocessing = input.preprocessingCosts ?? {
     pixelVisits: 0,
     peakDecodedBytes: 0,
