@@ -145,7 +145,7 @@ export const HARD_WORKSPACE_BUILD_LIMITS_V2: Readonly<WorkspaceBuildLimitsV2> =
     ),
     maximumSourceBytes: 512 * 1024 * 1024,
     maximumPreparedAssets: 4096,
-    maximumSourceFiles: 4096,
+    maximumSourceFiles: 8192,
   })
 
 interface EntityBinding

@@ -22,11 +22,11 @@ export const DEFAULT_SB3_LIMITS: Readonly<Sb3Limits> = Object.freeze({
 
 // the most an edit admission or a workspace build may raise each limit to
 export const HARD_SB3_LIMITS: Readonly<Sb3Limits> = Object.freeze({
-  maxCompressedBytes: 256 * 1024 * 1024,
+  maxCompressedBytes: 512 * 1024 * 1024,
   maxEntries: 64_000,
-  maxProjectJsonBytes: 64 * 1024 * 1024,
+  maxProjectJsonBytes: 128 * 1024 * 1024,
   maxAssetBytes: 25 * 1024 * 1024,
-  maxTotalAssetBytes: 512 * 1024 * 1024,
+  maxTotalAssetBytes: 1024 * 1024 * 1024,
 })
 
 function assertLimit(

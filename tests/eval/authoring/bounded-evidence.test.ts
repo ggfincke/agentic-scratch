@@ -18,7 +18,7 @@ test('trace limits keep the default JSON caps & raise them only up to the hard c
 {
   assert.equal(DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonNodes, 2_000_000)
   assert.equal(DEFAULT_EDIT_ADMISSION_LIMITS.maxMembersPerContainer, 100_000)
-  assert.equal(HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes, 8_000_000)
+  assert.equal(HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes, 16_000_000)
   assert.equal(HARD_EDIT_ADMISSION_LIMITS.maxMembersPerContainer, 400_000)
   assert.deepEqual(authoringTraceLimitsV1(), {
     maxDepth: DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonDepth,
