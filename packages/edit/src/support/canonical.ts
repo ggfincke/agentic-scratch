@@ -1,7 +1,10 @@
 // packages/edit/src/support/canonical.ts
 // canonical byte, digest, opaque-ID, & exact-identity helpers for edit records
 
-import { DEFAULT_EDIT_ADMISSION_LIMITS } from '@scratch-agent/sb3'
+import {
+  DEFAULT_EDIT_ADMISSION_LIMITS,
+  HARD_EDIT_ADMISSION_LIMITS,
+} from '@scratch-agent/sb3'
 import {
   canonicalJsonV1,
   DEFAULT_CANONICAL_JSON_LIMITS,
@@ -13,13 +16,15 @@ import type {
   HeadProjectionV1,
 } from '@scratch-agent/ir/edit'
 
+// a project admitted at raised limits encodes, so the node & member bounds are
+// the hard ceilings; they decide refusal only, never the bytes
 export function editCanonicalBytesV1(value: unknown): Uint8Array
 {
   return new TextEncoder().encode(
     canonicalJsonV1(value, {
       maxDepth: DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonDepth,
-      maxNodes: DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonNodes,
-      maxMembers: DEFAULT_EDIT_ADMISSION_LIMITS.maxMembersPerContainer,
+      maxNodes: HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes,
+      maxMembers: HARD_EDIT_ADMISSION_LIMITS.maxMembersPerContainer,
       maxStringCodeUnits: DEFAULT_CANONICAL_JSON_LIMITS.maxStringCodeUnits,
     })
   )

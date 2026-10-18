@@ -6,6 +6,7 @@ import test from 'node:test'
 
 import {
   DEFAULT_EDIT_ADMISSION_LIMITS,
+  HARD_EDIT_ADMISSION_LIMITS,
   scanStrictJson,
 } from '@scratch-agent/sb3'
 
@@ -51,7 +52,11 @@ test('retained session JSON accepts the aggregate admission ceiling while remain
     /not strict bounded JSON: duplicate decoded object key/u
   )
 
-  const oversizedBytes = groupedScalarArrayBytes(20, 100_000)
+  // retained sessions scan at the hard node ceiling
+  const oversizedBytes = groupedScalarArrayBytes(
+    HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes / 100_000 + 1,
+    100_000
+  )
   assert.throws(
     () =>
       parseRetainedSessionJsonV1(oversizedBytes, 'oversized retained evidence'),

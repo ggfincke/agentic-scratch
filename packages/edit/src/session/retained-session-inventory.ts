@@ -3,6 +3,7 @@
 
 import {
   DEFAULT_EDIT_ADMISSION_LIMITS,
+  HARD_EDIT_ADMISSION_LIMITS,
   scanStrictJson,
 } from '@scratch-agent/sb3'
 import { sha256Hex } from '@scratch-agent/sb3/crypto-node'
@@ -22,10 +23,12 @@ import { retainedEditSemanticAuthorityV1 } from '../authority/semantic-authority
 
 export const SESSION_MANIFEST_PATTERN = /^sessions\/([^/]+)\/session\.json$/u
 const SESSION_ARTIFACT_PATTERN = /^sessions\/([^/]+)\/.+$/u
+// a session over a project admitted at raised limits retains it, so replay
+// scans at the hard node & member ceilings
 export const RETAINED_SESSION_JSON_LIMITS = Object.freeze({
   maxDepth: DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonDepth,
-  maxMembersPerContainer: DEFAULT_EDIT_ADMISSION_LIMITS.maxMembersPerContainer,
-  maxNodes: DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonNodes,
+  maxMembersPerContainer: HARD_EDIT_ADMISSION_LIMITS.maxMembersPerContainer,
+  maxNodes: HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes,
 })
 const SESSION_MANIFEST_FIELDS = Object.freeze([
   'absoluteDeadlineEpochMs',

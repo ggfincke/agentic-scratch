@@ -9,6 +9,7 @@ import type {
 } from '@scratch-agent/ir/authoring'
 import {
   DEFAULT_EDIT_ADMISSION_LIMITS,
+  HARD_EDIT_ADMISSION_LIMITS,
   type AssetPipelineLimitsV2,
   type AudioNormalizationEstimateV1,
   type AudioPipelineLimitsV1,
@@ -108,10 +109,11 @@ export function workspaceWorkerBytesV1(
         'worker metadata exceeds its bounded copy budget'
       )
   }
+  // the byte budget bounds the copy; the node bound admits a raised-limit project
   const visit = (entry: unknown, depth: number): void =>
   {
     if (
-      ++nodes > DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonNodes ||
+      ++nodes > HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes ||
       depth > DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonDepth + 32
     )
       throw new AuthoringWorkspaceErrorV1(
