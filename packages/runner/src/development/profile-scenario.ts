@@ -13,8 +13,8 @@ import type {
 } from '../policy/types.js'
 import { createObservationTrace } from '../observation/observation-host.js'
 import {
-  DEFAULT_RUNTIME_OBSERVATION_CAPS,
   defaultObservationPlan,
+  MAX_RUNTIME_OBSERVATION_CAPS,
 } from '../observation/observation.js'
 import { decodeRuntimePngRgbaV1 } from '../observation/png-decode.js'
 import {
@@ -165,11 +165,12 @@ export async function executeProfileScenarioV1(
       }
     }
     // each page snapshot stays under its own byte bound; the trace keeps a total
+    // sized for a project at the hard admission ceilings
     async function boundedSnapshot(label: string): Promise<VmStateSnapshot>
     {
       const snapshot = await engine!.snapshot(label)
       snapshotBytes += Buffer.byteLength(JSON.stringify(snapshot))
-      if (snapshotBytes > DEFAULT_RUNTIME_OBSERVATION_CAPS.traceBytesPerCell)
+      if (snapshotBytes > MAX_RUNTIME_OBSERVATION_CAPS.traceBytesPerCell)
         throw new Error('profile snapshots exceed their trace byte bound')
       return snapshot
     }

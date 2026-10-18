@@ -951,12 +951,15 @@ export function installProjectDebugPageV1(host: ProjectDebugPageHostV1): void
     {
       if (!prepared) throw new Error('debug runtime is not prepared')
       boundedText(label, 'snapshot label')
-      // admitted projects may hold up to the hard runtime scalar ceiling,
-      // and their tagged list data up to the hard snapshot byte ceiling
+      // admitted projects may hold up to the hard runtime scalar, list item &
+      // declaration ceilings, & their tagged list data up to the hard snapshot
+      // byte ceiling
       readBoundedSnapshot(
         runtime,
         createRuntimeObservationBudget({
           ...DEFAULT_RUNTIME_OBSERVATION_CAPS,
+          listItemsPerList: MAX_RUNTIME_OBSERVATION_CAPS.listItemsPerList,
+          recordsPerCell: MAX_RUNTIME_OBSERVATION_CAPS.recordsPerCell,
           scalarSlotsPerSnapshot:
             MAX_RUNTIME_OBSERVATION_CAPS.scalarSlotsPerSnapshot,
           snapshotBytes: MAX_RUNTIME_OBSERVATION_CAPS.snapshotBytes,
@@ -974,7 +977,7 @@ export function installProjectDebugPageV1(host: ProjectDebugPageHostV1): void
       // * profile-scenario bounds the trace total that these snapshots add up to
       if (
         new TextEncoder().encode(checked).byteLength >
-        DEFAULT_RUNTIME_OBSERVATION_CAPS.snapshotBytes
+        MAX_RUNTIME_OBSERVATION_CAPS.snapshotBytes
       )
         throw new Error('raw snapshot exceeds its byte bound')
       return value
