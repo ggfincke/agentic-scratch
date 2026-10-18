@@ -88,6 +88,7 @@ import {
 } from './workspace-publication.js'
 import {
   AUTHORING_WORKSPACE_LIMITS_V1,
+  HARD_AUTHORING_WORKSPACE_LIMITS_V1,
   AuthoringWorkspaceErrorV1,
   type AuthoringArtifactRefV1,
   type AuthoringOperatorPermissionsV1,
@@ -346,7 +347,11 @@ export async function createAuthoringWorkspaceServiceV1(
     sourceRoots,
     evidenceRoot,
     outputRoots,
-    limits: lowered(AUTHORING_WORKSPACE_LIMITS_V1, input.limits),
+    limits: lowered(
+      AUTHORING_WORKSPACE_LIMITS_V1,
+      input.limits,
+      HARD_AUTHORING_WORKSPACE_LIMITS_V1
+    ),
     archiveLimits: lowered(
       DEFAULT_SB3_LIMITS,
       input.archiveLimits,

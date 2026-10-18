@@ -41,7 +41,8 @@ evidence roots. For example:
 ```
 
 Configurations may lower resource limits, and may raise edit and archive
-admission limits up to the toolkit's hard ceilings. Project files cannot grant
+admission limits and the workspace's source and retained-byte limits up to the
+toolkit's hard ceilings. Project files cannot grant
 roots or raise limits. A configured `ffmpeg.executablePath` enables MP3 and IMA-ADPCM WAV
 decoding; no executable is installed automatically. Integer PCM WAV decoding
 uses the native implementation.

@@ -1,12 +1,14 @@
 // packages/edit/src/authoring/workspace-types.ts
 // operator permissions & retained identities for whole-project authoring
 
-import type {
-  AssetPipelineLimitsV2,
-  AudioPipelineLimitsV1,
-  ConfiguredAudioDecoderV1,
-  EditAdmissionLimits,
-  Sb3Limits,
+import { HARD_WORKSPACE_BUILD_LIMITS_V2 } from '@scratch-agent/ir/authoring'
+import {
+  HARD_SB3_LIMITS,
+  type AssetPipelineLimitsV2,
+  type AudioPipelineLimitsV1,
+  type ConfiguredAudioDecoderV1,
+  type EditAdmissionLimits,
+  type Sb3Limits,
 } from '@scratch-agent/sb3'
 import type { AuthoringRuntimeIdentityV2 } from '@scratch-agent/eval'
 
@@ -22,6 +24,18 @@ export const AUTHORING_WORKSPACE_LIMITS_V1 = Object.freeze({
   maxRetainedArtifacts: 16384,
   maxInspectionPageSize: 64,
   maxArtifactReadBytes: 1024 * 1024,
+})
+
+// the most a host may raise each workspace limit to: sources at the hard build &
+// admission ceilings, & a retained budget above a worker holding a hard-sized
+// archive, its output & twice its assets; record counts stay at their defaults
+export const HARD_AUTHORING_WORKSPACE_LIMITS_V1 = Object.freeze({
+  ...AUTHORING_WORKSPACE_LIMITS_V1,
+  maxSourceFiles: HARD_WORKSPACE_BUILD_LIMITS_V2.maximumSourceFiles,
+  maxSourceFileBytes: HARD_SB3_LIMITS.maxCompressedBytes,
+  maxSourceJsonBytes: HARD_SB3_LIMITS.maxProjectJsonBytes,
+  maxTotalSourceBytes: HARD_WORKSPACE_BUILD_LIMITS_V2.maximumSourceBytes,
+  maxRetainedBytes: 8 * 1024 * 1024 * 1024,
 })
 
 export interface AuthoringWorkspaceLimitsV1
