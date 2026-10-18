@@ -195,12 +195,17 @@ function editError(
   throw new TargetOperationError(code, message, matchCount)
 }
 
+// the evidence a plan hashes (a project delta, an entity set) keys one object by every block or record it covers, so
+// its one container may hold more members than any project.json container the admission ceiling bounds; the node
+// ceiling still bounds the whole value
 export const EDIT_EVIDENCE_CANONICAL_LIMITS_V1 = Object.freeze({
   maxDepth: HARD_EDIT_ADMISSION_LIMITS.maxJsonDepth + 32,
   maxNodes:
     HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes +
     HARD_EDIT_ADMISSION_LIMITS.maxIndexedSemanticRecords * 4,
-  maxMembers: HARD_EDIT_ADMISSION_LIMITS.maxMembersPerContainer,
+  maxMembers:
+    HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes +
+    HARD_EDIT_ADMISSION_LIMITS.maxIndexedSemanticRecords * 4,
   maxStringCodeUnits: HARD_EDIT_ADMISSION_LIMITS.maxStringCodeUnits,
 })
 
