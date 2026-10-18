@@ -14,7 +14,9 @@ import {
   DEFAULT_CANONICAL_JSON_LIMITS,
 } from '@scratch-agent/sb3/canonical-json'
 
-const MAX_BYTES = 128 * 1024 * 1024
+// a project at the hard admission ceilings retains about 160 MiB of inspection
+// catalog (about 260 bytes a block) & a 180 MiB smoke trace (about 45 a slot)
+const MAX_BYTES = 512 * 1024 * 1024
 const KIND = 'authoring-evaluation-components-v1'
 const HASH = /^[a-f0-9]{64}$/u
 const CATALOG_KEYS = [
