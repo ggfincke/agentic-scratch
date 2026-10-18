@@ -376,12 +376,14 @@ export async function createAuthoringWorkspaceServiceV1(
   )
 }
 
-// evaluation traces & their retained components charge the plan's resolved JSON limits
+// evaluation traces & their retained components charge the plan's resolved JSON
+// limits & its scalar slots, which every snapshot repeats
 function traceLimitsOf(plan: PlanRecord)
 {
   return {
     maxJsonNodes: plan.plan.limits.maximumJsonNodes,
     maxMembersPerContainer: plan.plan.limits.maximumMembersPerContainer,
+    maxRuntimeScalarSlots: plan.plan.limits.maximumRuntimeScalarSlots,
   }
 }
 

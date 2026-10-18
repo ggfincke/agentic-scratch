@@ -27,11 +27,19 @@ const CATALOG_KEYS = [
 
 // the edit-admission keys a build's resolved limits may raise for its traces
 export type AuthoringTraceLimitOptionsV1 = Partial<
-  Pick<EditAdmissionLimits, 'maxJsonNodes' | 'maxMembersPerContainer'>
+  Pick<
+    EditAdmissionLimits,
+    'maxJsonNodes' | 'maxMembersPerContainer' | 'maxRuntimeScalarSlots'
+  >
 >
 
+// the default smoke's three snapshots & final snapshot each hold every list at
+// the top & again under its target, so a trace repeats each slot eight times
+const TRACE_NODES_PER_SCALAR_SLOT = 8
+
 // runtime traces snapshot every admitted list, so they get edit-admission limits,
-// resolved up to the hard ceilings; the limits decide refusal, never the bytes
+// resolved up to the hard ceilings, plus eight nodes per scalar slot when the
+// build passes its slots; the limits decide refusal, never the bytes
 export function authoringTraceLimitsV1(
   options: AuthoringTraceLimitOptionsV1 = {}
 )
@@ -43,10 +51,17 @@ export function authoringTraceLimitsV1(
     ...(options.maxMembersPerContainer === undefined
       ? {}
       : { maxMembersPerContainer: options.maxMembersPerContainer }),
+    ...(options.maxRuntimeScalarSlots === undefined
+      ? {}
+      : { maxRuntimeScalarSlots: options.maxRuntimeScalarSlots }),
   })
+  const snapshotNodes =
+    options.maxRuntimeScalarSlots === undefined
+      ? 0
+      : TRACE_NODES_PER_SCALAR_SLOT * limits.maxRuntimeScalarSlots
   return Object.freeze({
     maxDepth: limits.maxJsonDepth,
-    maxNodes: limits.maxJsonNodes,
+    maxNodes: limits.maxJsonNodes + snapshotNodes,
     maxMembers: limits.maxMembersPerContainer,
     maxStringCodeUnits: DEFAULT_CANONICAL_JSON_LIMITS.maxStringCodeUnits,
   })
