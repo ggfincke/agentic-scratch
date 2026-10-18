@@ -28,7 +28,7 @@ import {
   type VmTrace,
 } from '@scratch-agent/runner'
 import {
-  DEFAULT_SB3_LIMITS,
+  resolveHardBoundedSb3Limits,
   TURBOWARP_EXTENSION_ALLOWLIST_V1,
   type Sb3LimitOptions,
 } from '@scratch-agent/sb3'
@@ -306,7 +306,10 @@ function expectedLanes(
 
 // the parsed project.json of exact candidate bytes, or null when unreadable;
 // policy hashing is synchronous, & preflight admission still judges the archive
-function candidateProjectJson(bytes: Uint8Array): unknown
+function candidateProjectJson(
+  bytes: Uint8Array,
+  maxProjectJsonBytes: number
+): unknown
 {
   try
   {
@@ -343,7 +346,7 @@ function candidateProjectJson(bytes: Uint8Array): unknown
             view.getUint16(entry + 10, true) === 0
               ? data
               : inflateRawSync(data, {
-                  maxOutputLength: DEFAULT_SB3_LIMITS.maxProjectJsonBytes,
+                  maxOutputLength: maxProjectJsonBytes,
                 })
           return JSON.parse(new TextDecoder().decode(text))
         }
@@ -376,7 +379,10 @@ function usesTurboWarpExtensions(
     !(request.candidateBytes instanceof Uint8Array)
   )
     return false
-  const project = candidateProjectJson(request.candidateBytes)
+  const project = candidateProjectJson(
+    request.candidateBytes,
+    resolveHardBoundedSb3Limits(request.archiveLimits).maxProjectJsonBytes
+  )
   const urls = record(project) ? project.extensionURLs : undefined
   return (
     record(urls) &&
@@ -944,7 +950,8 @@ function validateCandidateEvaluation(
         !(request.candidateBytes instanceof Uint8Array) ||
         request.candidateBytes.byteLength < 1 ||
         request.candidateBytes.byteLength >
-          DEFAULT_SB3_LIMITS.maxCompressedBytes ||
+          resolveHardBoundedSb3Limits(request.archiveLimits)
+            .maxCompressedBytes ||
         sha256(request.candidateBytes) !== request.candidateSha256
       )
         throw new Error(
@@ -1234,7 +1241,8 @@ async function evaluateCandidate(
     if (
       !(request.candidateBytes instanceof Uint8Array) ||
       request.candidateBytes.byteLength < 1 ||
-      request.candidateBytes.byteLength > DEFAULT_SB3_LIMITS.maxCompressedBytes
+      request.candidateBytes.byteLength >
+        resolveHardBoundedSb3Limits(request.archiveLimits).maxCompressedBytes
     )
       throw new Error(
         'candidate bytes exceed the bounded Scratch archive input profile'
