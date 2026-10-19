@@ -8,6 +8,7 @@ import type {
 } from '../contracts.generated.js'
 import type { CuratedEntityResolverV1 } from '../core-blocks/core-block-builder.js'
 import type { ProcedureParameterTypeV1 } from '../contracts/procedure-parameter-catalog.js'
+import type { TurboWarpExtensionProfileIdV1 } from './turbowarp-extensions.js'
 
 export interface StandardProcedureParameterV2
 {
@@ -56,6 +57,8 @@ export interface StandardAuthoringContextV2
     readonly semanticPath: string
   }) => StandardResolvedParameterV2
   readonly procedureScope?: StandardProcedureScopeV2
+  // opts this lowering into the TurboWarp extension rows; edit sessions never set it
+  readonly extensionProfile?: TurboWarpExtensionProfileIdV1
 }
 
 export interface StandardLoweringScopeV2

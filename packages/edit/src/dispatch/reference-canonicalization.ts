@@ -2,7 +2,7 @@
 // canonicalize retained semantic references without erasing created selectors
 
 import {
-  resolveDeclarationRefV1,
+  createDeclarationRefSnapshotResolverV1,
   resolveTargetRefV1,
   type BlockEntityEvidenceV1,
   type BlockRefV1,
@@ -47,8 +47,30 @@ export function canonicalizeSemanticValueV1(
   value: unknown
 ): unknown
 {
+  let snapshot:
+    | ReturnType<typeof createDeclarationRefSnapshotResolverV1>
+    | undefined
+  const currentSnapshot = () =>
+    (snapshot ??= createDeclarationRefSnapshotResolverV1(context.candidate))
+  const canonical = canonicalizeSemanticValueFromSnapshotV1(
+    context,
+    value,
+    currentSnapshot
+  )
+  snapshot?.assertUnchanged()
+  return canonical
+}
+
+function canonicalizeSemanticValueFromSnapshotV1(
+  context: ProductionOperationContextV1,
+  value: unknown,
+  snapshot: () => ReturnType<typeof createDeclarationRefSnapshotResolverV1>
+): unknown
+{
   if (Array.isArray(value))
-    return value.map((entry) => canonicalizeSemanticValueV1(context, entry))
+    return value.map((entry) =>
+      canonicalizeSemanticValueFromSnapshotV1(context, entry, snapshot)
+    )
   if (value === null || typeof value !== 'object') return value
   const record = value as Readonly<Record<string, unknown>>
   if (
@@ -56,6 +78,7 @@ export function canonicalizeSemanticValueV1(
     typeof record['refKind'] === 'string'
   )
   {
+    snapshot()
     const evidence = resolveTargetRefV1(
       context.candidate,
       record as unknown as TargetRefV1,
@@ -68,19 +91,25 @@ export function canonicalizeSemanticValueV1(
     typeof record['refKind'] === 'string'
   )
   {
-    const evidence = resolveDeclarationRefV1(
-      context.candidate,
+    const evidence = snapshot().resolve(
       record as unknown as DeclarationRefV1,
       resolverAdapters(context)
     )
     return exactDeclarationRefV1(evidence)
   }
   if (record['entityKind'] === 'media' && typeof record['refKind'] === 'string')
+  {
+    snapshot()
     return exactMediaRefV1(
       resolveMediaReferenceV1(context, record as unknown as MediaRefV1).current
     )
+  }
   const canonical: Record<string, unknown> = Object.create(null)
   for (const [key, entry] of Object.entries(record))
-    canonical[key] = canonicalizeSemanticValueV1(context, entry)
+    canonical[key] = canonicalizeSemanticValueFromSnapshotV1(
+      context,
+      entry,
+      snapshot
+    )
   return canonical
 }

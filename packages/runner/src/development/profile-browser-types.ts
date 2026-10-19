@@ -12,6 +12,7 @@ import type {
   ProfilePagePerformanceV1,
 } from './profile-evidence-types.js'
 import type { Page } from 'playwright'
+import type { Sb3LimitOptions } from '@scratch-agent/sb3'
 import type { RuntimeDescriptorV1 } from '../lineage/runtime-identity.js'
 import type { ObservedRuntimeValueV1 } from '../observation/runtime-observation.js'
 import type {
@@ -205,6 +206,8 @@ export interface OpenProfileBrowserEngineOptionsV1
   readonly seed?: number
   readonly fixedDateMs?: number
   readonly limits?: Partial<ProfileBrowserLimitsV1>
+  // the archive limits the project was admitted under; absent keys keep the defaults
+  readonly archiveLimits?: Sb3LimitOptions
   readonly signal?: AbortSignal
   readonly onAppliedEvent?: (
     event: ProfileAppliedInputEventV1

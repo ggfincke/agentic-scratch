@@ -2,7 +2,9 @@
 // validate bounded logical sources before any workspace graph construction
 
 import {
-  DEFAULT_EDIT_ADMISSION_LIMITS,
+  HARD_EDIT_ADMISSION_LIMITS,
+  HARD_SB3_LIMITS,
+  TURBOWARP_EXTENSION_ALLOWLIST_V1,
   scanStrictJson,
 } from '@scratch-agent/sb3'
 import { canonicalProcedureSignatureV1 } from '../edit/operations/procedure-operations.js'
@@ -123,8 +125,14 @@ function scalar(value: unknown, path: string): void
       path,
       'expected a string, finite number or boolean'
     )
-  else if (typeof value === 'string' && value.length > 1024 * 1024)
-    workspaceSourceFailureV2(path, 'scalar string exceeds one MiB')
+  else if (
+    typeof value === 'string' &&
+    value.length > HARD_EDIT_ADMISSION_LIMITS.maxStringCodeUnits
+  )
+    workspaceSourceFailureV2(
+      path,
+      `scalar string exceeds ${HARD_EDIT_ADMISSION_LIMITS.maxStringCodeUnits} code units`
+    )
 }
 
 function hash(value: unknown, path: string): void
@@ -374,9 +382,10 @@ function uniqueIds(
   }
 }
 
+// shape checks stop at the hard ceilings; the compiler charges each build's resolved limits
 function decode(value: unknown): unknown
 {
-  const limits = DEFAULT_EDIT_ADMISSION_LIMITS
+  const limits = HARD_EDIT_ADMISSION_LIMITS
   const scanned = scanStrictJson(
     value instanceof Uint8Array || typeof value === 'string'
       ? value
@@ -387,8 +396,11 @@ function decode(value: unknown): unknown
       maxNodes: limits.maxJsonNodes,
     }
   )
-  if (scanned.metrics.utf8Bytes > 10 * 1024 * 1024)
-    workspaceSourceFailureV2('source', 'JSON source exceeds ten MiB')
+  if (scanned.metrics.utf8Bytes > HARD_SB3_LIMITS.maxProjectJsonBytes)
+    workspaceSourceFailureV2(
+      'source',
+      `JSON source exceeds ${HARD_SB3_LIMITS.maxProjectJsonBytes} bytes`
+    )
   return scanned.value
 }
 
@@ -405,6 +417,8 @@ export function parseScratchWorkspaceManifestV2(
     'assetManifestPaths',
     'clipManifestPaths',
     'runtimeTargets',
+    'extensionProfile',
+    'extensionStorage',
     'scenarios',
     'assertions',
     'output',
@@ -479,9 +493,11 @@ export function parseScratchWorkspaceManifestV2(
       else if (d.kind === 'list')
       {
         object(d, p, ['id', 'kind', 'name', 'initialItems', 'existing'])
-        array(d.initialItems ?? [], `${p}/initialItems`, 25000).forEach(
-          (item) => scalar(item, p)
-        )
+        array(
+          d.initialItems ?? [],
+          `${p}/initialItems`,
+          HARD_EDIT_ADMISSION_LIMITS.maxListItemsPerList
+        ).forEach((item) => scalar(item, p))
       }
       else object(d, p, ['id', 'kind', 'name', 'existing'])
     }
@@ -490,7 +506,9 @@ export function parseScratchWorkspaceManifestV2(
       for (const [j, entry] of array(
         t[key] ?? [],
         `${path}/${key}`,
-        key === 'costumes' ? 1024 : 512
+        key === 'costumes'
+          ? HARD_EDIT_ADMISSION_LIMITS.maxCostumesPerTarget
+          : HARD_EDIT_ADMISSION_LIMITS.maxSoundsPerTarget
       ).entries())
       {
         const p = `${path}/${key}/${j}`
@@ -643,6 +661,42 @@ export function parseScratchWorkspaceManifestV2(
       'workspace/runtimeTargets',
       'duplicate runtime profile'
     )
+  if (v.extensionProfile !== undefined)
+  {
+    choice(v.extensionProfile, 'workspace/extensionProfile', ['turbowarp-v1'])
+    // * fail closed: an official Scratch target can never load these extensions
+    if (
+      runtimeTargets.length === 0 ||
+      runtimeTargets.some(
+        (target) => (target as { runtime: unknown }).runtime !== 'turbowarp'
+      )
+    )
+      workspaceSourceFailureV2(
+        'workspace/extensionProfile',
+        'the TurboWarp extension profile requires every runtime target to be turbowarp'
+      )
+  }
+  if (v.extensionStorage !== undefined)
+  {
+    const path = 'workspace/extensionStorage'
+    if (v.extensionProfile === undefined)
+      workspaceSourceFailureV2(
+        path,
+        'extension storage requires extensionProfile'
+      )
+    const ids = TURBOWARP_EXTENSION_ALLOWLIST_V1.map((entry) => entry.id)
+    const storage = object(v.extensionStorage, path, ids)
+    for (const [id, entry] of Object.entries(storage))
+      for (const [key, value] of Object.entries(
+        object(entry, `${path}/${id}`, Object.keys(entry ?? {}))
+      ))
+      {
+        text(key, `${path}/${id}`)
+        scalar(value, `${path}/${id}/${key}`)
+      }
+    if (new TextEncoder().encode(JSON.stringify(storage)).byteLength > 4096)
+      workspaceSourceFailureV2(path, 'extension storage exceeds 4096 bytes')
+  }
   const scenarios = array(v.scenarios ?? [], 'workspace/scenarios', 64)
   scenarios.forEach((s, i) =>
   {

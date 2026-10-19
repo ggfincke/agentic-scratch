@@ -98,6 +98,7 @@ import {
   exactBlockRef,
   exactTargetRef,
   planningContext,
+  planningBlockSelectionRef,
   resolveBlockSelectionRef,
   resolveTargetSelection,
   resolverAdapters,
@@ -994,18 +995,18 @@ export function productionProcedureSimplePlanningCompletionV1(
     const procedure = resolved.selectedProcedure
     if (!procedure)
       return fail('edit.internal_invariant', 'selected procedure is absent')
-    const planning = planningContext(context, provisional)
+    // executable removal guards follow the candidate after the planned prefix
     const record = procedureRecordAt(
-      planning.candidate,
+      context.candidate,
       procedure.targetIndex,
       procedure.proccode
     )
-    const target = planning.candidate.json.targets[procedure.targetIndex]
+    const target = context.candidate.json.targets[procedure.targetIndex]
     if (!target)
       return fail('edit.invalid_owner', 'procedure owner target is absent')
     const plan = planGraphClosureV1(target, 'script', record.definitionBlockId)
     const calls = procedureCallSitesV1(
-      planning.candidate,
+      context.candidate,
       record.targetIndex,
       record.proccode
     )
@@ -1014,7 +1015,7 @@ export function productionProcedureSimplePlanningCompletionV1(
       record.proccode,
       calls
     )
-    const external = externalArgumentReporterIdsFor(planning.candidate, record)
+    const external = externalArgumentReporterIdsFor(context.candidate, record)
     const expectedExternalArgumentReporterSetSha256 =
       externalArgumentReporterSetSha256V1(
         record.targetIndex,
@@ -1687,6 +1688,10 @@ export function productionProcedureUpdateSignaturePlanningCompletionV1(
     )
     if (!call)
       return fail('edit.selector_no_match', 'procedure call block is absent')
+    const callRef =
+      planning === context
+        ? planningBlockSelectionRef(context, call)
+        : exactBlockRef(call)
     const argumentsForCall = decoded.parameters.map((parameter, index) =>
     {
       const choiceIndex = callIndex * decoded.parameters.length + index
@@ -1819,7 +1824,7 @@ export function productionProcedureUpdateSignaturePlanningCompletionV1(
       completedPlanningFactV1(
         '/callSites/*/call',
         'blockRef',
-        exactBlockRef(call)
+        callRef
       ),
       completedPlanningFactV1(
         '/callSites/*/expectedArgumentSetSha256',
@@ -1835,7 +1840,7 @@ export function productionProcedureUpdateSignaturePlanningCompletionV1(
       )
     )
     return {
-      call: exactBlockRef(call),
+      call: callRef,
       expectedArgumentSetSha256,
       arguments: argumentsForCall,
       removedArguments,
@@ -3197,6 +3202,7 @@ function assertProcedurePreconditions(
 }
 
 function resolvedProcedureOperation(
+  context: ProductionOperationContextV1,
   resolved: ResolvedProcedureDispatchV1,
   record: ProcedureRecordV1 | null
 ): ResolvedProcedureOperationV1
@@ -3211,7 +3217,22 @@ function resolvedProcedureOperation(
     )
   if (operation.kind === 'procedure.updateSignature')
     return {
-      operation,
+      operation: {
+        ...operation,
+        callSites: operation.callSites.map((site) =>
+        {
+          const call = resolveBlockSelectionRef(context, site.call).current
+          if (
+            call.targetIndex !== resolved.targetIndex ||
+            !resolved.callSiteBlockIds.includes(call.blockId)
+          )
+            return fail(
+              'edit.invalid_owner',
+              'execution call differs from the validated signature selection'
+            )
+          return { ...site, call: exactBlockRef(call) }
+        }),
+      },
       targetIndex: resolved.targetIndex,
       record,
       callSiteBlockIds: resolved.callSiteBlockIds,
@@ -3471,7 +3492,7 @@ function executeResolvedProcedureOperation(
     })
   const applied = applyProcedureOperationV1(
     context.candidate,
-    resolvedProcedureOperation(resolved, record),
+    resolvedProcedureOperation(context, resolved, record),
     isStandard
       ? {
           semanticAuthorityId: 'standard-v2',

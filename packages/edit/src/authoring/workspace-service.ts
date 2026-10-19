@@ -7,6 +7,8 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 
 import {
   authoringRuntimeIdentitiesV3,
+  encodeAuthoringEvidenceV1,
+  decodeAuthoringEvidenceV1,
   authoringCandidateEvaluationEvidenceSha256V3,
   authoringEvaluationPolicySha256V3,
   evaluateAuthoringCandidateV3,
@@ -34,6 +36,8 @@ import { blankProject } from '@scratch-agent/ir'
 import {
   expandScratchWorkspaceManifestV2,
   parseScratchWorkspaceManifestV2,
+  workspaceAdmissionBuildLimitsV2,
+  WORKSPACE_BUILD_LIMITS_V2,
   type ScratchWorkspaceManifestV2,
   type WorkspaceBuildLimitsV2,
   type WorkspaceBuildPlanV2,
@@ -48,6 +52,8 @@ import {
   AUDIO_PIPELINE_DEFAULT_LIMITS_V1,
   DEFAULT_EDIT_ADMISSION_LIMITS,
   DEFAULT_SB3_LIMITS,
+  HARD_EDIT_ADMISSION_LIMITS,
+  HARD_SB3_LIMITS,
   normalizeAudioV1,
   type AssetPipelineLimitsV2,
   type AudioPipelineLimitsV1,
@@ -82,6 +88,7 @@ import {
 } from './workspace-publication.js'
 import {
   AUTHORING_WORKSPACE_LIMITS_V1,
+  HARD_AUTHORING_WORKSPACE_LIMITS_V1,
   AuthoringWorkspaceErrorV1,
   type AuthoringArtifactRefV1,
   type AuthoringOperatorPermissionsV1,
@@ -184,6 +191,7 @@ interface EvaluationRecord
   disposition: 'accepted' | 'refused'
   candidateSha256: string
   result: AuthoringArtifactRefV1
+  componentArtifacts?: readonly AuthoringArtifactRefV1[]
   mediaArtifacts: readonly {
     sourcePath: string
     artifact: AuthoringArtifactRefV1
@@ -248,7 +256,12 @@ function fail(code: string, message: string): never
   throw new AuthoringWorkspaceErrorV1(code, message)
 }
 
-function lowered<T extends object>(defaults: T, options: Partial<T> = {}): T
+// host limits start from defaults & may only lower them, or raise them up to a hard table when one is given
+function lowered<T extends object>(
+  defaults: T,
+  options: Partial<T> = {},
+  maximums: T = defaults
+): T
 {
   const result = { ...defaults }
   for (const key of Object.keys(options))
@@ -257,7 +270,7 @@ function lowered<T extends object>(defaults: T, options: Partial<T> = {}): T
       return fail('authoring.invalid_permissions', `unknown host limit ${key}`)
     const name = key as keyof T
     const value = options[name]
-    const maximum = defaults[name]
+    const maximum = maximums[name]
     if (
       typeof value !== 'number' ||
       typeof maximum !== 'number' ||
@@ -267,7 +280,9 @@ function lowered<T extends object>(defaults: T, options: Partial<T> = {}): T
     )
       return fail(
         'authoring.invalid_permissions',
-        `${key} can only lower its finite default`
+        maximums === defaults
+          ? `${key} can only lower its finite default`
+          : `${key} must be a nonnegative safe integer at most ${maximum}`
       )
     result[name] = value as T[keyof T]
   }
@@ -282,17 +297,13 @@ function identity(prefix: string, content: unknown): string
 function compilationLimits(permissions: Permissions): WorkspaceBuildLimitsV2
 {
   return {
-    maximumTargets: permissions.editLimits.maxTargets,
-    maximumBlocks: permissions.editLimits.maxBlockRecords,
-    maximumScripts: permissions.editLimits.maxScriptRoots,
-    maximumDeclarations: permissions.editLimits.maxDeclarationRecords,
-    maximumCostumes: permissions.editLimits.maxCostumeRecords,
-    maximumCostumesPerTarget: permissions.editLimits.maxCostumesPerTarget,
-    maximumAssetBytes: permissions.archiveLimits.maxTotalAssetBytes,
-    maximumSb3Bytes: permissions.archiveLimits.maxCompressedBytes,
-    maximumProjectJsonBytes: permissions.archiveLimits.maxProjectJsonBytes,
-    maximumDecodedCostumeBytes: permissions.editLimits.maxPngDecodedRgbaBytes,
+    ...workspaceAdmissionBuildLimitsV2(
+      permissions.editLimits,
+      permissions.archiveLimits
+    ),
     maximumSourceBytes: permissions.limits.maxTotalSourceBytes,
+    maximumPreparedAssets: WORKSPACE_BUILD_LIMITS_V2.maximumPreparedAssets,
+    maximumSourceFiles: permissions.limits.maxSourceFiles,
   }
 }
 
@@ -336,9 +347,21 @@ export async function createAuthoringWorkspaceServiceV1(
     sourceRoots,
     evidenceRoot,
     outputRoots,
-    limits: lowered(AUTHORING_WORKSPACE_LIMITS_V1, input.limits),
-    archiveLimits: lowered(DEFAULT_SB3_LIMITS, input.archiveLimits),
-    editLimits: lowered(DEFAULT_EDIT_ADMISSION_LIMITS, input.editLimits),
+    limits: lowered(
+      AUTHORING_WORKSPACE_LIMITS_V1,
+      input.limits,
+      HARD_AUTHORING_WORKSPACE_LIMITS_V1
+    ),
+    archiveLimits: lowered(
+      DEFAULT_SB3_LIMITS,
+      input.archiveLimits,
+      HARD_SB3_LIMITS
+    ),
+    editLimits: lowered(
+      DEFAULT_EDIT_ADMISSION_LIMITS,
+      input.editLimits,
+      HARD_EDIT_ADMISSION_LIMITS
+    ),
     preprocessingLimits: lowered(
       ASSET_PIPELINE_LIMITS_V2,
       input.preprocessingLimits
@@ -351,6 +374,17 @@ export async function createAuthoringWorkspaceServiceV1(
     options.evaluate ?? evaluateAuthoringCandidateV3,
     options.publicationFaultHook
   )
+}
+
+// evaluation traces & their retained components charge the plan's resolved JSON
+// limits & its scalar slots, which every snapshot repeats
+function traceLimitsOf(plan: PlanRecord)
+{
+  return {
+    maxJsonNodes: plan.plan.limits.maximumJsonNodes,
+    maxMembersPerContainer: plan.plan.limits.maximumMembersPerContainer,
+    maxRuntimeScalarSlots: plan.plan.limits.maximumRuntimeScalarSlots,
+  }
 }
 
 export class AuthoringWorkspaceServiceV1
@@ -762,7 +796,10 @@ export class AuthoringWorkspaceServiceV1
           result.evaluationPolicySha256 !==
             authoringEvaluationPolicySha256V3(request) ||
           evidenceSha256 !==
-            authoringCandidateEvaluationEvidenceSha256V3(content) ||
+            authoringCandidateEvaluationEvidenceSha256V3(
+              content,
+              request.editLimits
+            ) ||
           !['accepted', 'refused'].includes(result.disposition) ||
           !result.evidenceRoot ||
           !isPathWithinRootV1(stage, result.evidenceRoot)
@@ -824,9 +861,26 @@ export class AuthoringWorkspaceServiceV1
         buildId: build.buildId,
         evidenceSha256: result.evidenceSha256,
       })
-      const resultRef = await workspace.retention.retainJson(
+      const encoded = encodeAuthoringEvidenceV1(
+        JSON.parse(JSON.stringify(result)),
+        request.editLimits
+      )
+      const componentArtifacts: AuthoringArtifactRefV1[] = []
+      for (const component of encoded.components)
+      {
+        assertActive()
+        componentArtifacts.push(
+          await workspace.retention.retain(
+            `evaluation-components/${component.sha256}.json`,
+            component.bytes,
+            'application/json'
+          )
+        )
+      }
+      const resultRef = await workspace.retention.retain(
         `evaluations/${evaluationId}/result.json`,
-        result
+        encoded.bytes,
+        'application/json'
       )
       const evaluation: EvaluationRecord = {
         schemaVersion: 1,
@@ -836,6 +890,7 @@ export class AuthoringWorkspaceServiceV1
         disposition: result.disposition,
         candidateSha256: result.candidateSha256,
         result: resultRef,
+        ...(componentArtifacts.length ? { componentArtifacts } : {}),
         mediaArtifacts,
       }
       assertActive()
@@ -855,6 +910,7 @@ export class AuthoringWorkspaceServiceV1
           artifacts: this.#catalog(workspace.state.artifacts, [
             artifact,
             resultRef,
+            ...componentArtifacts,
             ...mediaArtifacts.map((media) => media.artifact),
           ]),
         },
@@ -1394,10 +1450,33 @@ export class AuthoringWorkspaceServiceV1
       )
     const bytes = await workspace.retention.read(build.candidate)
     assertAuthoringActiveV1(signal)
-    const result =
-      await workspace.retention.readJson<AuthoringCandidateEvaluation>(
-        accepted.result
-      )
+    const componentArtifacts = accepted.componentArtifacts ?? []
+    const usedComponents = new Set<number>()
+    const result = (await decodeAuthoringEvidenceV1(
+      await workspace.retention.read(accepted.result),
+      async (component) =>
+      {
+        const index = componentArtifacts.findIndex(
+          (artifact, index) =>
+            !usedComponents.has(index) &&
+            artifact.workspaceId === workspace.state.workspaceId &&
+            artifact.key === `evaluation-components/${component.sha256}.json` &&
+            artifact.path === join(workspace.retention.root, artifact.key) &&
+            artifact.mimeType === 'application/json' &&
+            artifact.sha256 === component.sha256 &&
+            artifact.byteLength === component.byteLength
+        )
+        if (index < 0)
+          throw new Error(
+            'authoring evaluation component has no exact retained identity'
+          )
+        usedComponents.add(index)
+        return workspace.retention.read(componentArtifacts[index]!)
+      },
+      traceLimitsOf(plan)
+    )) as AuthoringCandidateEvaluation
+    if (usedComponents.size !== componentArtifacts.length)
+      throw new Error('authoring evaluation component membership differs')
     if (published)
     {
       if (
@@ -3206,6 +3285,15 @@ export class AuthoringWorkspaceServiceV1
       runtimeIdentities: plan.tools.runtimeIdentities,
       scenarios: plan.plan.scenarios,
       assertions: plan.plan.assertions,
+      // * validation & replay rebuild the request, so its limits come from the plan
+      archiveLimits: {
+        maxEntries: plan.plan.limits.maximumArchiveEntries,
+        maxCompressedBytes: plan.plan.limits.maximumSb3Bytes,
+        maxProjectJsonBytes: plan.plan.limits.maximumProjectJsonBytes,
+        maxTotalAssetBytes: plan.plan.limits.maximumAssetBytes,
+        maxAssetBytes: plan.plan.limits.maximumBytesPerAsset,
+      },
+      editLimits: traceLimitsOf(plan),
     }
   }
 

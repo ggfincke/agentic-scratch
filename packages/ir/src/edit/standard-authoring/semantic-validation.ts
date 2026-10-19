@@ -34,6 +34,10 @@ export interface StandardSemanticValidationOptionsV2
     call: ProcedureCallBlockTreeV1,
     argument: ProcedureCallArgumentV1
   ) => ProcedureParameterTypeV1 | undefined
+  // widens the standard catalog lookup, e.g. by an opted-in extension profile
+  readonly descriptorLookup?: (
+    opcode: string
+  ) => StandardAuthoringDescriptorV2 | null
 }
 
 interface ValidationState
@@ -377,7 +381,9 @@ function tree(
       state.active.delete(node)
       return
     }
-    const descriptor = getStandardDescriptorV2(node.opcode)
+    const descriptor = (
+      state.options.descriptorLookup ?? getStandardDescriptorV2
+    )(node.opcode)
     if (
       descriptor === null ||
       descriptor.availability !== 'supported' ||
@@ -555,7 +561,9 @@ function sequence(
       !Array.isArray(node.fields)
     )
       continue
-    const descriptor = getStandardDescriptorV2(node.opcode)
+    const descriptor = (
+      state.options.descriptorLookup ?? getStandardDescriptorV2
+    )(node.opcode)
     const continuingStop =
       node.opcode === 'control_stop' &&
       node.fields.some(

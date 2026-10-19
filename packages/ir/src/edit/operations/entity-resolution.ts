@@ -13,7 +13,7 @@ import {
 import { canonicalJsonBytesV1 } from '@scratch-agent/sb3/canonical-json'
 import { sha256Hex } from '@scratch-agent/sb3/crypto-node'
 
-import type { ProjectIR } from '../../project/project-ir.js'
+import { ProjectIR } from '../../project/project-ir.js'
 import type {
   BlockLocationV1,
   BlockRefV1,
@@ -55,6 +55,7 @@ import {
   mediaSemanticFingerprintV1,
 } from './media-operations.js'
 import { ownRecordKeys, ownRecordValue } from '../support/own-record.js'
+import { deepFreeze } from '../support/immutable.js'
 import { decodeProcedureWarpV1 } from '../semantic-index/procedure-mutation.js'
 import {
   procedureParameterTypeForPlaceholderV1,
@@ -116,6 +117,7 @@ interface ExactEntityEvidenceV1
 interface EntityEvidenceBuildContextV1
 {
   readonly project: ProjectIR
+  readonly freezeEvidence?: boolean
   readonly index: SemanticReferenceIndex
   readonly targetLocations: Map<number, TargetLocationV1>
   readonly targetLocationSha256s: Map<number, string>
@@ -123,6 +125,7 @@ interface EntityEvidenceBuildContextV1
   readonly commentsByScriptKey: Map<string, readonly IndexedComment[]>
   readonly reachableBlockIdsByKey: Map<string, readonly string[]>
   readonly boundedOutlineSha256ByKey: Map<string, string>
+  readonly descendantPayloadSha256ByKey: Map<string, string>
   readonly stableTargetBlockOrdinalByKey: Map<string, number>
   declarationEvidence?: readonly DeclarationEntityEvidenceV1[]
   scriptEvidence?: readonly ScriptEntityEvidenceV1[]
@@ -328,6 +331,7 @@ function entityEvidenceBuildContextV1(
     commentsByScriptKey,
     reachableBlockIdsByKey: new Map(),
     boundedOutlineSha256ByKey: new Map(),
+    descendantPayloadSha256ByKey: new Map(),
     stableTargetBlockOrdinalByKey,
   }
 }
@@ -855,8 +859,10 @@ function declarationEntityEvidenceSetFromContextV1(
             },
     })
   )
-  context.declarationEvidence = evidence
-  return evidence
+  context.declarationEvidence = context.freezeEvidence
+    ? deepFreeze(evidence)
+    : evidence
+  return context.declarationEvidence
 }
 
 function rootRoleV1(
@@ -934,6 +940,26 @@ function scriptFingerprintV1(
   })
 }
 
+// repeated outline rows share the exact ordered payload hash within this snapshot
+function descendantPayloadSha256V1(
+  target: Target,
+  rootBlockId: string,
+  context: EntityEvidenceBuildContextV1
+): string
+{
+  const targetIndex = context.targetIndexes.get(target) ?? -1
+  const cacheKey = JSON.stringify([targetIndex, rootBlockId])
+  const cached = context.descendantPayloadSha256ByKey.get(cacheKey)
+  if (cached !== undefined) return cached
+  const digest = canonicalSha256(
+    reachableBlockIdsV1(target, rootBlockId, context).map((id) =>
+      ownRecordValue(target.blocks, id)
+    )
+  )
+  context.descendantPayloadSha256ByKey.set(cacheKey, digest)
+  return digest
+}
+
 function boundedOutlineSha256V1(
   target: Target,
   rootBlockId: string,
@@ -972,9 +998,7 @@ function boundedOutlineSha256V1(
         depth,
         relation,
         omittedDescendantCount: descendants.length,
-        subtreeSha256: canonicalSha256(
-          descendants.map((id) => ownRecordValue(target.blocks, id))
-        ),
+        subtreeSha256: descendantPayloadSha256V1(target, blockId, context),
       })
       return
     }
@@ -1018,9 +1042,7 @@ function boundedOutlineSha256V1(
             (row.shadowState.state === 'present' ? 1 : 0),
           0
         ),
-      fullSubtreeSha256: canonicalSha256(
-        descendants.map((id) => ownRecordValue(target.blocks, id))
-      ),
+      fullSubtreeSha256: descendantPayloadSha256V1(target, blockId, context),
     })
     const children: { blockId: string; relation: unknown }[] = []
     if (entry.next)
@@ -1437,8 +1459,10 @@ function scriptEntityEvidenceSetFromContextV1(
       rootRole: base.rootRole,
     })
   )
-  context.scriptEvidence = evidence
-  return evidence
+  context.scriptEvidence = context.freezeEvidence
+    ? deepFreeze(evidence)
+    : evidence
+  return context.scriptEvidence
 }
 
 function ownershipStepForParent(
@@ -2370,7 +2394,51 @@ export function resolveDeclarationRefV1(
   adapters: EntityResolverAdaptersV1 = {}
 ): DeclarationEntityEvidenceV1
 {
-  const context = entityEvidenceBuildContextV1(project)
+  return resolveDeclarationRefFromContextV1(
+    reference,
+    adapters,
+    entityEvidenceBuildContextV1(project)
+  )
+}
+
+// one private snapshot shares evidence only within a synchronous resolution pass
+export function createDeclarationRefSnapshotResolverV1(project: ProjectIR)
+{
+  const snapshot = ProjectIR.fromProjectJson(
+    deepFreeze(structuredClone(project.json))
+  )
+  const sourceSha256 = canonicalSha256(snapshot.json)
+  let context: EntityEvidenceBuildContextV1 | undefined
+  return Object.freeze({
+    resolve(
+      reference: DeclarationRefV1,
+      adapters: EntityResolverAdaptersV1 = {}
+    ): DeclarationEntityEvidenceV1
+    {
+      context ??= {
+        ...entityEvidenceBuildContextV1(snapshot),
+        freezeEvidence: true,
+      }
+      return resolveDeclarationRefFromContextV1(reference, adapters, context)
+    },
+    assertUnchanged(): void
+    {
+      if (canonicalSha256(project.json) !== sourceSha256)
+        editError(
+          'edit.internal_invariant',
+          'project changed during semantic reference canonicalization'
+        )
+    },
+  })
+}
+
+function resolveDeclarationRefFromContextV1(
+  reference: DeclarationRefV1,
+  adapters: EntityResolverAdaptersV1,
+  context: EntityEvidenceBuildContextV1
+): DeclarationEntityEvidenceV1
+{
+  const { project } = context
   const evidence = declarationEntityEvidenceSetFromContextV1(context)
   if (reference.refKind === 'handle')
   {

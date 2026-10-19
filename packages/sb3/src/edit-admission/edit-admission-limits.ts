@@ -6,6 +6,9 @@ export interface EditAdmissionLimits
   maxJsonDepth: number
   maxMembersPerContainer: number
   maxJsonNodes: number
+  // admission bounds strings only through project.json bytes; workspace compiles charge authored source strings
+  // against this & evidence hashes accept strings up to its hard value
+  maxStringCodeUnits: number
   maxTargets: number
   maxBlockRecords: number
   maxScriptRoots: number
@@ -43,8 +46,9 @@ export const DEFAULT_EDIT_ADMISSION_LIMITS: Readonly<EditAdmissionLimits> =
     maxJsonDepth: 128,
     maxMembersPerContainer: 100_000,
     maxJsonNodes: 2_000_000,
+    maxStringCodeUnits: 1024 * 1024,
     maxTargets: 256,
-    maxBlockRecords: 25_000,
+    maxBlockRecords: 40_000,
     maxScriptRoots: 4_096,
     maxDeclarationRecords: 4_096,
     maxProcedureParametersPerProcedure: 64,
@@ -54,11 +58,11 @@ export const DEFAULT_EDIT_ADMISSION_LIMITS: Readonly<EditAdmissionLimits> =
     maxListItemsPerList: 25_000,
     maxMonitorParamsPerMonitor: 64,
     maxMonitorListSnapshotItemsPerMonitor: 25_000,
-    maxRuntimeScalarSlots: 100_000,
+    maxRuntimeScalarSlots: 250_000,
     maxCommentRecords: 4_096,
     maxMonitorRecords: 4_096,
-    maxCostumeRecords: 4_096,
-    maxCostumesPerTarget: 1_024,
+    maxCostumeRecords: 6_144,
+    maxCostumesPerTarget: 2_048,
     maxSoundRecords: 2_048,
     maxSoundsPerTarget: 512,
     maxIndexedSemanticRecords: 50_000,
@@ -76,27 +80,28 @@ export const DEFAULT_EDIT_ADMISSION_LIMITS: Readonly<EditAdmissionLimits> =
 export const HARD_EDIT_ADMISSION_LIMITS: Readonly<EditAdmissionLimits> =
   Object.freeze({
     maxJsonDepth: 128,
-    maxMembersPerContainer: 100_000,
-    maxJsonNodes: 2_000_000,
+    maxMembersPerContainer: 400_000,
+    maxJsonNodes: 16_000_000,
+    maxStringCodeUnits: 16_000_000,
     maxTargets: 512,
-    maxBlockRecords: 50_000,
+    maxBlockRecords: 600_000,
     maxScriptRoots: 8_192,
-    maxDeclarationRecords: 8_192,
+    maxDeclarationRecords: 16_384,
     maxProcedureParametersPerProcedure: 128,
     maxProcedureParametersTotal: 8_192,
     maxProcedureMutationStringBytes: 256 * 1024,
     maxProcedureMutationStringsTotalBytes: 4 * 1024 * 1024,
-    maxListItemsPerList: 50_000,
+    maxListItemsPerList: 100_000,
     maxMonitorParamsPerMonitor: 128,
     maxMonitorListSnapshotItemsPerMonitor: 50_000,
-    maxRuntimeScalarSlots: 250_000,
+    maxRuntimeScalarSlots: 4_000_000,
     maxCommentRecords: 8_192,
     maxMonitorRecords: 8_192,
-    maxCostumeRecords: 8_192,
-    maxCostumesPerTarget: 2_048,
+    maxCostumeRecords: 64_000,
+    maxCostumesPerTarget: 4_096,
     maxSoundRecords: 4_096,
     maxSoundsPerTarget: 1_024,
-    maxIndexedSemanticRecords: 100_000,
+    maxIndexedSemanticRecords: 1_000_000,
     maxPngWidth: 4_096,
     maxPngHeight: 4_096,
     maxPngCanvasPixels: 16_777_216,
@@ -104,8 +109,8 @@ export const HARD_EDIT_ADMISSION_LIMITS: Readonly<EditAdmissionLimits> =
     maxApngFrames: 4_096,
     maxApngCumulativeFramePixels: 134_217_728,
     maxApngCumulativeInflatedSampleBytes: 512 * 1024 * 1024,
-    maxPngReferencePixels: 134_217_728,
-    maxPngDecodedRgbaBytes: 512 * 1024 * 1024,
+    maxPngReferencePixels: 268_435_456,
+    maxPngDecodedRgbaBytes: 1024 * 1024 * 1024,
   })
 
 export function resolveEditAdmissionLimits(

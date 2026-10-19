@@ -17,6 +17,7 @@ import { readSnapshot, readBoundedSnapshot } from '../observation/snapshot.js'
 import {
   createRuntimeObservationBudget,
   DEFAULT_RUNTIME_OBSERVATION_CAPS,
+  MAX_RUNTIME_OBSERVATION_CAPS,
 } from '../observation/observation.js'
 import type { ScratchVm, ScratchTarget } from '../vm/vm-api.js'
 import { readVisual, type PageRenderer } from './visual.js'
@@ -71,9 +72,34 @@ function boundedText(value: string, role: string, maximum = 256): string
   return value
 }
 
+// the host injects the allowlisted extension url -> offline route map before
+// this bundle runs; a project may load only those, unsandboxed from the route.
+// vanilla scratch-vm has no extension security manager & loads none of them
+function installExtensionSecurityManager(vm: ScratchVm): void
+{
+  const routes: Readonly<Record<string, string>> =
+    (
+      window as unknown as {
+        __turbowarpExtensionRoutes?: Record<string, string>
+      }
+    ).__turbowarpExtensionRoutes ?? {}
+  const manager = (
+    vm as unknown as {
+      extensionManager?: { securityManager?: Record<string, unknown> }
+    }
+  ).extensionManager?.securityManager
+  if (!manager) return
+  Object.assign(manager, {
+    getSandboxMode: () => 'unsandboxed',
+    canLoadExtensionFromProject: (url: string) => Object.hasOwn(routes, url),
+    rewriteExtensionURL: (url: string) => routes[url] ?? url,
+  })
+}
+
 export function installProjectDebugPageV1(host: ProjectDebugPageHostV1): void
 {
   const vm = host.vm
+  installExtensionSecurityManager(vm)
   const runtime = vm.runtime
   const input = new InputController(vm)
   const realSetInterval = window.setInterval.bind(window)
@@ -925,9 +951,19 @@ export function installProjectDebugPageV1(host: ProjectDebugPageHostV1): void
     {
       if (!prepared) throw new Error('debug runtime is not prepared')
       boundedText(label, 'snapshot label')
+      // admitted projects may hold up to the hard runtime scalar, list item &
+      // declaration ceilings, & their tagged list data up to the hard snapshot
+      // byte ceiling
       readBoundedSnapshot(
         runtime,
-        createRuntimeObservationBudget(),
+        createRuntimeObservationBudget({
+          ...DEFAULT_RUNTIME_OBSERVATION_CAPS,
+          listItemsPerList: MAX_RUNTIME_OBSERVATION_CAPS.listItemsPerList,
+          recordsPerCell: MAX_RUNTIME_OBSERVATION_CAPS.recordsPerCell,
+          scalarSlotsPerSnapshot:
+            MAX_RUNTIME_OBSERVATION_CAPS.scalarSlotsPerSnapshot,
+          snapshotBytes: MAX_RUNTIME_OBSERVATION_CAPS.snapshotBytes,
+        }),
         tick,
         label
       )
@@ -938,7 +974,11 @@ export function installProjectDebugPageV1(host: ProjectDebugPageHostV1): void
           throw new Error('nonfinite raw snapshot cannot be serialized exactly')
         return entry
       })
-      if (new TextEncoder().encode(checked).byteLength > 128 * 1024)
+      // * profile-scenario bounds the trace total that these snapshots add up to
+      if (
+        new TextEncoder().encode(checked).byteLength >
+        MAX_RUNTIME_OBSERVATION_CAPS.snapshotBytes
+      )
         throw new Error('raw snapshot exceeds its byte bound')
       return value
     },

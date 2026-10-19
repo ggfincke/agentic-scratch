@@ -587,14 +587,17 @@ export const DEFAULT_RUNTIME_OBSERVATION_CAPS: RuntimeObservationCapsV1 =
     traceBytesPerAttempt: 128 * 1024 * 1024,
   })
 
+// list items & scalar slots match the hard admission ceilings & records cover
+// their targets, declarations & effects, so a whole admitted project snapshots;
+// its bytes allow about 64 per slot & two such snapshots per cell
 export const MAX_RUNTIME_OBSERVATION_CAPS: RuntimeObservationCapsV1 =
   Object.freeze({
-    listItemsPerList: 50_000,
-    scalarSlotsPerSnapshot: 250_000,
+    listItemsPerList: 100_000,
+    scalarSlotsPerSnapshot: 4_000_000,
     scalarBytesPerValue: 256 * 1024,
-    snapshotBytes: 32 * 1024 * 1024,
-    recordsPerCell: 8_192,
-    traceBytesPerCell: 128 * 1024 * 1024,
+    snapshotBytes: 256 * 1024 * 1024,
+    recordsPerCell: 32_768,
+    traceBytesPerCell: 512 * 1024 * 1024,
     traceBytesPerAttempt: 512 * 1024 * 1024,
   })
 

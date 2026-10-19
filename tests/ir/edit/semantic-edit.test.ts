@@ -116,6 +116,7 @@ import {
   AssetPathInvalidError,
   AssetPathConflictError,
   EDIT_SB3_ADMISSION_BRAND,
+  HARD_SB3_LIMITS,
   MEDIA_CLASSIFICATION_CODES,
   StrictJsonScanError,
   admitSb3ForEdit,
@@ -1966,7 +1967,9 @@ test('Group A strict source admission and media fail closed before indexing', as
   const validBytes = await buildClicker().toSb3()
   await assert.rejects(
     admitSb3ForEdit(validBytes, {
-      limits: { maxProjectJsonBytes: 10 * 1024 * 1024 + 1 },
+      limits: {
+        maxProjectJsonBytes: HARD_SB3_LIMITS.maxProjectJsonBytes + 1,
+      },
     }),
     (error: unknown) =>
       error instanceof RangeError &&

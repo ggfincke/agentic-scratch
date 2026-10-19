@@ -12,11 +12,7 @@ import {
   type EditAdmissionLimitOptions,
   type EditAdmissionLimits,
 } from './edit-admission-limits.js'
-import {
-  DEFAULT_SB3_LIMITS,
-  resolveSb3Limits,
-  type Sb3Limits,
-} from '../admission/limits.js'
+import { resolveHardBoundedSb3Limits } from '../admission/limits.js'
 import {
   validateEditProjectShape,
   type EditProjectCounts,
@@ -99,21 +95,6 @@ class EditSb3AdmissionError extends Error
   }
 }
 
-function resolveEditArchiveLimits(options: AdmitOptions['limits']): Sb3Limits
-{
-  const limits = resolveSb3Limits(options)
-  for (const key of Object.keys(limits) as Array<keyof Sb3Limits>)
-  {
-    if (limits[key] > DEFAULT_SB3_LIMITS[key])
-    {
-      throw new RangeError(
-        `Phase 8 ${key} cannot exceed ${DEFAULT_SB3_LIMITS[key]}`
-      )
-    }
-  }
-  return limits
-}
-
 export function isEditSb3Admission(value: unknown): value is EditSb3Admission
 {
   if (value === null || typeof value !== 'object') return false
@@ -155,7 +136,7 @@ export async function admitSb3ForEdit(
   }
 
   const limits = resolveEditAdmissionLimits(options.editLimits)
-  const archiveLimits = resolveEditArchiveLimits(options.limits)
+  const archiveLimits = resolveHardBoundedSb3Limits(options.limits)
   const archive = await run('archive', () =>
     admitSb3(bytes, { limits: archiveLimits })
   )

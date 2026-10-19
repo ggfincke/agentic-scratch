@@ -3,6 +3,7 @@
 
 import {
   DEFAULT_EDIT_ADMISSION_LIMITS,
+  HARD_EDIT_ADMISSION_LIMITS,
   scanStrictJson,
 } from '@scratch-agent/sb3'
 import { sha256Hex } from '@scratch-agent/sb3/crypto-node'
@@ -18,13 +19,16 @@ import type { EditArtifactStorePort } from '../transaction/ports.js'
 import { verifyEditSessionReplayV1 } from '../replay/replay.js'
 import type { EditSessionTerminalEvidenceV1 } from './session.js'
 import { ProductionTransactionExecutorV1 } from '../transaction/production-transaction.js'
+import { retainedEditSemanticAuthorityV1 } from '../authority/semantic-authority.js'
 
 export const SESSION_MANIFEST_PATTERN = /^sessions\/([^/]+)\/session\.json$/u
 const SESSION_ARTIFACT_PATTERN = /^sessions\/([^/]+)\/.+$/u
+// a session over a project admitted at raised limits retains it, so replay
+// scans at the hard node & member ceilings
 export const RETAINED_SESSION_JSON_LIMITS = Object.freeze({
   maxDepth: DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonDepth,
-  maxMembersPerContainer: DEFAULT_EDIT_ADMISSION_LIMITS.maxMembersPerContainer,
-  maxNodes: DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonNodes,
+  maxMembersPerContainer: HARD_EDIT_ADMISSION_LIMITS.maxMembersPerContainer,
+  maxNodes: HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes,
 })
 const SESSION_MANIFEST_FIELDS = Object.freeze([
   'absoluteDeadlineEpochMs',
@@ -267,11 +271,23 @@ export async function inventoryRetainedEditSessionsV1(input: {
       entry,
       `session ${sessionKey} manifest`
     )
+    const hasAuthority =
+      retainedManifest.value !== null &&
+      typeof retainedManifest.value === 'object' &&
+      (Object.hasOwn(retainedManifest.value, 'semanticAuthorityId') ||
+        Object.hasOwn(retainedManifest.value, 'semanticAuthoritySha256'))
     exactObjectFields(
       retainedManifest.value,
-      SESSION_MANIFEST_FIELDS,
+      hasAuthority
+        ? [
+            ...SESSION_MANIFEST_FIELDS,
+            'semanticAuthorityId',
+            'semanticAuthoritySha256',
+          ]
+        : SESSION_MANIFEST_FIELDS,
       `session ${sessionKey} manifest`
     )
+    retainedEditSemanticAuthorityV1(retainedManifest.value)
     if (
       retainedManifest.value.schemaVersion !== 1 ||
       retainedManifest.value.sessionKey !== sessionKey ||

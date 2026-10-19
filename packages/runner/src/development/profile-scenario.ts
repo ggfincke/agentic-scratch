@@ -12,7 +12,10 @@ import type {
   ScreenshotRef,
 } from '../policy/types.js'
 import { createObservationTrace } from '../observation/observation-host.js'
-import { defaultObservationPlan } from '../observation/observation.js'
+import {
+  defaultObservationPlan,
+  MAX_RUNTIME_OBSERVATION_CAPS,
+} from '../observation/observation.js'
 import { decodeRuntimePngRgbaV1 } from '../observation/png-decode.js'
 import {
   driveScenario,
@@ -26,7 +29,10 @@ import {
   type RuntimeExecutionProfileV1,
 } from './execution-profile.js'
 import { openProfileBrowserEngineV1 } from './profile-browser-engine.js'
-import type { ProfileBrowserEngineV1 } from './profile-browser-types.js'
+import type {
+  OpenProfileBrowserEngineOptionsV1,
+  ProfileBrowserEngineV1,
+} from './profile-browser-types.js'
 import { profileRuntimeDescriptorBeforeLaunchV1 } from '../browser/browser-host.js'
 
 export interface ExecuteProfileScenarioOptionsV1
@@ -35,6 +41,7 @@ export interface ExecuteProfileScenarioOptionsV1
   readonly screenshotDir: string
   readonly signal?: AbortSignal
   readonly maxDurationMs?: number
+  readonly archiveLimits?: OpenProfileBrowserEngineOptionsV1['archiveLimits']
 }
 export interface ProfileScenarioTraceV1 extends BrowserTrace
 {
@@ -106,6 +113,7 @@ export async function executeProfileScenarioV1(
   let requestedWaitTicks = 0
   let observedTicks = 0
   let elapsedMs = 0
+  let snapshotBytes = 0
   try
   {
     await mkdir(options.screenshotDir, { recursive: true })
@@ -119,6 +127,7 @@ export async function executeProfileScenarioV1(
         maxDurationMs,
         maxStateFrames: Math.max(1, maxTicks),
       },
+      archiveLimits: options.archiveLimits,
       signal: options.signal,
     })
     runtimeDescriptor = engine.runtimeDescriptor
@@ -154,6 +163,16 @@ export async function executeProfileScenarioV1(
           )
         )
       }
+    }
+    // each page snapshot stays under its own byte bound; the trace keeps a total
+    // sized for a project at the hard admission ceilings
+    async function boundedSnapshot(label: string): Promise<VmStateSnapshot>
+    {
+      const snapshot = await engine!.snapshot(label)
+      snapshotBytes += Buffer.byteLength(JSON.stringify(snapshot))
+      if (snapshotBytes > MAX_RUNTIME_OBSERVATION_CAPS.traceBytesPerCell)
+        throw new Error('profile snapshots exceed their trace byte bound')
+      return snapshot
     }
     const adapter: ScenarioEngine = {
       greenFlag: async () =>
@@ -246,7 +265,7 @@ export async function executeProfileScenarioV1(
           )
         try
         {
-          const snapshot = await engine!.snapshot(label)
+          const snapshot = await boundedSnapshot(label)
           snapshot.visual = await engine!.page.evaluate(() =>
             window.__projectDebug!.visual()
           )
@@ -279,7 +298,7 @@ export async function executeProfileScenarioV1(
     }
     await driveScenario(adapter, scenario)
     if (profile.scheduler === 'natural') await engine.pause()
-    finalSnapshot = await engine.snapshot('final')
+    finalSnapshot = await boundedSnapshot('final')
     const state = await engine.status()
     observedTicks = state.tick
     elapsedMs = state.elapsedMs

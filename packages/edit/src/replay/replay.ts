@@ -35,6 +35,7 @@ import {
   type ExactRevisionIdentityV1,
   type SemanticEditCapabilityProfileEnvelopeV1,
   type SemanticLineageSnapshot,
+  type SemanticAuthoringAuthorityIdV2,
 } from '@scratch-agent/ir/edit'
 import { sha256Hex } from '@scratch-agent/sb3/crypto-node'
 
@@ -4850,6 +4851,7 @@ async function verifyAttempts(
   store: EditArtifactStorePort,
   layout: ReturnType<typeof editSessionLayoutV1>,
   sessionId: string,
+  semanticAuthorityId: SemanticAuthoringAuthorityIdV2,
   failures: string[]
 ): Promise<VerifiedAttemptsV1>
 {
@@ -4966,6 +4968,7 @@ async function verifyAttempts(
       toolName: attempt.toolName,
       requestId: attempt.requestId,
       sessionId,
+      semanticAuthorityId,
       boundaryKind: retained.invocationCorrelation.boundaryKind,
       request: retained.request,
       transportRequest: retained.transportRequest,
@@ -5631,6 +5634,7 @@ export async function verifyEditSessionReplayV1(
     options.artifactStore,
     layout,
     manifest.sessionId,
+    semanticAuthority.semanticAuthorityId,
     failures
   )
   await verifyRecordedStatefulEventsV1(

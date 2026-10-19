@@ -2,7 +2,6 @@
 // resolve, guard, apply, & prove exact target-family semantic edits
 
 import {
-  DEFAULT_SB3_LIMITS,
   defineScratchRecordValue,
   HARD_EDIT_ADMISSION_LIMITS,
   isBlockEntry,
@@ -196,13 +195,20 @@ function editError(
   throw new TargetOperationError(code, message, matchCount)
 }
 
+// the evidence a plan hashes (a project delta, an entity set) spells every block or record it covers with both sides of
+// the change, so it holds several times the nodes of the project.json the admission ceiling bounds, and keys one object
+// by every one of them; the hash is a receipt, not an admission, so its bounds sit at four times the project's
 export const EDIT_EVIDENCE_CANONICAL_LIMITS_V1 = Object.freeze({
   maxDepth: HARD_EDIT_ADMISSION_LIMITS.maxJsonDepth + 32,
   maxNodes:
-    HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes +
-    HARD_EDIT_ADMISSION_LIMITS.maxIndexedSemanticRecords * 4,
-  maxMembers: HARD_EDIT_ADMISSION_LIMITS.maxMembersPerContainer,
-  maxStringCodeUnits: DEFAULT_SB3_LIMITS.maxProjectJsonBytes,
+    (HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes +
+      HARD_EDIT_ADMISSION_LIMITS.maxIndexedSemanticRecords * 4) *
+    4,
+  maxMembers:
+    (HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes +
+      HARD_EDIT_ADMISSION_LIMITS.maxIndexedSemanticRecords * 4) *
+    4,
+  maxStringCodeUnits: HARD_EDIT_ADMISSION_LIMITS.maxStringCodeUnits,
 })
 
 const CANONICAL_RESOURCE_LIMIT_CODES = new Set([

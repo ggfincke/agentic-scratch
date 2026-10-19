@@ -1,0 +1,23 @@
+{
+  "page": "https://extensions.turbowarp.org/",
+  "retrieved": "2026-10-16",
+  "note": "TurboWarp gallery extensions vendored byte for byte; the rendered TurboWarp lane serves these copies offline after a sha check against TURBOWARP_EXTENSION_ALLOWLIST_V1",
+  "files": [
+    {
+      "id": "Gamepad",
+      "url": "https://extensions.turbowarp.org/gamepad.js",
+      "path": "gamepad.js",
+      "bytes": 29325,
+      "sha256": "595b411c4237defb65662ea131be4e10d52129223fdcbf70b5f637b1a20c3c58",
+      "licence": "License: MIT AND MPL-2.0"
+    },
+    {
+      "id": "localstorage",
+      "url": "https://extensions.turbowarp.org/local-storage.js",
+      "path": "local-storage.js",
+      "bytes": 13859,
+      "sha256": "5f1e4d25728b8c2d10886a5d0c4553bfe2d8c7f6818df019a1c0a9493ea8d78c",
+      "licence": "License: MIT AND MPL-2.0"
+    }
+  ]
+}

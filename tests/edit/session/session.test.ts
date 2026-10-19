@@ -99,6 +99,11 @@ import { sha256Hex } from '@scratch-agent/sb3/crypto-node'
 
 import { EditChangeContractRegistryV1, type BoundChangeContractV1 } from '../../../packages/edit/src/contracts/change-contracts.js'
 import { combineAssetMaterializationUsageDeltasV1, EMPTY_ASSET_MATERIALIZATION_USAGE_DELTA_V1, SessionAssetStoreV1, type AdmittedEditAssetResolverV1, type AssetMaterializationUsageDeltaV1 } from '../../../packages/edit/src/assets/asset-admission.js'
+import { createEditSessionRegistryV1 as createPublicEditSessionRegistryV1 } from '../../../packages/edit/src/index.js'
+import { recoverRetainedEditSessionsV1 } from '../../../packages/edit/src/session/retained-session-recovery.js'
+import { inventoryRetainedEditSessionsV1 } from '../../../packages/edit/src/session/retained-session-inventory.js'
+import { retainedStatefulRequestBindingFailureV1 } from '../../../packages/edit/src/session/retained-request-authority.js'
+import { editSessionLayoutV1 } from '../../../packages/edit/src/session/layout.js'
 import { editSemanticAuthorityBindingV1, retainedEditSemanticAuthorityV1 } from '../../../packages/edit/src/authority/semantic-authority.js'
 import { deriveStandardExtensionMetadataV2, assertStandardExtensionRemovalV2 } from '../../../packages/edit/src/authority/extension-metadata.js'
 import { editCanonicalBytesV1, editCanonicalSha256V1 } from '../../../packages/edit/src/support/canonical.js'
@@ -1471,7 +1476,8 @@ const GROUP_D_FUTURE_BINDING_KEYS = Object.freeze([
 function registeredScriptBlockContracts(
   sourceArtifactSha256: string,
   sourceProject: ProjectIR,
-  semanticAuthorityId: 'a0-v1' | 'standard-v2' = 'a0-v1'
+  semanticAuthorityId: 'a0-v1' | 'standard-v2' = 'a0-v1',
+  includeRetainedList = false
 ): {
   readonly registry: EditChangeContractRegistryV1
   readonly valid: BoundChangeContractV1
@@ -1489,6 +1495,15 @@ function registeredScriptBlockContracts(
   )
   assert.ok(sprite)
   const spriteContractRef = spriteBindingRef()
+  const retainedList = includeRetainedList
+    ? declarationEntityEvidenceSetV1(sourceProject).find(
+        (entry) => entry.declarationKind === 'list'
+      )!
+    : undefined
+  const retainedListRef = {
+    contractRefKind: 'existing', entityKind: 'declaration',
+    entitySubtype: 'list', bindingKey: 'retained-list',
+  } as const
   const createdScriptContractRef = {
     contractRefKind: 'future',
     entityKind: 'script',
@@ -1580,6 +1595,17 @@ function registeredScriptBlockContracts(
               },
             ],
           },
+          ...(retainedList ? [{
+            nodeKind: 'ordinary' as const,
+            opcode: 'data_replaceitemoflist',
+            fields: [{ name: 'LIST', value: {
+              valueKind: 'entity' as const, value: exactDeclarationRefV1(retainedList),
+            } }],
+            inputs: [
+              { name: 'INDEX', value: { valueKind: 'literal' as const, value: 1 } },
+              { name: 'ITEM', value: { valueKind: 'literal' as const, value: 7 } },
+            ],
+          }] : []),
           ...(semanticAuthorityId === 'standard-v2' ? [
             { nodeKind: 'ordinary', opcode: 'pen_clear', fields: [], inputs: [] },
             { nodeKind: 'ordinary', opcode: 'music_setTempo', fields: [], inputs: [
@@ -1723,7 +1749,9 @@ function registeredScriptBlockContracts(
       resolveContractEntityRef: (request) =>
         request.sourceKind === 'rawScript'
           ? createdScriptContractRef
-          : resolveContractEntityRef(),
+          : request.sourceKind === 'semanticReference' && request.reference.entityKind === 'declaration'
+            ? retainedListRef
+            : resolveContractEntityRef(),
     })
   const scriptContentSha256 = creationFingerprint(scriptAdd, scriptDescriptor, {
     roleKind: 'fixed',
@@ -1746,6 +1774,14 @@ function registeredScriptBlockContracts(
   const base = structuredClone(SEMANTICALLY_VALID_CHANGE_CONTRACT_SAMPLE)
   base.sourceConstraint = { kind: 'exactArtifact', sourceArtifactSha256 }
   base.entityBindings = [
+    ...(retainedList ? [{
+      bindingKey: retainedListRef.bindingKey, bindingKind: 'existing' as const,
+      entityKind: 'declaration' as const, entitySubtype: 'list' as const,
+      expectedMatchCount: 1 as const,
+      sourceLocationSha256: retainedList.semanticLocationSha256,
+      expectedSourceSemanticFingerprint: retainedList.semanticFingerprintSha256,
+      expectedSourceContextFingerprint: retainedList.contextFingerprintSha256,
+    }] : []),
     {
       bindingKey: spriteContractRef.bindingKey,
       bindingKind: 'existing',
@@ -1955,6 +1991,10 @@ function registeredScriptBlockContracts(
       expectedSemanticContractSha256: registration.semanticContractSha256,
       source: { kind: 'exactArtifact', sourceArtifactSha256 },
       existingBindings: [
+        ...(retainedList ? [{
+          bindingKey: retainedListRef.bindingKey, entityKind: 'declaration' as const,
+          sourceLocationSha256: retainedList.semanticLocationSha256,
+        }] : []),
         {
           bindingKey: spriteContractRef.bindingKey,
           entityKind: 'target',
@@ -2204,7 +2244,7 @@ class ProductionBatchPlannerV1
   static async create(input: {
     source: ProjectIR
     sourceBytes: Uint8Array
-    session: EditSessionV1
+    session: Pick<EditSessionV1, 'revisions' | 'manifest' | 'sessionId' | 'head' | 'semanticSourceSha256'>
     store: EditArtifactStorePort
     contract: BoundChangeContractV1
     inspection: EditInspectDomainResultV1
@@ -12838,4 +12878,352 @@ test('T03 certified sensing edits preserve fallback ownership, retire menus, ref
     beforeReplay
   )
   assert.equal(sha256Hex(sourceBytes), sourceArtifactSha256)
+})
+
+test('public standard-v2 list authoring retains exact authority through recovery and replay', async (t) =>
+{
+  const sourceProject = await ProjectIR.fromSb3((await buildFixtureSb3()).sb3)
+  sourceProject.stage!.addList('retained items', [0])
+  const sourceBytes = await sourceProject.toSb3()
+  const sourceArtifactSha256 = sha256Hex(sourceBytes)
+  const contracts = registeredScriptBlockContracts(
+    sourceArtifactSha256,
+    sourceProject,
+    'standard-v2',
+    true
+  )
+  const source: EditSourceIntakeV1 = {
+    bytes: sourceBytes,
+    displayName: 'retained-list.sb3',
+    expectedArtifactSha256: sourceArtifactSha256,
+    provenance: {
+      kind: 'projectSession',
+      projectSessionId: 'retained-list-project',
+      selectedDisplayName: 'retained-list.sb3',
+      canonicalRealpath: '/virtual/retained-list.sb3',
+      device: 'test-device',
+      inode: 'retained-list',
+      byteLength: sourceBytes.byteLength,
+      modifiedAtNanoseconds: '1753056000000000000',
+      sourceInspectionPolicySha256: HASH_A,
+      diagnosticPolicySha256: HASH_B,
+      runtimePolicySha256: HASH_C,
+      provenanceRegistrationSha256: HASH_D,
+    },
+    recheck: async () => ({
+      ok: true,
+      observedArtifactSha256: sourceArtifactSha256,
+    }),
+  }
+  const open = async (semanticAuthorityId: 'standard-v2' | 'a0-v1') =>
+  {
+    const root = tempRoot(t)
+    const store = createEditArtifactStoreHostAdapter(root)
+    const clock = deterministicClock(1_753_056_000_000)
+    const registry = createPublicEditSessionRegistryV1({
+      artifactStore: store,
+      semanticAuthorityId,
+      changeContracts: contracts.registry,
+      identity: {
+        realmSha256: HASH_A,
+        profileSha256: HASH_B,
+        pinnedScratchRuntimeSourceSha256: HASH_C,
+        retentionPolicySha256: HASH_D,
+        policyConfigVersion: 1,
+      },
+      clock,
+      entropy: deterministicEntropy(181),
+      handleSecret: new Uint8Array(32).fill(0x61),
+    })
+    const begun = await registry.begin(
+      {
+        schemaVersion: 1,
+        requestId: 'begin-retained-list',
+        baseline: {
+          kind: 'projectSession',
+          projectSessionId: 'retained-list-project',
+          expectedSourceArtifactSha256: sourceArtifactSha256,
+        },
+        changeContractRegistrationId:
+          contracts.valid.registration.registrationId,
+        expectedSemanticContractSha256:
+          contracts.valid.registration.semanticContractSha256,
+      },
+      source,
+      invocation(1)
+    )
+    const session = registry.session(begun.sessionId)
+    const manifestEntry = (await store.listImmutable('sessions')).find(
+      (entry) => entry.key.endsWith('/session.json')
+    )!
+    const manifest = JSON.parse(
+      new TextDecoder().decode(await store.readImmutable(manifestEntry.key))
+    ) as EditSessionV1['manifest']
+    const layout = editSessionLayoutV1(manifest.sessionKey)
+    const revision = JSON.parse(
+      new TextDecoder().decode(
+        await store.readImmutable(
+          layout.revision(0, session.head.revisionId, 'manifest.json')
+        )
+      )
+    ) as EditSessionV1['revisions'][number]
+    return { root, store, clock, session, manifest, layout, revision }
+  }
+
+  for (const interruptPreview of [false, true])
+  {
+    const harness = await open('standard-v2')
+    const { store, session, manifest, layout } = harness
+    const planner = await ProductionBatchPlannerV1.create({
+      source: sourceProject,
+      sourceBytes,
+      store,
+      contract: contracts.valid,
+      inspection: await session.inspect({ issueHandles: true }),
+      session: {
+        sessionId: session.sessionId,
+        head: session.head,
+        semanticSourceSha256: session.semanticSourceSha256,
+        manifest,
+        revisions: [harness.revision],
+      },
+    })
+    planner.add(contracts.scriptAdd)
+    const request = {
+      schemaVersion: 1 as const,
+      sessionId: session.sessionId,
+      requestId: 'preview-retained-list',
+      batch: planner.batch(),
+    }
+    if (!interruptPreview)
+    {
+      const legacy = await open('a0-v1')
+      assert.equal(Object.hasOwn(legacy.manifest, 'semanticAuthorityId'), false)
+      await assert.rejects(
+        () =>
+          legacy.session.preview(
+            {
+              ...request,
+              sessionId: legacy.session.sessionId,
+              batch: {
+                ...request.batch,
+                expected: planningHead(
+                  legacy.session.head,
+                  legacy.session.sessionId
+                ),
+              },
+            },
+            invocation(2)
+          ),
+        { code: 'edit.schema_failed' }
+      )
+      assert.equal(legacy.session.head.revisionNumber, 0)
+      const mismatchedBytes = editCanonicalBytesV1({
+        ...manifest,
+        semanticAuthoritySha256: HASH_D,
+      })
+      const mismatchedSha256 = sha256Hex(mismatchedBytes)
+      const mismatchedStore = forwardingArtifactStore(store, {
+        readImmutable: async (key) =>
+          key === layout.session ? mismatchedBytes : store.readImmutable(key),
+        hashImmutable: async (key) =>
+          key === layout.session ? mismatchedSha256 : store.hashImmutable(key),
+        sizeImmutable: async (key) =>
+          key === layout.session
+            ? mismatchedBytes.byteLength
+            : store.sizeImmutable(key),
+        listImmutable: async (prefix) =>
+          (await store.listImmutable(prefix)).map((entry) =>
+            entry.key === layout.session
+              ? {
+                  ...entry,
+                  sha256: mismatchedSha256,
+                  byteLength: mismatchedBytes.byteLength,
+                }
+              : entry
+          ),
+      })
+      await assert.rejects(
+        () =>
+          inventoryRetainedEditSessionsV1({ artifactStore: mismatchedStore }),
+        { code: 'edit.stale_capability_profile' }
+      )
+    }
+
+    const createOrVerify = store.createOrVerifyImmutable.bind(store)
+    if (interruptPreview)
+    {
+      store.createOrVerifyImmutable = async (key, bytes) =>
+      {
+        if (key.includes('/attempts/') && key.endsWith('/result.json'))
+          throw new Error('persistent list preview result retention fault')
+        return createOrVerify(key, bytes)
+      }
+      await assert.rejects(() => session.preview(request, invocation(2)), {
+        code: 'edit.recovery_required',
+      })
+      store.createOrVerifyImmutable = createOrVerify
+    }
+    else
+    {
+      const preview = await session.preview(request, invocation(2))
+      const applied = await session.apply(
+        {
+          schemaVersion: 1,
+          sessionId: session.sessionId,
+          requestId: 'apply-retained-list',
+          ...expectedHeadRequest(session.head),
+          previewId: preview.preview.previewId,
+          applyGuardSha256: preview.preview.applyGuardSha256,
+          expectedResolvedPlanSha256: preview.preview.resolvedPlanSha256,
+        },
+        invocation(3)
+      )
+      assert.equal(applied.head.revisionNumber, 1)
+      assert.equal(
+        applied.head.candidateSha256,
+        preview.preview.predictedCandidateSha256
+      )
+      const candidate = await ProjectIR.fromSb3(
+        await store.readImmutable(
+          layout.revision(1, applied.head.revisionId, 'candidate.sb3')
+        )
+      )
+      const authored = Object.values(candidate.json.targets[1]!.blocks).find(
+        (block) =>
+          !Array.isArray(block) && block.opcode === 'data_replaceitemoflist'
+      )
+      assert.ok(authored && !Array.isArray(authored))
+      assert.equal(
+        authored.fields!.LIST![1],
+        Object.keys(sourceProject.json.targets[0]!.lists!)[0]
+      )
+      await session.close(
+        {
+          schemaVersion: 1,
+          sessionId: session.sessionId,
+          requestId: 'close-retained-list',
+          reason: 'verify retained list authority',
+          ...expectedHeadRequest(session.head),
+        },
+        invocation(4)
+      )
+    }
+
+    const pendingEntry = (
+      await store.listImmutable(`${layout.prefix}/attempts`)
+    ).find((entry) => entry.key.endsWith('/request.json'))!
+    const pending = JSON.parse(
+      new TextDecoder().decode(await store.readImmutable(pendingEntry.key))
+    ) as { request: unknown; transportRequest: unknown }
+    assert.notDeepEqual(pending.request, pending.transportRequest)
+    assert.deepEqual(pending.transportRequest, request)
+    const retainedBinding = {
+      toolName: 'edit_preview',
+      requestId: request.requestId,
+      sessionId: session.sessionId,
+      boundaryKind: 'directHost' as const,
+      ...pending,
+    }
+    assert.equal(
+      retainedStatefulRequestBindingFailureV1({
+        ...retainedBinding,
+        semanticAuthorityId: 'standard-v2',
+      }),
+      null
+    )
+    assert.equal(
+      retainedStatefulRequestBindingFailureV1(retainedBinding),
+      'edit_preview retained transport request is not exact'
+    )
+    assert.equal(
+      retainedStatefulRequestBindingFailureV1({
+        ...retainedBinding,
+        semanticAuthorityId: 'standard-v2',
+        request: { ...(pending.request as object), canonicalTransaction: null },
+      }),
+      'edit_preview retained transport and domain requests differ'
+    )
+
+    const recovered = await recoverRetainedEditSessionsV1({
+      artifactStore: store,
+      invocation: invocation(5),
+      clock: harness.clock,
+    })
+    const previewOutcome = recovered.recoveredAttempts.find(
+      (attempt) =>
+        attempt.toolName === 'edit_preview' &&
+        attempt.requestId === request.requestId
+    )
+    assert.ok(previewOutcome)
+    assert.deepEqual(previewOutcome.transportRequest, request)
+    assert.equal(previewOutcome.disposition, 'completed')
+    assert.equal(previewOutcome.transportAuthority.kind, 'session')
+    assert.deepEqual(
+      previewOutcome.budget,
+      (previewOutcome.result as { budget: unknown }).budget
+    )
+    if (interruptPreview)
+    {
+      const reportPointer = JSON.parse(
+        new TextDecoder().decode(
+          await store.readImmutable(layout.currentReport)
+        )
+      ) as { reportJsonSha256: string }
+      const terminalReport = JSON.parse(
+        new TextDecoder().decode(
+          await store.readImmutable(
+            layout.report(reportPointer.reportJsonSha256, 'report.json')
+          )
+        )
+      ) as { budget: { artifactBytesUsed: number } }
+      const mutableKeys = new Set([
+        layout.head,
+        layout.currentReport,
+        layout.idempotencyIndex,
+        layout.quotaState,
+      ])
+      const retainedBytes = (await store.listImmutable(layout.prefix))
+        .filter((entry) => !mutableKeys.has(entry.key))
+        .reduce((total, entry) => total + entry.byteLength, 0)
+      assert.equal(terminalReport.budget.artifactBytesUsed, retainedBytes)
+      assert.ok(
+        terminalReport.budget.artifactBytesUsed >
+          previewOutcome.budget.artifactBytesUsed
+      )
+    }
+    const recoveredInventory = await store.listImmutable(layout.prefix)
+    const repeatedRecovery = await recoverRetainedEditSessionsV1({
+      artifactStore: store,
+      invocation: invocation(6),
+      clock: harness.clock,
+    })
+    assert.deepEqual(
+      repeatedRecovery.recoveredAttempts,
+      recovered.recoveredAttempts
+    )
+    assert.deepEqual(
+      await store.listImmutable(layout.prefix),
+      recoveredInventory
+    )
+    const capability = await store.capability()
+    const replay = await verifyEditSessionReplayV1({
+      artifactStore: createEditArtifactStoreHostAdapter(harness.root, {
+        mode: 'read-only',
+        expectedStoreId: capability.storeId,
+        expectedOwnershipSha256: capability.ownershipSha256,
+      }),
+      sessionKey: manifest.sessionKey,
+      boundChangeContract: contracts.valid,
+      transactionExecutor: new ProductionTransactionExecutorV1(),
+    })
+    assert.deepEqual(replay.failures, [])
+    assert.equal(replay.ok, true)
+    assert.equal(replay.finalHead.revisionNumber, interruptPreview ? 0 : 1)
+    assert.deepEqual(
+      await store.listImmutable(layout.prefix),
+      recoveredInventory
+    )
+    assert.equal(sha256Hex(sourceBytes), sourceArtifactSha256)
+  }
 })

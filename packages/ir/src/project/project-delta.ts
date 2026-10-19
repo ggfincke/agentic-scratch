@@ -4,8 +4,7 @@
 import { createHash } from 'node:crypto'
 
 import {
-  DEFAULT_EDIT_ADMISSION_LIMITS,
-  DEFAULT_SB3_LIMITS,
+  HARD_EDIT_ADMISSION_LIMITS,
   isBlockEntry,
   type Asset,
   type Block,
@@ -164,6 +163,7 @@ interface OrderedCollectionDelta
   collectionKind: OrderedCollectionKind
   collectionPath: string
   ownerLineageId: string | null
+  containerLineageId?: string | null
   lineageId: string
   kind: OrderedCollectionChangeKind
   beforeIndex?: number
@@ -186,6 +186,7 @@ interface CorrespondedEntityDelta
   collectionKind: OrderedCollectionKind
   collectionPath: string
   ownerLineageId: string | null
+  containerLineageId?: string | null
   entityLineageId: string
   changes: ValueDelta[]
 }
@@ -1412,15 +1413,16 @@ function decodedPointerPart(value: string): string
   return value.replaceAll('~1', '/').replaceAll('~0', '~')
 }
 
+// fingerprints admitted projects, so the hard admission ceilings bound it
 function valueFingerprint(value: unknown): string
 {
   return createHash('sha256')
     .update(
       canonicalJsonV1(value, {
-        maxDepth: DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonDepth,
-        maxNodes: DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonNodes,
-        maxMembers: DEFAULT_EDIT_ADMISSION_LIMITS.maxMembersPerContainer,
-        maxStringCodeUnits: DEFAULT_SB3_LIMITS.maxProjectJsonBytes,
+        maxDepth: HARD_EDIT_ADMISSION_LIMITS.maxJsonDepth,
+        maxNodes: HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes,
+        maxMembers: HARD_EDIT_ADMISSION_LIMITS.maxMembersPerContainer,
+        maxStringCodeUnits: HARD_EDIT_ADMISSION_LIMITS.maxStringCodeUnits,
       })
     )
     .digest('hex')
@@ -2216,6 +2218,9 @@ function semanticMemberDeltas(
         collectionKind: correspondence.collectionKind,
         collectionPath: correspondence.collectionPath,
         ownerLineageId: correspondence.ownerLineageId,
+        ...(correspondence.collectionKind === 'procedure-call-arguments'
+          ? { containerLineageId: correspondence.containerLineageId }
+          : {}),
         entityLineageId: member.lineageId,
         changes,
       })
@@ -2232,6 +2237,9 @@ function semanticMemberDeltas(
       collectionKind: correspondence.collectionKind,
       collectionPath: correspondence.collectionPath,
       ownerLineageId,
+      ...(correspondence.collectionKind === 'procedure-call-arguments'
+        ? { containerLineageId: correspondence.containerLineageId }
+        : {}),
       entityLineageId: ownerLineageId,
       changes: [
         {
@@ -2498,7 +2506,8 @@ function rejectRawOnlyProcedureChanges(
   candidate: ProjectIR,
   collection: OrderedCollectionCorrespondence,
   beforeSurface: ResolvedOrderedHeadSurface,
-  afterSurface: ResolvedOrderedHeadSurface
+  afterSurface: ResolvedOrderedHeadSurface,
+  target: OrderedCollectionCorrespondence['members'][number]
 ): void
 {
   if (
@@ -2506,6 +2515,28 @@ function rejectRawOnlyProcedureChanges(
     collection.collectionKind !== 'procedure-call-arguments'
   )
     return
+  const beforePath = collection.beforeCollectionPath
+  const afterPath = collection.afterCollectionPath
+  if ((beforePath === null) !== (afterPath === null))
+  {
+    const { blockId } = parseProcedurePath((beforePath ?? afterPath)!)
+    const absentIndex =
+      beforePath === null ? target.beforeIndex : target.afterIndex
+    const absentProject = beforePath === null ? baseline : candidate
+    if (
+      absentIndex !== null &&
+      ownRecordValue(
+        absentProject.json.targets[absentIndex]?.blocks,
+        blockId
+      ) !== undefined
+    )
+      throw new OrderedCorrespondenceError(
+        'head-mismatch',
+        `${collection.collectionPath}: absent procedure container still exists`
+      )
+    // adding or removing an empty container is semantic even w/o parameter members
+    return
+  }
   const beforeMutation = mutationForProcedurePath(
     baseline,
     collection.beforeCollectionPath
@@ -2686,8 +2717,12 @@ function requireChangedProcedureCallAdapters(
     if (
       !parameters ||
       parameters.targetOwnerLineageId !== call.targetOwnerLineageId ||
-      !equalJson(parameters.beforeLineageIds, call.beforeLineageIds) ||
-      !equalJson(parameters.afterLineageIds, call.afterLineageIds)
+      (call.beforeCollectionPath !== null &&
+        (parameters.beforeCollectionPath === null ||
+          !equalJson(parameters.beforeLineageIds, call.beforeLineageIds))) ||
+      (call.afterCollectionPath !== null &&
+        (parameters.afterCollectionPath === null ||
+          !equalJson(parameters.afterLineageIds, call.afterLineageIds)))
     )
       throw new OrderedCorrespondenceError(
         'wrong-owner',
@@ -2787,7 +2822,8 @@ function buildCorrespondenceRuntime(
       candidate,
       collection,
       beforeSurface,
-      afterSurface
+      afterSurface,
+      targetMembers.get(collection.targetOwnerLineageId!)!
     )
     correspondedEntityChanges.push(
       ...semanticMemberDeltas(
@@ -2889,6 +2925,9 @@ function orderedCollectionDeltas(
         collectionKind: collection.collectionKind,
         collectionPath: collection.collectionPath,
         ownerLineageId: collection.ownerLineageId,
+        ...(collection.collectionKind === 'procedure-call-arguments'
+          ? { containerLineageId: collection.containerLineageId }
+          : {}),
         lineageId: member.lineageId,
         kind,
         ...(member.beforeIndex !== null

@@ -1,7 +1,7 @@
 // packages/eval/src/artifacts/durable-artifacts.ts
 // provide neutral durable filesystem primitives over bounded logical keys
 
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import {
   closeSync,
   constants,
@@ -555,9 +555,15 @@ function replacePrivatePointer(
   root: string,
   name: string,
   expectedSha256: string,
-  bytes: Uint8Array
+  bytes: Uint8Array,
+  temporaryName?: string
 ): string
 {
+  if (temporaryName !== undefined && !TEMP_NAME.test(temporaryName))
+    throw new DurableArtifactStoreError(
+      'path-unsafe',
+      'private pointer temporary name is invalid'
+    )
   const proposedSha256 = sha256(bytes)
   if (sha256(readPrivateBytes(root, name)) !== expectedSha256)
     throw new DurableArtifactStoreError(
@@ -565,7 +571,10 @@ function replacePrivatePointer(
       'private metadata pointer changed before replacement'
     )
   const finalPath = join(root, name)
-  const tempPath = join(root, `.durable-tmp-${randomBytes(16).toString('hex')}`)
+  const tempPath = join(
+    root,
+    temporaryName ?? `.durable-tmp-${randomBytes(16).toString('hex')}`
+  )
   let descriptor: number | null = null
   try
   {
@@ -911,6 +920,765 @@ function rootIdentity(path: string): RootIdentity
     )
   }
   return { device: info.dev, inode: info.ino, uid: info.uid }
+}
+
+export interface DurableArtifactRootBindingSnapshotV1
+{
+  readonly root: string
+  readonly rootIdentity: RootIdentity
+  readonly manifestSha256: string
+  readonly ownershipSha256: string
+  readonly quotaSha256: string
+  readonly priorRootDevice: number
+  readonly priorRootInode: number
+  readonly treeSha256: string
+  readonly logicalEntries: number
+  readonly physicalBytes: number
+  readonly reservedBytes: number
+}
+
+export interface DurableArtifactRootBindingRequestV1
+{
+  readonly root: string
+  readonly expectedRootIdentity: RootIdentity
+  readonly expectedManifestSha256: string
+  readonly expectedOwnershipSha256: string
+  readonly expectedQuotaSha256: string
+  readonly expectedPriorRootInode: number
+  readonly expectedTreeSha256: string
+  readonly hostAttestation: {
+    readonly principalSha256: string
+    readonly evidenceSha256: string
+    readonly continuity: 'caller-attested-content-and-inode-only'
+  }
+}
+
+interface RootBindingTreeEntry
+{
+  readonly key: string
+  readonly kind: 'directory' | 'file'
+  readonly sha256?: string
+  readonly byteLength?: number
+}
+
+interface RootBindingTree
+{
+  readonly entries: readonly RootBindingTreeEntry[]
+  readonly physicalBytes: number
+  readonly logicalEntries: number
+}
+
+function assertBindingRoot(root: string, expected: RootIdentity): void
+{
+  const current = rootIdentity(root)
+  if (
+    realpathSync(root) !== root ||
+    current.device !== expected.device ||
+    current.inode !== expected.inode ||
+    current.uid !== expected.uid
+  )
+    throw new DurableArtifactStoreError(
+      'path-unsafe',
+      'root binding requires the exact canonical current root identity'
+    )
+}
+
+function assertBindingEntry(info: Stats, identity: RootIdentity): void
+{
+  if (
+    info.isSymbolicLink() ||
+    (!info.isFile() && !info.isDirectory()) ||
+    info.dev !== identity.device ||
+    info.uid !== identity.uid ||
+    (info.mode & 0o077) !== 0
+  )
+    throw new DurableArtifactStoreError(
+      'path-unsafe',
+      'root binding found a non-private or unsafe entry'
+    )
+}
+
+function assertBindingParents(
+  root: string,
+  path: string,
+  identity: RootIdentity
+): void
+{
+  assertBindingRoot(root, identity)
+  if (!isPathWithinRootV1(root, path, { allowEqual: false }))
+    throw new DurableArtifactStoreError(
+      'path-unsafe',
+      'root binding path escaped its root'
+    )
+  let parent = dirname(path)
+  while (parent !== root)
+  {
+    const info = lstatSync(parent)
+    assertBindingEntry(info, identity)
+    if (!info.isDirectory() || realpathSync(parent) !== parent)
+      throw new DurableArtifactStoreError(
+        'path-unsafe',
+        'root binding parent changed'
+      )
+    parent = dirname(parent)
+  }
+}
+
+function readBindingFile(
+  root: string,
+  key: string,
+  identity: RootIdentity,
+  maximum: number,
+  retainBytes = false
+): {
+  readonly sha256: string
+  readonly byteLength: number
+  readonly inode: number
+  readonly bytes: Buffer
+}
+{
+  const path = join(root, key)
+  assertBindingParents(root, path, identity)
+  const before = lstatSync(path)
+  assertBindingEntry(before, identity)
+  if (!before.isFile() || before.size > maximum)
+    throw new DurableArtifactStoreError(
+      'path-unsafe',
+      'root binding file exceeds its bound'
+    )
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try
+  {
+    const opened = fstatSync(descriptor)
+    if (opened.dev !== before.dev || opened.ino !== before.ino)
+      throw new DurableArtifactStoreError(
+        'path-unsafe',
+        'root binding file was replaced'
+      )
+    const digest = createHash('sha256')
+    const chunks: Buffer[] = []
+    const buffer = Buffer.alloc(Math.min(before.size + 1, 64 * 1024))
+    let size = 0
+    for (;;)
+    {
+      const count = readSync(descriptor, buffer, 0, buffer.length, size)
+      if (count === 0) break
+      size += count
+      if (size > before.size)
+        throw new DurableArtifactStoreError(
+          'path-unsafe',
+          'root binding file grew during inspection'
+        )
+      digest.update(buffer.subarray(0, count))
+      if (retainBytes) chunks.push(Buffer.from(buffer.subarray(0, count)))
+    }
+    const after = fstatSync(descriptor)
+    const named = lstatSync(path)
+    assertBindingEntry(after, identity)
+    assertBindingEntry(named, identity)
+    if (
+      size !== before.size ||
+      after.size !== before.size ||
+      after.mtimeMs !== before.mtimeMs ||
+      after.ctimeMs !== before.ctimeMs ||
+      named.dev !== before.dev ||
+      named.ino !== before.ino ||
+      named.size !== before.size ||
+      named.mtimeMs !== before.mtimeMs ||
+      named.ctimeMs !== before.ctimeMs
+    )
+      throw new DurableArtifactStoreError(
+        'path-unsafe',
+        'root binding file changed during inspection'
+      )
+    assertBindingParents(root, path, identity)
+    return {
+      sha256: digest.digest('hex'),
+      byteLength: size,
+      inode: before.ino,
+      bytes: Buffer.concat(chunks),
+    }
+  }
+  finally
+  {
+    closeSync(descriptor)
+  }
+}
+
+function scanBindingTree(
+  root: string,
+  identity: RootIdentity,
+  manifest: DurableStoreManifest
+): RootBindingTree
+{
+  const entries: RootBindingTreeEntry[] = []
+  const inodes = new Set<number>()
+  let physicalBytes = 0
+  let logicalEntries = 0
+  let walked = 0
+  const maximumNodes = manifest.maxEntries * (MAX_LOGICAL_KEY_SEGMENTS + 1) + 3
+  if (!Number.isSafeInteger(maximumNodes))
+    throw new DurableArtifactStoreError(
+      'invalid-quota',
+      'root binding traversal bound is unsafe'
+    )
+  const visit = (key: string): void =>
+  {
+    const path = key ? join(root, key) : root
+    const before = lstatSync(path)
+    assertBindingEntry(before, identity)
+    if (!before.isDirectory() || realpathSync(path) !== path)
+      throw new DurableArtifactStoreError(
+        'path-unsafe',
+        'root binding directory changed'
+      )
+    const descriptor = openSync(
+      path,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
+    )
+    try
+    {
+      const opened = fstatSync(descriptor)
+      if (opened.dev !== before.dev || opened.ino !== before.ino)
+        throw new DurableArtifactStoreError(
+          'path-unsafe',
+          'root binding directory was replaced'
+        )
+      const names = readdirSync(path).sort()
+      for (const name of names)
+      {
+        walked += 1
+        if (walked > maximumNodes)
+          throw new DurableArtifactStoreError(
+            'too-many-entries',
+            'root binding traversal exceeds its bound'
+          )
+        const childKey = key ? `${key}/${name}` : name
+        const metadata = key === '' && PRIVATE_METADATA_NAMES.has(name)
+        const temp = TEMP_NAME.test(name)
+        if (!metadata && !temp) validateLogicalKey(childKey)
+        const info = lstatSync(join(root, childKey))
+        assertBindingEntry(info, identity)
+        if (info.isDirectory())
+        {
+          if (metadata || temp)
+            throw new DurableArtifactStoreError(
+              'path-unsafe',
+              'root binding metadata or temp is a directory'
+            )
+          entries.push({ key: childKey, kind: 'directory' })
+          visit(childKey)
+          continue
+        }
+        const file = readBindingFile(
+          root,
+          childKey,
+          identity,
+          manifest.maxEntryBytes
+        )
+        entries.push({
+          key: childKey,
+          kind: 'file',
+          sha256: file.sha256,
+          byteLength: file.byteLength,
+        })
+        if (!metadata && !temp) logicalEntries += 1
+        if (logicalEntries > manifest.maxEntries)
+          throw new DurableArtifactStoreError(
+            'too-many-entries',
+            'root binding exceeds the logical entry limit'
+          )
+        if (!metadata && !inodes.has(file.inode))
+        {
+          inodes.add(file.inode)
+          physicalBytes += file.byteLength
+        }
+        if (
+          !Number.isSafeInteger(physicalBytes) ||
+          physicalBytes > manifest.maxBytes
+        )
+          throw new DurableArtifactStoreError(
+            'quota-exceeded',
+            'root binding exceeds physical byte quota'
+          )
+      }
+      const after = lstatSync(path)
+      assertBindingEntry(after, identity)
+      if (
+        after.dev !== before.dev ||
+        after.ino !== before.ino ||
+        JSON.stringify(readdirSync(path).sort()) !== JSON.stringify(names)
+      )
+        throw new DurableArtifactStoreError(
+          'path-unsafe',
+          'root binding directory changed during inspection'
+        )
+    }
+    finally
+    {
+      closeSync(descriptor)
+    }
+  }
+  assertBindingRoot(root, identity)
+  visit('')
+  assertBindingRoot(root, identity)
+  entries.sort((left, right) =>
+    left.key < right.key ? -1 : left.key > right.key ? 1 : 0
+  )
+  return { entries, physicalBytes, logicalEntries }
+}
+
+function bindingMetadata(root: string, identity: RootIdentity)
+{
+  const manifestBytes = readBindingFile(
+    root,
+    STORE_MANIFEST_NAME,
+    identity,
+    64 * 1024,
+    true
+  ).bytes
+  const manifest = parseStoreManifest(manifestBytes)
+  const ownerBytes = readBindingFile(
+    root,
+    STORE_OWNER_NAME,
+    identity,
+    64 * 1024,
+    true
+  ).bytes
+  const owner = parseStoreOwner(ownerBytes)
+  const quotaBytes = readBindingFile(
+    root,
+    STORE_QUOTA_NAME,
+    identity,
+    manifest.maxEntryBytes,
+    true
+  ).bytes
+  const quota = parseQuotaState(quotaBytes)
+  if (
+    owner.storeId !== manifest.storeId ||
+    quota.maxBytes !== manifest.maxBytes
+  )
+    throw new DurableArtifactStoreError(
+      'path-unsafe',
+      'root binding metadata identities differ'
+    )
+  if (quota.reservations.length + quota.outcomes.length > manifest.maxEntries)
+    throw new DurableArtifactStoreError(
+      'too-many-entries',
+      'root binding quota catalogue exceeds its limit'
+    )
+  const keys = new Set<string>()
+  let reservedBytes = 0
+  for (const entry of [...quota.reservations, ...quota.outcomes])
+  {
+    validateLogicalKey(entry.key)
+    if (
+      keys.has(entry.key) ||
+      ('actualBytes' in entry && entry.actualBytes > entry.reservedBytes)
+    )
+      throw new DurableArtifactStoreError(
+        'path-unsafe',
+        'root binding quota catalogue is inconsistent'
+      )
+    keys.add(entry.key)
+    if ('bytes' in entry) reservedBytes += entry.bytes
+  }
+  if (!Number.isSafeInteger(reservedBytes) || reservedBytes > manifest.maxBytes)
+    throw new DurableArtifactStoreError(
+      'quota-exceeded',
+      'root binding reservations exceed quota'
+    )
+  return { manifestBytes, manifest, ownerBytes, quotaBytes, reservedBytes }
+}
+
+export function inspectDurableArtifactRootBindingV1(
+  rawRoot: string
+): DurableArtifactRootBindingSnapshotV1
+{
+  const root = resolve(rawRoot)
+  const identity = rootIdentity(root)
+  assertBindingRoot(root, identity)
+  const metadata = bindingMetadata(root, identity)
+  const tree = scanBindingTree(root, identity, metadata.manifest)
+  return {
+    root,
+    rootIdentity: identity,
+    manifestSha256: sha256(metadata.manifestBytes),
+    ownershipSha256: sha256(metadata.ownerBytes),
+    quotaSha256: sha256(metadata.quotaBytes),
+    priorRootDevice: metadata.manifest.rootDevice,
+    priorRootInode: metadata.manifest.rootInode,
+    treeSha256: sha256(privateJsonBytes(tree.entries)),
+    logicalEntries: tree.logicalEntries,
+    physicalBytes: tree.physicalBytes,
+    reservedBytes: metadata.reservedBytes,
+  }
+}
+
+// legacy stores pin mount-local device numbers, so continuity is host-attested
+export function rebindDurableArtifactRootV1(
+  input: DurableArtifactRootBindingRequestV1,
+  options: {
+    readonly faultHook?: (point: 'receipt-durable' | 'manifest-durable') => void
+  } = {}
+): {
+  readonly receiptKey: string
+  readonly receiptSha256: string
+  readonly manifestSha256: string
+  readonly status: 'rebound' | 'already-rebound'
+}
+{
+  if (
+    typeof input !== 'object' ||
+    input === null ||
+    !hasExactKeys(input as unknown as Record<string, unknown>, [
+      'root',
+      'expectedRootIdentity',
+      'expectedManifestSha256',
+      'expectedOwnershipSha256',
+      'expectedQuotaSha256',
+      'expectedPriorRootInode',
+      'expectedTreeSha256',
+      'hostAttestation',
+    ]) ||
+    typeof input.expectedRootIdentity !== 'object' ||
+    input.expectedRootIdentity === null ||
+    !hasExactKeys(
+      input.expectedRootIdentity as unknown as Record<string, unknown>,
+      ['device', 'inode', 'uid']
+    ) ||
+    typeof input.hostAttestation !== 'object' ||
+    input.hostAttestation === null ||
+    !hasExactKeys(input.hostAttestation as unknown as Record<string, unknown>, [
+      'principalSha256',
+      'evidenceSha256',
+      'continuity',
+    ])
+  )
+    throw new DurableArtifactStoreError(
+      'path-unsafe',
+      'root binding request shape is invalid'
+    )
+  const request: DurableArtifactRootBindingRequestV1 = {
+    root: input.root,
+    expectedRootIdentity: {
+      device: input.expectedRootIdentity.device,
+      inode: input.expectedRootIdentity.inode,
+      uid: input.expectedRootIdentity.uid,
+    },
+    expectedManifestSha256: input.expectedManifestSha256,
+    expectedOwnershipSha256: input.expectedOwnershipSha256,
+    expectedQuotaSha256: input.expectedQuotaSha256,
+    expectedPriorRootInode: input.expectedPriorRootInode,
+    expectedTreeSha256: input.expectedTreeSha256,
+    hostAttestation: {
+      principalSha256: input.hostAttestation.principalSha256,
+      evidenceSha256: input.hostAttestation.evidenceSha256,
+      continuity: input.hostAttestation.continuity,
+    },
+  }
+  const root = request.root
+  const hashFields = [
+    request.expectedManifestSha256,
+    request.expectedOwnershipSha256,
+    request.expectedQuotaSha256,
+    request.expectedTreeSha256,
+    request.hostAttestation?.principalSha256,
+    request.hostAttestation?.evidenceSha256,
+  ]
+  if (
+    typeof root !== 'string' ||
+    resolve(root) !== root ||
+    hashFields.some(
+      (value) => typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)
+    ) ||
+    request.hostAttestation.continuity !==
+      'caller-attested-content-and-inode-only'
+  )
+    throw new DurableArtifactStoreError(
+      'path-unsafe',
+      'root binding requires explicit bounded host attestations'
+    )
+  const identity = request.expectedRootIdentity
+  if (
+    !identity ||
+    [
+      identity.device,
+      identity.inode,
+      identity.uid,
+      request.expectedPriorRootInode,
+    ].some((value) => !Number.isSafeInteger(value) || value < 0) ||
+    identity.inode !== request.expectedPriorRootInode
+  )
+    throw new DurableArtifactStoreError(
+      'path-unsafe',
+      'root binding cannot authorize a replaced root inode'
+    )
+  assertBindingRoot(root, identity)
+  const lease = acquireNativeArtifactRootLeaseV1(root, {})
+  try
+  {
+    assertBindingRoot(root, identity)
+    const metadata = bindingMetadata(root, identity)
+    const requestDigest = sha256(privateJsonBytes(request))
+    const receiptKey = `root-binding-${requestDigest}.json`
+    const receiptPath = join(root, receiptKey)
+    const tempKey = `.durable-tmp-${requestDigest.slice(0, 32)}`
+    const tempPath = join(root, tempKey)
+    const manifestTempKey = `.durable-tmp-${sha256(`root-binding-manifest:${requestDigest}`).slice(0, 32)}`
+    const manifestTempPath = join(root, manifestTempKey)
+    let priorManifestBytes = metadata.manifestBytes
+    let retainedReceipt: Buffer | null = null
+    if (existsSync(receiptPath))
+    {
+      retainedReceipt = readBindingFile(
+        root,
+        receiptKey,
+        identity,
+        metadata.manifest.maxEntryBytes,
+        true
+      ).bytes
+      const record = decodePrivateJson(
+        retainedReceipt,
+        'root binding receipt'
+      ) as Record<string, unknown>
+      if (
+        typeof record?.priorManifestBase64 !== 'string' ||
+        record.priorManifestBase64.length > 128 * 1024
+      )
+        throw new DurableArtifactStoreError(
+          'path-unsafe',
+          'root binding receipt lacks bounded prior manifest evidence'
+        )
+      priorManifestBytes = Buffer.from(record.priorManifestBase64, 'base64')
+    }
+    if (
+      sha256(priorManifestBytes) !== request.expectedManifestSha256 ||
+      sha256(metadata.ownerBytes) !== request.expectedOwnershipSha256 ||
+      sha256(metadata.quotaBytes) !== request.expectedQuotaSha256
+    )
+      throw new DurableArtifactStoreError(
+        'expected-hash-mismatch',
+        'root binding metadata differs from host evidence'
+      )
+    const priorManifest = parseStoreManifest(priorManifestBytes)
+    if (
+      priorManifest.rootInode !== request.expectedPriorRootInode ||
+      priorManifest.rootDevice === identity.device
+    )
+      throw new DurableArtifactStoreError(
+        'path-unsafe',
+        'root binding requires a changed device and unchanged inode'
+      )
+    const proposedManifest = { ...priorManifest, rootDevice: identity.device }
+    const proposedBytes = privateJsonBytes(proposedManifest)
+    const proposedSha256 = sha256(proposedBytes)
+    const observedManifestSha256 = sha256(metadata.manifestBytes)
+    const alreadyRebound = observedManifestSha256 === proposedSha256
+    if (
+      observedManifestSha256 !== request.expectedManifestSha256 &&
+      !alreadyRebound
+    )
+      throw new DurableArtifactStoreError(
+        'expected-hash-mismatch',
+        'root binding manifest is neither the exact prior nor proposed version'
+      )
+    const receipt = {
+      schemaVersion: 1,
+      kind: 'durable-root-binding-host-attestation-v1',
+      request,
+      priorManifestBase64: priorManifestBytes.toString('base64'),
+      priorManifestSha256: request.expectedManifestSha256,
+      proposedManifestSha256: proposedSha256,
+      priorRootIdentity: {
+        device: priorManifest.rootDevice,
+        inode: priorManifest.rootInode,
+        uid: null,
+      },
+      currentRootIdentity: identity,
+      legacyStableVolumeContinuity: 'unproven',
+    }
+    const receiptBytes = privateJsonBytes(receipt)
+    const receiptSha256 = sha256(receiptBytes)
+    if (receiptBytes.byteLength > priorManifest.maxEntryBytes)
+      throw new DurableArtifactStoreError(
+        'quota-exceeded',
+        'root binding receipt exceeds the entry limit'
+      )
+    if (retainedReceipt && !retainedReceipt.equals(receiptBytes))
+      throw new DurableArtifactStoreError(
+        'expected-hash-mismatch',
+        'root binding pending receipt differs from the deterministic transition'
+      )
+    if (alreadyRebound && !retainedReceipt)
+      throw new DurableArtifactStoreError(
+        'path-unsafe',
+        'root binding changed manifest lacks its prior durable receipt'
+      )
+    const validateTree = (): RootBindingTree =>
+    {
+      assertBindingRoot(root, identity)
+      const tree = scanBindingTree(root, identity, priorManifest)
+      const normalized = tree.entries.flatMap((entry) =>
+      {
+        if (entry.key === receiptKey || entry.key === tempKey)
+        {
+          if (
+            entry.kind !== 'file' ||
+            entry.sha256 !== receiptSha256 ||
+            entry.byteLength !== receiptBytes.byteLength
+          )
+            throw new DurableArtifactStoreError(
+              'expected-hash-mismatch',
+              'root binding transition artifact differs'
+            )
+          return []
+        }
+        if (entry.key === manifestTempKey)
+        {
+          if (
+            !retainedReceipt ||
+            entry.kind !== 'file' ||
+            entry.sha256 !== proposedSha256 ||
+            entry.byteLength !== proposedBytes.byteLength
+          )
+            throw new DurableArtifactStoreError(
+              'expected-hash-mismatch',
+              'root binding manifest temp lacks exact pending transition evidence'
+            )
+          return []
+        }
+        if (entry.key === STORE_MANIFEST_NAME)
+        {
+          if (
+            entry.sha256 !== request.expectedManifestSha256 &&
+            entry.sha256 !== proposedSha256
+          )
+            throw new DurableArtifactStoreError(
+              'expected-hash-mismatch',
+              'root binding manifest changed during traversal'
+            )
+          return [
+            {
+              ...entry,
+              sha256: request.expectedManifestSha256,
+              byteLength: priorManifestBytes.byteLength,
+            },
+          ]
+        }
+        return [entry]
+      })
+      if (sha256(privateJsonBytes(normalized)) !== request.expectedTreeSha256)
+        throw new DurableArtifactStoreError(
+          'expected-hash-mismatch',
+          'root binding whole-tree content differs from host evidence'
+        )
+      return tree
+    }
+    const tree = validateTree()
+    const transitionKeys = new Set([receiptKey, tempKey, manifestTempKey])
+    if (
+      !alreadyRebound &&
+      tree.entries.filter((entry) => !transitionKeys.has(entry.key)).length +
+        2 >
+        priorManifest.maxEntries * (MAX_LOGICAL_KEY_SEGMENTS + 1) + 3
+    )
+      throw new DurableArtifactStoreError(
+        'too-many-entries',
+        'root binding transition lacks bounded traversal headroom'
+      )
+    const additionalReceiptBytes = tree.entries.some(
+      (entry) => entry.key === receiptKey || entry.key === tempKey
+    )
+      ? 0
+      : receiptBytes.byteLength
+    if (
+      tree.physicalBytes +
+        metadata.reservedBytes +
+        additionalReceiptBytes +
+        (tree.entries.some((entry) => entry.key === manifestTempKey) ||
+        alreadyRebound
+          ? 0
+          : proposedBytes.byteLength) >
+      priorManifest.maxBytes
+    )
+      throw new DurableArtifactStoreError(
+        'quota-exceeded',
+        'root binding receipt and manifest temp exceed unreserved physical quota'
+      )
+    if (!retainedReceipt && tree.logicalEntries + 1 > priorManifest.maxEntries)
+      throw new DurableArtifactStoreError(
+        'too-many-entries',
+        'root binding receipt exceeds the logical entry limit'
+      )
+    if (!retainedReceipt)
+    {
+      if (!existsSync(tempPath))
+      {
+        const descriptor = openSync(
+          tempPath,
+          constants.O_WRONLY |
+            constants.O_CREAT |
+            constants.O_EXCL |
+            constants.O_NOFOLLOW,
+          0o600
+        )
+        try
+        {
+          writeFileSync(descriptor, receiptBytes)
+          fsyncSync(descriptor)
+        }
+        finally
+        {
+          closeSync(descriptor)
+        }
+      }
+      validateTree()
+      assertBindingParents(root, receiptPath, identity)
+      linkSync(tempPath, receiptPath)
+      syncPrivateDirectory(dirname(receiptPath))
+      retainedReceipt = Buffer.from(receiptBytes)
+    }
+    if (existsSync(tempPath))
+    {
+      validateTree()
+      unlinkSync(tempPath)
+      syncPrivateDirectory(dirname(tempPath))
+    }
+    options.faultHook?.('receipt-durable')
+    validateTree()
+    if (existsSync(manifestTempPath))
+    {
+      unlinkSync(manifestTempPath)
+      syncPrivateDirectory(root)
+    }
+    assertBindingRoot(root, identity)
+    if (!alreadyRebound)
+      replacePrivatePointer(
+        root,
+        STORE_MANIFEST_NAME,
+        request.expectedManifestSha256,
+        proposedBytes,
+        manifestTempKey
+      )
+    options.faultHook?.('manifest-durable')
+    validateTree()
+    if (sha256(readPrivateBytes(root, STORE_MANIFEST_NAME)) !== proposedSha256)
+      throw new DurableArtifactStoreError(
+        'expected-hash-mismatch',
+        'root binding manifest installation did not persist'
+      )
+    return {
+      receiptKey,
+      receiptSha256,
+      manifestSha256: proposedSha256,
+      status: alreadyRebound ? 'already-rebound' : 'rebound',
+    }
+  }
+  finally
+  {
+    lease.release()
+  }
 }
 
 export class DurableArtifactStore

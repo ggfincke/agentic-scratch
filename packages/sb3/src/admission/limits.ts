@@ -20,6 +20,15 @@ export const DEFAULT_SB3_LIMITS: Readonly<Sb3Limits> = Object.freeze({
   maxTotalAssetBytes: 100 * 1024 * 1024,
 })
 
+// the most an edit admission or a workspace build may raise each limit to
+export const HARD_SB3_LIMITS: Readonly<Sb3Limits> = Object.freeze({
+  maxCompressedBytes: 512 * 1024 * 1024,
+  maxEntries: 64_000,
+  maxProjectJsonBytes: 128 * 1024 * 1024,
+  maxAssetBytes: 25 * 1024 * 1024,
+  maxTotalAssetBytes: 1024 * 1024 * 1024,
+})
+
 function assertLimit(
   name: keyof Sb3Limits,
   value: number,
@@ -42,6 +51,21 @@ export function resolveSb3Limits(opts: Sb3LimitOptions = {}): Sb3Limits
   assertLimit('maxProjectJsonBytes', limits.maxProjectJsonBytes, 0)
   assertLimit('maxAssetBytes', limits.maxAssetBytes, 0)
   assertLimit('maxTotalAssetBytes', limits.maxTotalAssetBytes, 0)
+  return limits
+}
+
+export function resolveHardBoundedSb3Limits(
+  opts: Sb3LimitOptions = {}
+): Sb3Limits
+{
+  const limits = resolveSb3Limits(opts)
+  for (const key of Object.keys(limits) as Array<keyof Sb3Limits>)
+  {
+    if (limits[key] > HARD_SB3_LIMITS[key])
+    {
+      throw new RangeError(`${key} cannot exceed ${HARD_SB3_LIMITS[key]}`)
+    }
+  }
   return limits
 }
 

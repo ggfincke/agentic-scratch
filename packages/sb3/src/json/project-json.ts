@@ -176,10 +176,13 @@ interface Meta
 }
 
 // root project.json; scratch-vm emits keys in the order targets, monitors, extensions, meta
+// TurboWarp adds extensionURLs (id -> script url) & extensionStorage (id -> record)
 export interface ProjectJson
 {
   targets: Target[]
   monitors?: Monitor[]
   extensions?: string[]
+  extensionURLs?: Record<string, string>
+  extensionStorage?: Record<string, Record<string, unknown>>
   meta: Meta
 }

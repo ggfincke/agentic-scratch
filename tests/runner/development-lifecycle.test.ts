@@ -17,6 +17,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
+import JSZip from 'jszip'
+
 import { blankProject } from '@scratch-agent/ir'
 import {
   DEVELOPMENT_TOOLS_V1,
@@ -38,6 +40,7 @@ import {
   type ProfileStateProbeV1,
   type RuntimeExecutionProfileV1,
 } from '@scratch-agent/runner'
+import { DEFAULT_SB3_LIMITS, HARD_SB3_LIMITS } from '@scratch-agent/sb3'
 
 async function fixture(t: test.TestContext)
 {
@@ -945,3 +948,38 @@ test(
     assert.equal(engine!.page.isClosed(), true)
   }
 )
+
+test('profile engines admit the archive at the default entry cap unless raised up to the hard ceiling', async () =>
+{
+  const zip = new JSZip()
+  zip.file('project.json', '{}')
+  for (let index = 1; index <= DEFAULT_SB3_LIMITS.maxEntries; index++)
+    zip.file(`${index.toString(16).padStart(32, '0')}.svg`, '')
+  const sb3 = await zip.generateAsync({ type: 'uint8array' })
+  const options = {
+    sb3,
+    profile: {
+      schemaVersion: 1,
+      runtime: 'turbowarp',
+      scheduler: 'deterministic',
+      tickRate: 60,
+    } as RuntimeExecutionProfileV1,
+    headless: true,
+    inputMode: 'agent' as const,
+  }
+  await assert.rejects(
+    () => openProfileBrowserEngineV1(options),
+    new RegExp(
+      `has ${DEFAULT_SB3_LIMITS.maxEntries + 1} entries; max ${DEFAULT_SB3_LIMITS.maxEntries}`,
+      'u'
+    )
+  )
+  await assert.rejects(
+    () =>
+      openProfileBrowserEngineV1({
+        ...options,
+        archiveLimits: { maxEntries: HARD_SB3_LIMITS.maxEntries + 1 },
+      }),
+    new RegExp(`maxEntries cannot exceed ${HARD_SB3_LIMITS.maxEntries}`, 'u')
+  )
+})

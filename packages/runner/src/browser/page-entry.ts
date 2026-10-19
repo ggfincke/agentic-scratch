@@ -37,6 +37,11 @@ interface ScaffoldingInstance
   setup(): void
   appendTo(element: HTMLElement): void
   loadProject(data: ArrayBuffer | Uint8Array): Promise<void>
+  setExtensionSecurityManager(manager: {
+    getSandboxMode(url: string): string
+    canLoadExtensionFromProject(url: string): boolean
+    rewriteExtensionURL(url: string): string
+  }): void
   vm: TurboWarpVm
   renderer?: PageRenderer
 }
@@ -53,6 +58,16 @@ scaffolding.width = STAGE_WIDTH
 scaffolding.height = STAGE_HEIGHT
 scaffolding.shouldConnectPeripherals = false
 scaffolding.setup()
+// the host injects the allowlisted extension url -> offline route map before
+// this bundle runs; a project may load only those, unsandboxed from the route
+const extensionRoutes: Readonly<Record<string, string>> =
+  (window as unknown as { __turbowarpExtensionRoutes?: Record<string, string> })
+    .__turbowarpExtensionRoutes ?? {}
+scaffolding.setExtensionSecurityManager({
+  getSandboxMode: () => 'unsandboxed',
+  canLoadExtensionFromProject: (url) => Object.hasOwn(extensionRoutes, url),
+  rewriteExtensionURL: (url) => extensionRoutes[url] ?? url,
+})
 const element = document.getElementById('app')
 if (!element) throw new Error('missing #app host')
 scaffolding.appendTo(element)

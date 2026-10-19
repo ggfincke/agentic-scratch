@@ -359,6 +359,22 @@ interface AppliedProductionPrefixV1
   readonly applied: readonly AppliedProductionOperationV1[]
 }
 
+interface PlanningHandleVerificationV1
+{
+  readonly request: Parameters<
+    NonNullable<EditTransactionInputV1['verifyHandle']>
+  >[0]
+  readonly expected: boolean
+}
+
+interface CachedProductionPlanningPrefixV1
+{
+  readonly inputSha256: string
+  readonly operationSha256s: readonly string[]
+  readonly handleVerifications: readonly PlanningHandleVerificationV1[]
+  readonly prefix: AppliedProductionPrefixV1
+}
+
 interface AdvanceProductionFutureBindingLedgerInputV1
 {
   readonly ledger: FutureBindingLedgerV1
@@ -505,10 +521,10 @@ function failOperationRefusalV1(
 function finalResultEvidenceForSlot(
   project: ProjectIR,
   activeLineage: SemanticLineageSnapshot,
-  slot:
-    | ProductionResultSlotV1
-    | ProductionDynamicBlockResultSlotV1
-    | ProcedureProductionDynamicResultSlotV1
+  slot: Pick<
+    ProductionResultSlotV1,
+    'entityKind' | 'entitySubtype' | 'lineageId' | 'ownerLineageId'
+  >
 ):
   | DeclarationEntityEvidenceV1
   | CommentEntityEvidenceV1
@@ -1298,6 +1314,65 @@ function cloneCandidate(
     snapshot
   )
   return { project, allocator: project.uids }
+}
+
+function clonePlanningPrefix(
+  prefix: AppliedProductionPrefixV1,
+  source: ProjectIR,
+  contract: EditSemanticChangeContractV1
+): AppliedProductionPrefixV1
+{
+  const { candidate, allocator, resolveOwnerLineageId: _, ...state } = prefix
+  const cloned = cloneCandidate(candidate, allocator.snapshot())
+  const copied = structuredClone(state)
+  // cloning drops the validator's frozen identity; retain its validated outputs
+  const sourceLineage = validateSemanticLineageSnapshot(copied.sourceLineage)
+  return {
+    ...copied,
+    sourceLineage,
+    beforeActiveLineage: validateSemanticLineageSnapshot(copied.beforeActiveLineage),
+    activeLineage: validateSemanticLineageSnapshot(copied.activeLineage),
+    lineageHistory: validateSemanticLineageSnapshot(copied.lineageHistory),
+    candidate: cloned.project,
+    allocator: cloned.allocator,
+    resolveOwnerLineageId: existingBindingOwnerLineageResolverV1(
+      source,
+      contract,
+      sourceLineage
+    ),
+  }
+}
+
+function planningPrefixInputSha256(input: EditTransactionInputV1): string
+{
+  const {
+    sourceBytes,
+    currentBytes,
+    canonicalTransaction: _,
+    verifyHandle,
+    resolveAdmittedAsset,
+    ...structuralInput
+  } = input
+  const authority = retainedEditSemanticAuthorityV1(input)
+  // graph dispatch does not read the per-goal planning request envelope
+  return editCanonicalSha256V1({
+    ...structuralInput,
+    semanticAuthorityId: authority.semanticAuthorityId,
+    semanticAuthoritySha256: authority.semanticAuthoritySha256,
+    sourceBytesSha256: sha256Hex(sourceBytes),
+    currentBytesSha256: sha256Hex(currentBytes),
+    hasHandleVerifier: verifyHandle !== undefined,
+    hasAssetResolver: resolveAdmittedAsset !== undefined,
+  })
+}
+
+function isPlanningGraphOperation(kind: SemanticEditOperationV1['kind']): boolean
+{
+  return (
+    kind.startsWith('script.') ||
+    kind.startsWith('block.') ||
+    kind.startsWith('procedure.')
+  )
 }
 
 function targetLineageId(
@@ -2171,6 +2246,8 @@ function procedureCorrespondences(
 {
   const parameters: OrderedCollectionCorrespondence[] = []
   const callArguments: OrderedCollectionCorrespondence[] = []
+  const changedParameters = new Set<string>()
+  const changedCalls = new Set<OrderedCollectionCorrespondence>()
   for (const member of targets.members)
   {
     const beforeTarget =
@@ -2206,11 +2283,9 @@ function procedureCorrespondences(
             mutation: afterEntry.mutation,
             inputs: afterEntry.inputs,
           }
-      if (
-        editCanonicalSha256V1(beforeSurface ?? null) ===
+      const changed =
+        editCanonicalSha256V1(beforeSurface ?? null) !==
         editCanonicalSha256V1(afterSurface ?? null)
-      )
-        continue
       const afterProccode = afterEntry?.mutation?.proccode
       const beforeProccode = beforeEntry?.mutation?.proccode
       const ownerLineageId =
@@ -2264,13 +2339,35 @@ function procedureCorrespondences(
         afterLineageIds,
         members: orderedMembers(beforeLineageIds, afterLineageIds),
       }
-      if (prototype) parameters.push(collection)
-      else callArguments.push(collection)
+      if (prototype)
+      {
+        parameters.push(collection)
+        if (changed) changedParameters.add(ownerLineageId)
+      }
+      else
+      {
+        callArguments.push(collection)
+        if (changed) changedCalls.add(collection)
+      }
     }
   }
+  // changed calls still bind an unchanged signature, & signature edits cover all calls
+  const requiredCalls = callArguments.filter(
+    (collection) =>
+      changedCalls.has(collection) ||
+      changedParameters.has(collection.ownerLineageId!)
+  )
+  const requiredOwners = new Set([
+    ...changedParameters,
+    ...requiredCalls.map((collection) => collection.ownerLineageId!),
+  ])
   return {
-    parameters: Object.freeze(parameters),
-    callArguments: Object.freeze(callArguments),
+    parameters: Object.freeze(
+      parameters.filter((collection) =>
+        requiredOwners.has(collection.ownerLineageId!)
+      )
+    ),
+    callArguments: Object.freeze(requiredCalls),
   }
 }
 
@@ -3716,6 +3813,7 @@ function specificAllowanceCovers(
       )
     if (
       (applied.operation.kind === 'script.remove' ||
+        applied.operation.kind === 'procedure.remove' ||
         applied.operation.kind === 'block.replace' ||
         applied.operation.kind === 'block.remove' ||
         applied.operation.kind === 'block.setInput') &&
@@ -3726,7 +3824,11 @@ function specificAllowanceCovers(
       const publicRemovalPaths =
         applied.authorizationEvidence?.groupDGraph?.publicRemovalPaths ?? []
       const expectedEntityKind =
-        applied.operation.kind === 'script.remove' ? 'script' : 'block'
+        applied.operation.kind === 'script.remove'
+          ? 'script'
+          : applied.operation.kind === 'procedure.remove'
+            ? 'procedure'
+            : 'block'
       return (
         publicRemovalPaths.includes(evidence.path) &&
         source.entityKind === expectedEntityKind &&
@@ -4021,6 +4123,51 @@ function targetPropertyValue(
   return (target as unknown as Record<string, unknown>)[property]
 }
 
+// future predicates follow the same live entity evidence as operation results
+function futureEntityExists(
+  predicate: Extract<StructuralPredicateV1, { kind: 'entityExists' }>,
+  contract: EditSemanticChangeContractV1,
+  candidate: ProjectIR,
+  activeLineage: SemanticLineageSnapshot,
+  futureBindingLedger: FutureBindingLedgerV1
+): boolean
+{
+  const reference = predicate.candidate
+  if (reference.contractRefKind !== 'future') return false
+  const bindings = contract.entityBindings.filter(
+    (binding) =>
+      binding.bindingKind === 'future' &&
+      binding.bindingKey === reference.bindingKey &&
+      binding.entityKind === reference.entityKind &&
+      binding.entitySubtype === reference.entitySubtype
+  )
+  if (bindings.length !== 1 || bindings[0]!.bindingKind !== 'future')
+    return false
+  const binding = bindings[0]!
+  const bindingKeySha256 = futureBindingKeySha256V1(
+    futureBindingLedger.changeContractSha256,
+    binding.bindingKey
+  )
+  const rows = futureBindingLedger.realizations.filter(
+    (row) =>
+      row.bindingKeySha256 === bindingKeySha256 &&
+      row.bindingDescriptorSha256 === futureBindingDescriptorSha256V1(binding)
+  )
+  if (rows.length !== 1) return false
+  const row = rows[0]!
+  const records = activeLineage.records.filter(
+    (record) => record.lineageId === row.resultLineageId
+  )
+  if (records.length !== 1 || records[0]!.status !== 'active') return false
+  finalResultEvidenceForSlot(candidate, activeLineage, {
+    entityKind: binding.entityKind,
+    entitySubtype: binding.entitySubtype,
+    lineageId: row.resultLineageId,
+    ownerLineageId: row.ownerLineageId,
+  })
+  return true
+}
+
 function requiredStructuralPredicateSatisfied(
   predicate: StructuralPredicateV1,
   contract: EditSemanticChangeContractV1,
@@ -4050,6 +4197,15 @@ function requiredStructuralPredicateSatisfied(
     )
   }
   if (predicate.kind === 'entityExists')
+  {
+    if (predicate.candidate.contractRefKind === 'future')
+      return futureEntityExists(
+        predicate,
+        contract,
+        candidate,
+        activeLineage,
+        futureBindingLedger
+      )
     return (
       targetForContractBinding(
         contract,
@@ -4060,6 +4216,7 @@ function requiredStructuralPredicateSatisfied(
         futureBindingLedger
       ) !== null
     )
+  }
   if (predicate.kind === 'entityAbsent')
     return (
       targetForExistingBinding(
@@ -4450,6 +4607,57 @@ function assertMeaningfulDelta(delta: ProjectDelta): void
     fail('edit.internal_invariant', 'project delta is incomplete')
 }
 
+function preservationBlockDeltaV1(delta: ProjectDelta, path: string)
+{
+  const match = /^\/targets\/(\d+)\/blocks\/([^/]+)$/u.exec(path)
+  if (!match) return undefined
+  const targetIndex = Number(match[1])
+  const blockId = decodedPointerPart(match[2]!)
+  return delta.targets
+    .find((target) => target.targetIndex === targetIndex)
+    ?.blockChanges.find((block) => block.blockId === blockId)
+}
+
+function preservationRefusalContextV1(
+  violation: { readonly code?: string; readonly path?: string } | undefined,
+  delta: ProjectDelta,
+  operations: readonly AppliedProductionOperationV1[]
+): RefusalContextV1 | null
+{
+  if (
+    !violation?.path ||
+    (violation.code !== 'existing-script-missing' &&
+      violation.code !== 'existing-script-layout-changed')
+  )
+    return null
+  const block = preservationBlockDeltaV1(delta, violation.path)
+  if (!block) return null
+  const occurrenceIds = new Set(
+    violation.code === 'existing-script-layout-changed'
+      ? block.changes
+          .filter((change) =>
+            change.path === `${violation.path}/x` ||
+            change.path === `${violation.path}/y`
+          )
+          .flatMap((change) => change.operationIds)
+      : block.operationIds
+  )
+  if (occurrenceIds.size !== 1) return null
+  const matches = operations.filter((operation) =>
+    occurrenceIds.has(operation.occurrenceId)
+  )
+  return matches.length === 1
+    ? { opId: matches[0]!.operation.opId, semanticSurface: 'script' }
+    : null
+}
+
+function boundedPreservationMessageV1(message: string): string
+{
+  if (message.length <= 4096) return message
+  const suffix = ` [fullMessageSha256=${editCanonicalSha256V1(message)}]`
+  return message.slice(0, 4096 - suffix.length) + suffix
+}
+
 function preservationResult(
   current: ProjectIR,
   candidate: ProjectIR,
@@ -4580,13 +4788,7 @@ function preservationResult(
     commentChanges.every((change) => familyOwnsChange(change, 'scriptBlock'))
   const scriptBlockOwnsExactScriptViolation = (path: string): boolean =>
   {
-    const match = /^\/targets\/(\d+)\/blocks\/([^/]+)$/u.exec(path)
-    if (!match) return false
-    const targetIndex = Number(match[1])
-    const blockId = decodedPointerPart(match[2]!)
-    const blockDelta = parentDelta.targets
-      .find((target) => target.targetIndex === targetIndex)
-      ?.blockChanges.find((block) => block.blockId === blockId)
+    const blockDelta = preservationBlockDeltaV1(parentDelta, path)
     return (
       blockDelta !== undefined &&
       blockDelta.operationIds.length > 0 &&
@@ -4598,6 +4800,32 @@ function preservationResult(
           operation.operation.kind !== 'script.moveWorkspace' &&
           (operation.operation.kind.startsWith('script.') ||
             operation.operation.kind.startsWith('block.')) &&
+          observationHasStructuralPath(
+            {
+              observationKind: 'leaf',
+              path,
+              kind: blockDelta.kind,
+              operationIds: blockDelta.operationIds,
+              entityLineageIds: [],
+            },
+            operation
+          )
+        )
+      })
+    )
+  }
+  const procedureRemovalOwnsExactMissingScript = (path: string): boolean =>
+  {
+    const blockDelta = preservationBlockDeltaV1(parentDelta, path)
+    return (
+      blockDelta?.kind === 'removed' &&
+      blockDelta.operationIds.length > 0 &&
+      blockDelta.operationIds.every((operationId) =>
+      {
+        const operation = operationByOccurrence.get(operationId)
+        return (
+          operation?.operation.kind === 'procedure.remove' &&
+          operation.authorizationEvidence?.groupDGraph?.publicRemovalPaths.includes(path) === true &&
           observationHasStructuralPath(
             {
               observationKind: 'leaf',
@@ -4676,6 +4904,11 @@ function preservationResult(
       (violation.code === 'existing-script-missing' ||
         violation.code === 'existing-script-layout-changed') &&
       scriptBlockOwnsExactScriptViolation(violation.path)
+    )
+      return true
+    if (
+      violation.code === 'existing-script-missing' &&
+      procedureRemovalOwnsExactMissingScript(violation.path)
     )
       return true
     if (violation.code === 'extensions-changed' &&
@@ -5177,18 +5410,23 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
     SemanticEditOperationV1['kind'],
     ProductionOperationDispatcherV1
   >
+  readonly #planningPrefixReuseEnabled: boolean
+  #planningPrefixCache: CachedProductionPlanningPrefixV1 | undefined
 
   constructor(
-    dispatchers: readonly ProductionOperationDispatcherV1[] = [
-      new TargetProductionOperationDispatcherV1(),
-      ...targetProductionOperationDispatchersV1(),
-      ...scriptBlockProductionOperationDispatchersV1(),
-      ...procedureProductionOperationDispatchersV1(),
-      ...mediaTargetProductionOperationDispatchersV1(),
-    ]
+    dispatchers?: readonly ProductionOperationDispatcherV1[]
   )
   {
-    this.#dispatchers = dispatcherMap(dispatchers)
+    this.#planningPrefixReuseEnabled = dispatchers === undefined
+    this.#dispatchers = dispatcherMap(
+      dispatchers === undefined ? [
+        new TargetProductionOperationDispatcherV1(),
+        ...targetProductionOperationDispatchersV1(),
+        ...scriptBlockProductionOperationDispatchersV1(),
+        ...procedureProductionOperationDispatchersV1(),
+        ...mediaTargetProductionOperationDispatchersV1(),
+      ] : dispatchers
+    )
   }
 
   #applyOperationPrefix(
@@ -5198,10 +5436,11 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
     current: ProjectIR,
     contract: EditSemanticChangeContractV1,
     beforeActiveLineage: SemanticLineageSnapshot,
-    preBatchReferenceIndex: SemanticReferenceIndex
+    preBatchReferenceIndex: SemanticReferenceIndex,
+    seed?: AppliedProductionPrefixV1
   ): AppliedProductionPrefixV1
   {
-    const sourceLineage = buildSourceLineageV1(
+    const sourceLineage = seed?.sourceLineage ?? buildSourceLineageV1(
       source,
       input.semanticSourceSha256
     ).active
@@ -5210,22 +5449,26 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
       contract,
       sourceLineage
     )
-    let activeLineage = beforeActiveLineage
-    let lineageHistory = validateSemanticLineageSnapshot(
+    let activeLineage = seed?.activeLineage ?? beforeActiveLineage
+    let lineageHistory = seed?.lineageHistory ?? validateSemanticLineageSnapshot(
       input.currentRevision.lineageHistory as SemanticLineageSnapshot
     )
-    let futureBindingLedger = productionFutureBindingLedgerV1(
+    let futureBindingLedger = seed?.futureBindingLedger ?? productionFutureBindingLedgerV1(
       input,
       contract,
       resolveOwnerLineageId
     )
-    const beforeFutureBindingLedger = futureBindingLedger
-    const addedFutureBindingRealizations: FutureBindingRealizationV1[] = []
-    const cloned = cloneCandidate(current, input.currentRevision.allocatorState)
-    const operationResultsById = new Map<string, unknown>()
-    const applied: AppliedProductionOperationV1[] = []
+    const beforeFutureBindingLedger = seed?.beforeFutureBindingLedger ?? futureBindingLedger
+    const addedFutureBindingRealizations = [
+      ...(seed?.addedFutureBindingRealizations ?? []),
+    ]
+    const cloned = seed
+      ? { project: seed.candidate, allocator: seed.allocator }
+      : cloneCandidate(current, input.currentRevision.allocatorState)
+    const operationResultsById = new Map<string, unknown>(seed?.operationResultsById)
+    const applied: AppliedProductionOperationV1[] = [...(seed?.applied ?? [])]
     let nonAuthorableProcedureSurfaceSha256 =
-      nonAuthorableProcedureSurfaceSha256V1(current)
+      nonAuthorableProcedureSurfaceSha256V1(cloned.project)
     for (const operation of operations)
     {
       const dispatcher = this.#dispatchers.get(operation.kind)
@@ -5365,6 +5608,96 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
     })
   }
 
+  #planningOperationPrefix(
+    input: EditTransactionInputV1,
+    operations: readonly SemanticEditOperationV1[],
+    source: ProjectIR,
+    current: ProjectIR,
+    contract: EditSemanticChangeContractV1,
+    beforeActiveLineage: SemanticLineageSnapshot,
+    preBatchReferenceIndex: SemanticReferenceIndex,
+    goalKind: SemanticEditOperationV1['kind']
+  ): AppliedProductionPrefixV1
+  {
+    if (
+      !this.#planningPrefixReuseEnabled ||
+      !isPlanningGraphOperation(goalKind) ||
+      !operations.every((operation) => isPlanningGraphOperation(operation.kind))
+    )
+      return this.#applyOperationPrefix(
+        input, operations, source, current, contract,
+        beforeActiveLineage, preBatchReferenceIndex
+      )
+
+    const inputSha256 = planningPrefixInputSha256(input)
+    const operationSha256s = operations.map(editCanonicalSha256V1)
+    const cached = this.#planningPrefixCache
+    let reusable = cached !== undefined &&
+      cached.inputSha256 === inputSha256 &&
+      cached.operationSha256s.length <= operationSha256s.length &&
+      cached.operationSha256s.every((sha256, index) => sha256 === operationSha256s[index])
+    if (reusable && cached)
+    {
+      try
+      {
+        reusable = cached.handleVerifications.every((verification) =>
+          input.verifyHandle?.(structuredClone(verification.request)) ===
+          verification.expected
+        )
+      }
+      catch
+      {
+        // cold dispatch retains the normal refusal and callback failure order
+        reusable = false
+      }
+    }
+    const seed = reusable && cached
+      ? clonePlanningPrefix(cached.prefix, source, contract)
+      : undefined
+    if (seed?.applied.length === operations.length) return seed
+    const handleVerifications: PlanningHandleVerificationV1[] = reusable && cached
+      ? structuredClone([...cached.handleVerifications])
+      : []
+    let assetResolverUsed = false
+    const trackedInput: EditTransactionInputV1 = {
+      ...input,
+      ...(input.verifyHandle === undefined ? {} : {
+        verifyHandle: (request) =>
+        {
+          const retainedRequest = structuredClone(request)
+          const expected = input.verifyHandle!(request)
+          handleVerifications.push({ request: retainedRequest, expected })
+          return expected
+        },
+      }),
+      ...(input.resolveAdmittedAsset === undefined ? {} : {
+        resolveAdmittedAsset: (request) =>
+        {
+          assetResolverUsed = true
+          return input.resolveAdmittedAsset!(request)
+        },
+      }),
+    }
+    const applied = this.#applyOperationPrefix(
+      trackedInput,
+      operations.slice(seed?.applied.length ?? 0),
+      source,
+      current,
+      contract,
+      beforeActiveLineage,
+      preBatchReferenceIndex,
+      seed
+    )
+    // keep one detached successful prefix; goal completion only sees its clone
+    this.#planningPrefixCache = assetResolverUsed ? undefined : {
+      inputSha256,
+      operationSha256s,
+      handleVerifications,
+      prefix: clonePlanningPrefix(applied, source, contract),
+    }
+    return applied
+  }
+
   async planOperation(
     input: EditTransactionInputV1,
     request: EditOperationPlanningRequestV1
@@ -5422,14 +5755,15 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
     )
     if (prefix.length > 0)
     {
-      const appliedPrefix = this.#applyOperationPrefix(
+      const appliedPrefix = this.#planningOperationPrefix(
         input,
         prefix,
         source,
         current,
         contract,
         preBatchLineage,
-        currentReferenceIndex
+        currentReferenceIndex,
+        goal.kind
       )
       candidate = appliedPrefix.candidate
       activeLineage = appliedPrefix.activeLineage
@@ -5848,12 +6182,28 @@ export class ProductionTransactionExecutorV1 implements EditTransactionExecutorV
       violations: readonly { code?: string; path?: string }[]
     }
     if (!preservation.preserved)
+    {
+      const message = `candidate changed a protected surface: ${preservation.violations
+        .map((violation) => `${violation.code} at ${violation.path}`)
+        .join(', ')}`
+      const context = preservationRefusalContextV1(
+        preservation.violations[0],
+        parentDelta,
+        applied
+      )
+      if (context === null)
+        return fail(
+          'edit.internal_invariant',
+          boundedPreservationMessageV1(
+            `preservation refusal has no unique operation and surface: ${message}`
+          )
+        )
       return fail(
         'edit.protected_change',
-        `candidate changed a protected surface: ${preservation.violations
-          .map((violation) => `${violation.code} at ${violation.path}`)
-          .join(', ')}`
+        boundedPreservationMessageV1(message),
+        context
       )
+    }
     allocator.acceptReservations()
     const planningFactProjections = applied.map(
       (operation) => operation.planningFactProjection

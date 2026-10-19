@@ -202,6 +202,9 @@ function effectEntries(
         'ordered-member',
         entry.collectionKind,
         entry.ownerLineageId,
+        ...(entry.containerLineageId === undefined
+          ? []
+          : [entry.containerLineageId]),
         entry.lineageId,
       ]),
       kind: entry.kind,
@@ -213,6 +216,9 @@ function effectEntries(
           'corresponded-leaf',
           entry.collectionKind,
           entry.ownerLineageId,
+          ...(entry.containerLineageId === undefined
+            ? []
+            : [entry.containerLineageId]),
           entry.entityLineageId,
           correspondedRelativePath(entry.collectionPath, change.path),
         ]),
@@ -222,6 +228,9 @@ function effectEntries(
           'corresponded-leaf',
           entry.collectionKind,
           entry.ownerLineageId,
+          ...(entry.containerLineageId === undefined
+            ? []
+            : [entry.containerLineageId]),
           entry.entityLineageId,
         ]),
         semanticPath: correspondedRelativePath(
@@ -518,6 +527,9 @@ export function composeCumulativeProjectDeltaAttributionV1(
         'ordered-member',
         entry.collectionKind,
         entry.ownerLineageId,
+        ...(entry.containerLineageId === undefined
+          ? []
+          : [entry.containerLineageId]),
         entry.lineageId,
       ]),
       entry.kind,
@@ -533,6 +545,9 @@ export function composeCumulativeProjectDeltaAttributionV1(
           'corresponded-leaf',
           entry.collectionKind,
           entry.ownerLineageId,
+          ...(entry.containerLineageId === undefined
+            ? []
+            : [entry.containerLineageId]),
           entry.entityLineageId,
           correspondedRelativePath(entry.collectionPath, change.path),
         ]),

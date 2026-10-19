@@ -14,7 +14,11 @@ import {
   type PreparedPublicationFileV1,
   type PublicationDirectoryIdentityV1,
 } from '@scratch-agent/eval'
-import { scanStrictJson } from '@scratch-agent/sb3'
+import {
+  DEFAULT_EDIT_ADMISSION_LIMITS,
+  HARD_EDIT_ADMISSION_LIMITS,
+  scanStrictJson,
+} from '@scratch-agent/sb3'
 
 import { AuthoringWorkspaceErrorV1 } from './workspace-types.js'
 
@@ -182,14 +186,16 @@ async function readAllowedFile(
   }
 }
 
+// source JSON is bounded by its byte limit; the node & member bounds are the
+// hard ceilings a raised-limit project's sources may reach
 export function authoringParseJsonV1(bytes: Uint8Array): unknown
 {
   return scanStrictJson(
     new TextDecoder('utf-8', { fatal: true }).decode(bytes),
     {
-      maxDepth: 128,
-      maxMembersPerContainer: 100000,
-      maxNodes: 2000000,
+      maxDepth: DEFAULT_EDIT_ADMISSION_LIMITS.maxJsonDepth,
+      maxMembersPerContainer: HARD_EDIT_ADMISSION_LIMITS.maxMembersPerContainer,
+      maxNodes: HARD_EDIT_ADMISSION_LIMITS.maxJsonNodes,
     }
   ).value
 }

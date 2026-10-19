@@ -3,6 +3,7 @@
 
 export * from './json/project-json.js'
 export * from './json/helpers.js'
+export * from './json/turbowarp-extension-allowlist.js'
 export * from './io/fixture.js'
 export * from './admission/admission.js'
 export * from './io/unpack.js'

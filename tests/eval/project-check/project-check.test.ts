@@ -7,8 +7,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
+import JSZip from 'jszip'
+
 import { buildClicker } from '@scratch-agent/ir'
-import { admitSb3, buildFixtureSb3 } from '@scratch-agent/sb3'
+import {
+  admitSb3,
+  buildFixtureSb3,
+  DEFAULT_SB3_LIMITS,
+  HARD_SB3_LIMITS,
+} from '@scratch-agent/sb3'
 
 import {
   PROJECT_CHECK_ISSUE_CODES,
@@ -34,6 +41,50 @@ test('selected project inspection is exact when reusing archive admission', asyn
   await assert.rejects(
     () => inspectSelectedProjectFromAdmittedSb3(altered, admission),
     /admitted archive identity does not match project bytes/u
+  )
+})
+
+async function zipWithEntryCount(entryCount: number): Promise<Uint8Array>
+{
+  const zip = new JSZip()
+  zip.file('project.json', '{}')
+  for (let index = 1; index < entryCount; index++)
+    zip.file(`${index.toString(16).padStart(32, '0')}.svg`, '')
+  return zip.generateAsync({ type: 'uint8array' })
+}
+
+test('selected project inspection keeps the default entry cap & admits up to raised archive limits', async () =>
+{
+  assert.equal(DEFAULT_SB3_LIMITS.maxEntries, 4096)
+  assert.equal(HARD_SB3_LIMITS.maxEntries, 64_000)
+  const bytes = await zipWithEntryCount(DEFAULT_SB3_LIMITS.maxEntries + 1)
+
+  const defaulted = await inspectSelectedProject(bytes)
+  assert.equal(defaulted.stages.admission, 'failed')
+  assert.equal(
+    defaulted.issues[0]?.code,
+    PROJECT_CHECK_ISSUE_CODES.admissionFailed
+  )
+  assert.equal(
+    defaulted.admission?.limits.maxEntries,
+    DEFAULT_SB3_LIMITS.maxEntries
+  )
+
+  const raised = await inspectSelectedProject(bytes, {
+    archiveLimits: { maxEntries: DEFAULT_SB3_LIMITS.maxEntries + 1 },
+  })
+  assert.equal(raised.stages.admission, 'passed')
+  assert.equal(
+    raised.admission?.limits.maxEntries,
+    DEFAULT_SB3_LIMITS.maxEntries + 1
+  )
+
+  await assert.rejects(
+    () =>
+      inspectSelectedProject(bytes, {
+        archiveLimits: { maxEntries: HARD_SB3_LIMITS.maxEntries + 1 },
+      }),
+    new RegExp(`maxEntries cannot exceed ${HARD_SB3_LIMITS.maxEntries}`, 'u')
   )
 })
 

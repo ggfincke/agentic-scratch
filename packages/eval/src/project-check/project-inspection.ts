@@ -5,12 +5,14 @@ import { ProjectIR } from '@scratch-agent/ir'
 import {
   admitSb3,
   isSb3AdmissionError,
+  resolveHardBoundedSb3Limits,
   scratchRecordEntries,
   scratchRecordValue,
   validateAdmittedSb3,
   type Sb3AdmissionMetrics,
   type Sb3Admission,
   type Sb3Limits,
+  type Sb3LimitOptions,
   type ProjectJson,
 } from '@scratch-agent/sb3'
 import type {
@@ -254,15 +256,18 @@ function emptySelectedProjectInspection(
   }
 }
 
+// a build's resolved archive limits may raise the default caps up to the hard ceilings
 export async function inspectSelectedProject(
-  bytes: Uint8Array
+  bytes: Uint8Array,
+  options: { archiveLimits?: Sb3LimitOptions } = {}
 ): Promise<SelectedProjectInspection>
 {
+  const limits = resolveHardBoundedSb3Limits(options.archiveLimits)
   const result = emptySelectedProjectInspection(bytes)
   let admission
   try
   {
-    admission = await admitSb3(bytes)
+    admission = await admitSb3(bytes, { limits })
   }
   catch (error)
   {

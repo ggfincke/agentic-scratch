@@ -6,6 +6,7 @@ import { constants } from 'node:fs'
 import { mkdtemp, mkdir, open, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
+import { inflateRawSync } from 'node:zlib'
 
 import {
   assertStandardAuthoringAuthorityV2,
@@ -26,12 +27,22 @@ import {
   type Scenario,
   type VmTrace,
 } from '@scratch-agent/runner'
-import { DEFAULT_SB3_LIMITS } from '@scratch-agent/sb3'
+import {
+  resolveHardBoundedSb3Limits,
+  TURBOWARP_EXTENSION_ALLOWLIST_V1,
+  type Sb3LimitOptions,
+} from '@scratch-agent/sb3'
 import { canonicalJsonBytesV1 } from '@scratch-agent/sb3/canonical-json'
 
 import { validateScenarioAssertionsV1 } from '../candidate/candidate.js'
 import type { Assertion, AssertResult, Probe } from '../core/assert.js'
 import { evaluate } from '../core/evaluate.js'
+import {
+  authoringEvidenceSha256V1,
+  authoringTraceBytesV1,
+  encodeAuthoringEvidenceV1,
+  type AuthoringTraceLimitOptionsV1,
+} from './bounded-evidence.js'
 import {
   inspectSelectedProject,
   type SelectedProjectInspection,
@@ -71,6 +82,10 @@ export interface AuthoringCandidateEvaluationRequestV2
   runtimeTargets?: readonly AuthoringRuntimeTargetV2[]
   scenarios?: readonly AuthoringEvaluationScenarioV2[]
   assertions?: readonly AuthoringEvaluationAssertionV2[]
+  // the build's resolved archive limits; absent keys keep the defaults
+  archiveLimits?: Sb3LimitOptions
+  // the build's resolved JSON node & member limits for v3 traces
+  editLimits?: AuthoringTraceLimitOptionsV1
   evidenceRoot?: string
   signal?: AbortSignal
 }
@@ -232,6 +247,13 @@ const AUTHORING_EVALUATION_POLICY_V3 = Object.freeze({
   historicalValidation: 'recorded-identities-without-current-installation',
 })
 
+// vanilla scratch-vm cannot load a TurboWarp extension, so such a candidate
+// has no headless baseline & its selected TurboWarp profile is the mandatory lane
+const TURBOWARP_EXTENSION_LANE_POLICY = Object.freeze({
+  mandatoryLane: 'turboWarpBrowser',
+  clock: 'selected-profile',
+})
+
 function sha256(bytes: Uint8Array): string
 {
   return createHash('sha256').update(bytes).digest('hex')
@@ -248,23 +270,126 @@ function evidenceBytes(value: unknown): Uint8Array
   return canonicalJsonBytesV1(JSON.parse(JSON.stringify(value)))
 }
 
+// v3 traces snapshot every admitted list, so they hash under trace limits
+function traceHash(
+  trace: unknown,
+  version: 2 | 3,
+  traceLimits: AuthoringTraceLimitOptionsV1 = {}
+): string
+{
+  return version === 3
+    ? sha256(
+        authoringTraceBytesV1(JSON.parse(JSON.stringify(trace)), traceLimits)
+      )
+    : recordHash(trace)
+}
+
 function record(value: unknown): value is Record<string, unknown>
 {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
+// runtime identities cover every lane the targets can select; a TurboWarp
+// extension candidate executes only its rendered lanes
 function expectedLanes(
-  targets: readonly AuthoringRuntimeTargetV2[]
+  targets: readonly AuthoringRuntimeTargetV2[],
+  turboWarpExtensions = false
 ): AuthoringEvaluationLaneV2[]
 {
-  return [
-    'officialHeadless',
-    ...targets.map((target): AuthoringEvaluationLaneV2 =>
-      target.runtime === 'scratch-official'
-        ? 'officialBrowser'
-        : 'turboWarpBrowser'
-    ),
-  ]
+  const rendered = targets.map((target): AuthoringEvaluationLaneV2 =>
+    target.runtime === 'scratch-official'
+      ? 'officialBrowser'
+      : 'turboWarpBrowser'
+  )
+  return turboWarpExtensions ? rendered : ['officialHeadless', ...rendered]
+}
+
+// the parsed project.json of exact candidate bytes, or null when unreadable;
+// policy hashing is synchronous, & preflight admission still judges the archive
+function candidateProjectJson(
+  bytes: Uint8Array,
+  maxProjectJsonBytes: number
+): unknown
+{
+  try
+  {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    // the end-of-central-directory record is within the last 64 KiB + 22 bytes
+    for (
+      let end = bytes.byteLength - 22;
+      end >= Math.max(0, bytes.byteLength - 65_557);
+      end--
+    )
+    {
+      if (view.getUint32(end, true) !== 0x06054b50) continue
+      let entry = view.getUint32(end + 16, true)
+      for (let index = 0; index < view.getUint16(end + 10, true); index++)
+      {
+        if (view.getUint32(entry, true) !== 0x02014b50) return null
+        const nameLength = view.getUint16(entry + 28, true)
+        const name = new TextDecoder().decode(
+          bytes.subarray(entry + 46, entry + 46 + nameLength)
+        )
+        if (name === 'project.json')
+        {
+          const local = view.getUint32(entry + 42, true)
+          const start =
+            local +
+            30 +
+            view.getUint16(local + 26, true) +
+            view.getUint16(local + 28, true)
+          const data = bytes.subarray(
+            start,
+            start + view.getUint32(entry + 20, true)
+          )
+          const text =
+            view.getUint16(entry + 10, true) === 0
+              ? data
+              : inflateRawSync(data, {
+                  maxOutputLength: maxProjectJsonBytes,
+                })
+          return JSON.parse(new TextDecoder().decode(text))
+        }
+        entry +=
+          46 +
+          nameLength +
+          view.getUint16(entry + 30, true) +
+          view.getUint16(entry + 32, true)
+      }
+      return null
+    }
+  }
+  catch
+  {
+    return null
+  }
+  return null
+}
+
+// * only an extension-profile build writes allowlisted extensionURLs, & that
+// profile requires every runtime target to be TurboWarp
+function usesTurboWarpExtensions(
+  request: AuthoringCandidateEvaluationRequestV2,
+  targets: readonly AuthoringRuntimeTargetV2[]
+): boolean
+{
+  if (
+    targets.length === 0 ||
+    targets.some((target) => target.runtime !== 'turbowarp') ||
+    !(request.candidateBytes instanceof Uint8Array)
+  )
+    return false
+  const project = candidateProjectJson(
+    request.candidateBytes,
+    resolveHardBoundedSb3Limits(request.archiveLimits).maxProjectJsonBytes
+  )
+  const urls = record(project) ? project.extensionURLs : undefined
+  return (
+    record(urls) &&
+    TURBOWARP_EXTENSION_ALLOWLIST_V1.some(
+      (entry) => Object.hasOwn(urls, entry.id) && urls[entry.id] === entry.url
+    )
+  )
 }
 
 function profileForLane(
@@ -498,11 +623,13 @@ function preparePolicy(
   version: 2 | 3 = 2
 ): {
   targets: readonly AuthoringRuntimeTargetV2[]
+  lanes: AuthoringEvaluationLaneV2[]
   scenarios: PreparedScenarioV2[]
   policySha256: string
 }
 {
   const targets = prepareTargets(request.runtimeTargets)
+  const turboWarpExtensions = usesTurboWarpExtensions(request, targets)
   const suppliedScenarios = request.scenarios ?? []
   const suppliedAssertions = request.assertions ?? []
   if (
@@ -592,12 +719,15 @@ function preparePolicy(
   }
   return {
     targets,
+    lanes: expectedLanes(targets, turboWarpExtensions),
     scenarios,
     policySha256: recordHash({
-      policy:
-        version === 2
+      policy: {
+        ...(version === 2
           ? AUTHORING_EVALUATION_POLICY_V2
-          : AUTHORING_EVALUATION_POLICY_V3,
+          : AUTHORING_EVALUATION_POLICY_V3),
+        ...(turboWarpExtensions ? TURBOWARP_EXTENSION_LANE_POLICY : {}),
+      },
       targets,
       scenarios,
     }),
@@ -727,10 +857,14 @@ export function authoringEvaluationPolicySha256V2(
 }
 
 export function authoringCandidateEvaluationEvidenceSha256V3(
-  value: Omit<AuthoringCandidateEvaluationV3, 'evidenceSha256'>
+  value: Omit<AuthoringCandidateEvaluationV3, 'evidenceSha256'>,
+  traceLimits: AuthoringTraceLimitOptionsV1 = {}
 ): string
 {
-  return recordHash(value)
+  return authoringEvidenceSha256V1(
+    JSON.parse(JSON.stringify(value)),
+    traceLimits
+  )
 }
 
 export function authoringEvaluationPolicySha256V3(
@@ -796,13 +930,14 @@ function validateCandidateEvaluation(
       throw new Error(
         'historical validation requires recorded runtime identities'
       )
-    const lanes = expectedLanes(policy.targets)
+    const lanes = policy.lanes
+    const identityLanes = expectedLanes(policy.targets)
     if (mode !== 'current-v2')
     {
       if (
         !Array.isArray(runtimeIdentities) ||
-        runtimeIdentities.length !== lanes.length ||
-        lanes.some(
+        runtimeIdentities.length !== identityLanes.length ||
+        identityLanes.some(
           (lane) =>
             runtimeIdentities.filter((identity) => identity.lane === lane)
               .length !== 1
@@ -815,7 +950,8 @@ function validateCandidateEvaluation(
         !(request.candidateBytes instanceof Uint8Array) ||
         request.candidateBytes.byteLength < 1 ||
         request.candidateBytes.byteLength >
-          DEFAULT_SB3_LIMITS.maxCompressedBytes ||
+          resolveHardBoundedSb3Limits(request.archiveLimits)
+            .maxCompressedBytes ||
         sha256(request.candidateBytes) !== request.candidateSha256
       )
         throw new Error(
@@ -873,7 +1009,13 @@ function validateCandidateEvaluation(
       value.compilerIdentitySha256 !== request.compilerIdentitySha256 ||
       value.evaluationPolicySha256 !== policy.policySha256 ||
       recordHash(value.runtimeTargets) !== recordHash(policy.targets) ||
-      evidenceSha256 !== recordHash(content)
+      evidenceSha256 !==
+        (version === 3
+          ? authoringEvidenceSha256V1(
+              JSON.parse(JSON.stringify(content)),
+              request.editLimits
+            )
+          : recordHash(content))
     )
       issues.push(
         'evaluation identity or evidence hash does not match its exact request'
@@ -953,7 +1095,8 @@ function validateCandidateEvaluation(
           !cell.accepted ||
           cell.issues.length !== 0 ||
           cell.scenarioSha256 !== scenario.scenarioSha256 ||
-          cell.traceSha256 !== recordHash(cell.trace) ||
+          cell.traceSha256 !==
+            traceHash(cell.trace, version, request.editLimits) ||
           !runtimeMatches ||
           recordHash(cell.runtimeDescriptor) !==
             recordHash(cell.trace.runtimeDescriptor) ||
@@ -1098,7 +1241,8 @@ async function evaluateCandidate(
     if (
       !(request.candidateBytes instanceof Uint8Array) ||
       request.candidateBytes.byteLength < 1 ||
-      request.candidateBytes.byteLength > DEFAULT_SB3_LIMITS.maxCompressedBytes
+      request.candidateBytes.byteLength >
+        resolveHardBoundedSb3Limits(request.archiveLimits).maxCompressedBytes
     )
       throw new Error(
         'candidate bytes exceed the bounded Scratch archive input profile'
@@ -1148,7 +1292,9 @@ async function evaluateCandidate(
       join(request.evidenceRoot ?? tmpdir(), 'scratch-authoring-evaluation-')
     )
     assertEvaluationActive(request.signal)
-    result.inspection = await inspectSelectedProject(bytes)
+    result.inspection = await inspectSelectedProject(bytes, {
+      archiveLimits: request.archiveLimits,
+    })
     assertEvaluationActive(request.signal)
     issues.push(...inspectionIssues(result.inspection))
     if (result.inspection.input.sha256 !== request.candidateSha256)
@@ -1157,7 +1303,7 @@ async function evaluateCandidate(
     {
       for (const scenario of policy.scenarios)
       {
-        for (const lane of expectedLanes(policy.targets))
+        for (const lane of policy.lanes)
         {
           assertEvaluationActive(request.signal)
           const directory = join(result.evidenceRoot, `${cells.length}-${lane}`)
@@ -1185,6 +1331,7 @@ async function evaluateCandidate(
                   screenshotDir: directory,
                   maxDurationMs:
                     AUTHORING_EVALUATION_POLICY_V2.maxRuntimeDurationMs,
+                  archiveLimits: request.archiveLimits,
                   signal: request.signal,
                 })
           assertEvaluationActive(request.signal)
@@ -1233,7 +1380,7 @@ async function evaluateCandidate(
             runtimeIdentitySha256,
             ...(version === 3 ? { browserInstallationIdentity } : {}),
             runtimeDescriptor: trace.runtimeDescriptor,
-            traceSha256: recordHash(trace),
+            traceSha256: traceHash(trace, version, request.editLimits),
             assertions: results,
             accepted: cellIssues.length === 0,
             issues: cellIssues,
@@ -1325,15 +1472,44 @@ async function evaluateCandidate(
   result.disposition = issues.length === 0 ? 'accepted' : 'refused'
   let completed = {
     ...result,
-    evidenceSha256: recordHash(result),
+    evidenceSha256:
+      version === 3
+        ? authoringEvidenceSha256V1(
+            JSON.parse(JSON.stringify(result)),
+            request.editLimits
+          )
+        : recordHash(result),
   } as AuthoringCandidateEvaluation
   if (result.evidenceRoot)
   {
     try
     {
-      const bytes = evidenceBytes(completed)
+      const encoded =
+        version === 3
+          ? encodeAuthoringEvidenceV1(
+              JSON.parse(JSON.stringify(completed)),
+              request.editLimits
+            )
+          : { bytes: evidenceBytes(completed), components: [] }
+      const bytes = encoded.bytes
       if (bytes.byteLength > AUTHORING_EVALUATION_POLICY_V2.maxEvidenceBytes)
         throw new Error('authoring evaluation evidence exceeds its byte limit')
+      if (encoded.components.length)
+      {
+        const directory = join(result.evidenceRoot, 'components')
+        await mkdir(directory, { mode: 0o700 })
+        const retained = new Set<string>()
+        for (const component of encoded.components)
+        {
+          if (retained.has(component.sha256)) continue
+          await writeFile(
+            join(directory, `${component.sha256}.json`),
+            component.bytes,
+            { flag: 'wx' }
+          )
+          retained.add(component.sha256)
+        }
+      }
       await writeFile(join(result.evidenceRoot, 'evaluation.json'), bytes, {
         flag: 'wx',
       })
@@ -1349,7 +1525,13 @@ async function evaluateCandidate(
       ]
       completed = {
         ...result,
-        evidenceSha256: recordHash(result),
+        evidenceSha256:
+          version === 3
+            ? authoringEvidenceSha256V1(
+                JSON.parse(JSON.stringify(result)),
+                request.editLimits
+              )
+            : recordHash(result),
       } as AuthoringCandidateEvaluation
     }
   }

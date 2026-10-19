@@ -40,8 +40,10 @@ evidence roots. For example:
 }
 ```
 
-Configurations may lower resource limits. Project files cannot grant roots or
-raise limits. A configured `ffmpeg.executablePath` enables MP3 and IMA-ADPCM WAV
+Configurations may lower resource limits, and may raise edit and archive
+admission limits and the workspace's source and retained-byte limits up to the
+toolkit's hard ceilings. Project files cannot grant
+roots or raise limits. A configured `ffmpeg.executablePath` enables MP3 and IMA-ADPCM WAV
 decoding; no executable is installed automatically. Integer PCM WAV decoding
 uses the native implementation.
 
@@ -128,6 +130,50 @@ continuation constraints. Use its returned cursor for later pages. Procedure
 parameters are scoped to their owning definition. Terminal `stop` options and
 `sensing_of` property ownership are validated before promotion.
 
+### TurboWarp extension profile
+
+A manifest can opt into `extensionProfile: 'turbowarp-v1'`, a separate
+descriptor profile for two allowlisted TurboWarp gallery extensions: `Gamepad`
+(`Gamepad_gamepadConnected`, `buttonDown`, `buttonValue`, `axisValue`,
+`axisDirection`, `axisMagnitude`, `rumble`, `setAxisDeadzone`) and
+`localstorage` (`localstorage_get`, `set`, `remove`, `removeAll`, the
+`whenChanged` hat, `setProjectId`). Menu arguments lower to
+`Gamepad_menu_<menu>` shadows that accept reporters. The standard catalog and
+its pinned authority stay unchanged, and edit sessions remain standard-only.
+
+```json
+{
+  "runtimeTargets": [
+    {
+      "schemaVersion": 1,
+      "runtime": "turbowarp",
+      "scheduler": "deterministic",
+      "tickRate": 30
+    }
+  ],
+  "extensionProfile": "turbowarp-v1",
+  "extensionStorage": { "localstorage": { "namespace": "my-game" } }
+}
+```
+
+The profile is refused unless every runtime target is `turbowarp`, since
+official Scratch cannot load these extensions. An opted-in build adds the used
+ids to `extensions`, writes `extensionURLs` with each used id's pinned gallery
+URL (a baseline entry with another URL for an allowlisted id is refused), and
+writes `extensionStorage` from the manifest for the used ids. Set the Local
+Storage namespace there so the extension does not invent a random one and later
+saves stay byte-stable. `extensionStorage` requires the profile, accepts only
+allowlisted ids with scalar values, and is capped at 4,096 bytes. The plan and compiler
+identity gain `extensionProfileSha256` only when opted in; without the opt-in,
+output is byte-identical to a build without the profile, and both TurboWarp
+root fields in a baseline pass through untouched.
+
+The rendered TurboWarp lane loads the allowlisted scripts offline: the host
+serves the vendored copies in `packages/runner/vendor/turbowarp-extensions/`
+after checking each sha against `TURBOWARP_EXTENSION_ALLOWLIST_V1`, the page
+loads them unsandboxed from those routes, and any other extension URL is
+refused.
+
 PNG preparation supports explicit-grid or rectangle slicing, crop, nearest
 resize, horizontal/vertical flip, simultaneous exact RGB palette replacement,
 and pivot updates. Alpha is preserved; output is canonical RGBA8 PNG. Transform
@@ -140,8 +186,9 @@ Audio preparation preserves supported sample rate and mono/stereo channels by
 default and emits PCM16 WAV. Sources remain immutable, with source,
 transformation, output, and configured decoder identities retained.
 
-Whole builds enforce 4,096 costumes, 1,024 costumes per target, 100 MiB asset
-payload, 50 MiB `.sb3`, and 256 MiB estimated decoded costume memory. Sequential
+Whole builds enforce 6,144 costumes, 2,048 costumes per target, 100 MiB asset
+payload, 50 MiB `.sb3`, and 256 MiB estimated decoded costume memory by
+default; build limits may raise each up to its hard ceiling. Sequential
 preparation also caps each frame at sixteen transforms, live decoded buffers at
 128 MiB, and each job at 268,435,456 pixel visits. Shared payloads and repeated
 costume references have distinct accounting; bulk builds use one global budget.

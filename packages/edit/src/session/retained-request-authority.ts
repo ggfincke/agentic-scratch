@@ -7,6 +7,7 @@ import {
   type EditPreviewRequestV1,
   type EditToolName,
   type HeadProjectionV1,
+  type SemanticAuthoringAuthorityIdV2,
 } from '@scratch-agent/ir/edit'
 
 import type { SessionAssetRecordV1 } from '../assets/asset-admission.js'
@@ -77,6 +78,7 @@ export function retainedStatefulRequestBindingFailureV1(input: {
   readonly toolName: string
   readonly requestId: string
   readonly sessionId: string
+  readonly semanticAuthorityId?: SemanticAuthoringAuthorityIdV2
   readonly boundaryKind: 'directHost' | 'mcp'
   readonly request: unknown
   readonly transportRequest: unknown
@@ -91,7 +93,11 @@ export function retainedStatefulRequestBindingFailureV1(input: {
     editCanonicalSha256V1(input.transportRequest) ===
     editCanonicalSha256V1(input.request)
   if (input.boundaryKind === 'directHost' && identicalProjection) return null
-  const parsed = parseEditToolInputV1(input.toolName, input.transportRequest)
+  const parsed = parseEditToolInputV1(
+    input.toolName,
+    input.transportRequest,
+    input.semanticAuthorityId ?? 'a0-v1'
+  )
   if (!parsed.ok)
     return `${input.toolName} retained transport request is not exact`
   const transport = parsed.value as Record<string, unknown>
