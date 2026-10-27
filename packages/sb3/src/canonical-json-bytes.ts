@@ -282,9 +282,12 @@ export function canonicalJsonBytesV1(value: unknown): Uint8Array
   return new TextEncoder().encode(canonicalJsonV1(value))
 }
 
+// a caller hashing an admitted project's content passes that project's bounds;
+// they decide refusal only, never the bytes
 export function semanticHashPreimageV1(
   domain: string,
-  value: unknown
+  value: unknown,
+  limits: CanonicalJsonLimits = DEFAULT_CANONICAL_JSON_LIMITS
 ): Uint8Array
 {
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(domain))
@@ -292,7 +295,7 @@ export function semanticHashPreimageV1(
     throw new Error('invalid Phase 8 semantic hash domain')
   }
   const prefix = new TextEncoder().encode(`scratch-agent:${domain}:v1\0`)
-  const canonical = canonicalJsonBytesV1(value)
+  const canonical = new TextEncoder().encode(canonicalJsonV1(value, limits))
   const output = new Uint8Array(prefix.byteLength + canonical.byteLength)
   output.set(prefix, 0)
   output.set(canonical, prefix.byteLength)

@@ -247,6 +247,17 @@ export function editEvidenceCanonicalSha256V1(value: unknown): string
 
 const canonicalSha256 = editEvidenceCanonicalSha256V1
 
+// a target's fingerprint spells its declarations' values, so a list holds as
+// many members as the project admits; it hashes under the same evidence bounds
+function fingerprintSha256(projection: unknown): string
+{
+  return semanticHashV1(
+    'semantic-fingerprint',
+    projection,
+    EDIT_EVIDENCE_CANONICAL_LIMITS_V1
+  )
+}
+
 function targetKind(target: Target): 'stage' | 'sprite'
 {
   return target.isStage ? 'stage' : 'sprite'
@@ -310,7 +321,7 @@ export function targetSemanticFingerprintV1(target: Target): string
     ...Object.keys(target.variables)
       .sort()
       .map((id) =>
-        semanticHashV1('semantic-fingerprint', {
+        fingerprintSha256({
           entityKind: 'target-declaration-child',
           declarationKind: 'variable',
           value: target.variables[id],
@@ -319,7 +330,7 @@ export function targetSemanticFingerprintV1(target: Target): string
     ...Object.keys(target.lists ?? {})
       .sort()
       .map((id) =>
-        semanticHashV1('semantic-fingerprint', {
+        fingerprintSha256({
           entityKind: 'target-declaration-child',
           declarationKind: 'list',
           value: target.lists![id],
@@ -328,7 +339,7 @@ export function targetSemanticFingerprintV1(target: Target): string
     ...Object.keys(target.broadcasts ?? {})
       .sort()
       .map((id) =>
-        semanticHashV1('semantic-fingerprint', {
+        fingerprintSha256({
           entityKind: 'target-declaration-child',
           declarationKind: 'broadcast',
           name: target.broadcasts![id],
@@ -349,7 +360,7 @@ export function targetSemanticFingerprintV1(target: Target): string
   {
     const completeBlockMapSha256 = canonicalSha256(target.blocks)
     scriptChildFingerprintSha256s = scriptRootBlockIds.map((blockId) =>
-      semanticHashV1('semantic-fingerprint', {
+      fingerprintSha256({
         entityKind: 'target-script-child',
         rootPayloadSha256: canonicalSha256(target.blocks[blockId]),
         completeBlockMapSha256,
@@ -375,7 +386,7 @@ export function targetSemanticFingerprintV1(target: Target): string
           'edit.reference_propagation_incomplete',
           'comment attachment points to an absent block'
         )
-      return semanticHashV1('semantic-fingerprint', {
+      return fingerprintSha256({
         entityKind: 'target-comment-child',
         attachmentState:
           comment.blockId == null
@@ -394,7 +405,7 @@ export function targetSemanticFingerprintV1(target: Target): string
     })
   const mediaChildFingerprintSha256s = [
     ...target.costumes.map((costume, order) =>
-      semanticHashV1('semantic-fingerprint', {
+      fingerprintSha256({
         entityKind: 'target-media-child',
         mediaKind: 'costume',
         order,
@@ -402,7 +413,7 @@ export function targetSemanticFingerprintV1(target: Target): string
       })
     ),
     ...target.sounds.map((sound, order) =>
-      semanticHashV1('semantic-fingerprint', {
+      fingerprintSha256({
         entityKind: 'target-media-child',
         mediaKind: 'sound',
         order,
@@ -428,7 +439,7 @@ export function targetSemanticFingerprintV1(target: Target): string
       .sort()
       .map((key) => [key, target[key as keyof Target]])
   )
-  return semanticHashV1('semantic-fingerprint', {
+  return fingerprintSha256({
     entityKind: 'target',
     targetKind: targetKind(target),
     nameSha256: canonicalSha256(target.name),
