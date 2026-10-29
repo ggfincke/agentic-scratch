@@ -72,13 +72,31 @@ function assertSnapshot(snapshot: UidSnapshot): void
     )
 }
 
+// a clone's link to the allocator it copied (by serial, so a clone never keeps its parent alive): the parent's
+// mutation count at the copy & the IDs the clone has since added to its used, generated & tombstone sets, in insertion
+// order
+interface UidCloneOrigin
+{
+  readonly parentSerial: number
+  readonly parentVersion: number
+  readonly used: string[]
+  readonly generated: string[]
+  readonly tombstones: string[]
+}
+
+let nextUidsSerial = 0
+
 export class Uids
 {
-  private readonly used: Set<string>
-  private readonly generatedReservations: Set<string>
-  private readonly pendingReservations: Set<string>
-  private readonly tombstones: Set<string>
+  private used: Set<string>
+  private generatedReservations: Set<string>
+  private pendingReservations: Set<string>
+  private tombstones: Set<string>
   private counter: number
+  private readonly serial = nextUidsSerial++
+  // bumped by every mutation, so a commit can tell its clone's parent is unchanged since the copy
+  private version = 0
+  private origin: UidCloneOrigin | undefined
 
   constructor(used: Iterable<string> = [])
   {
@@ -102,6 +120,28 @@ export class Uids
     return allocator
   }
 
+  // the set adds every mutation goes through, so a clone's journal holds exactly the IDs it gained since the copy
+  private addUsed(id: string): void
+  {
+    if (this.used.has(id)) return
+    this.used.add(id)
+    this.origin?.used.push(id)
+  }
+
+  private addGenerated(id: string): void
+  {
+    if (this.generatedReservations.has(id)) return
+    this.generatedReservations.add(id)
+    this.origin?.generated.push(id)
+  }
+
+  private addTombstone(id: string): void
+  {
+    if (this.tombstones.has(id)) return
+    this.tombstones.add(id)
+    this.origin?.tombstones.push(id)
+  }
+
   has(id: string): boolean
   {
     return this.used.has(id)
@@ -119,20 +159,40 @@ export class Uids
 
   reserve(id: string): void
   {
-    this.used.add(id)
+    this.version++
+    this.addUsed(id)
   }
 
   reserveHistorical(id: string): void
   {
-    this.used.add(id)
-    this.generatedReservations.add(id)
+    this.version++
+    this.addUsed(id)
+    this.addGenerated(id)
     this.pendingReservations.delete(id)
-    this.tombstones.add(id)
+    this.addTombstone(id)
   }
 
+  // copy the sets directly: a live allocator always satisfies the snapshot invariants, so the snapshot round trip
+  // only sorted & re-checked them; pending keeps the round trip's sorted order, & a commit walks the used & generated
+  // sets in that order where it can name a copied ID (cloneOrder)
   clone(): Uids
   {
-    return Uids.fromSnapshot(this.snapshot())
+    const copy = new Uids()
+    copy.used = new Set(this.used)
+    copy.generatedReservations = new Set(this.generatedReservations)
+    copy.pendingReservations = new Set(
+      [...this.pendingReservations].sort(compareText)
+    )
+    copy.tombstones = new Set(this.tombstones)
+    copy.counter = this.counter
+    copy.origin = {
+      parentSerial: this.serial,
+      parentVersion: this.version,
+      used: [],
+      generated: [],
+      tombstones: [],
+    }
+    return copy
   }
 
   snapshot(): UidSnapshot
@@ -151,8 +211,9 @@ export class Uids
 
   acceptReservations(): readonly string[]
   {
+    this.version++
     const accepted = [...this.pendingReservations].sort(compareText)
-    for (const id of accepted) this.tombstones.add(id)
+    for (const id of accepted) this.addTombstone(id)
     this.pendingReservations.clear()
     return accepted
   }
@@ -161,34 +222,59 @@ export class Uids
   {
     if (candidate === this)
       throw new Error('candidate UID allocator must be an isolated clone')
-    for (const id of this.used)
+    // * a clone of this allocator, unchanged since the copy, descends from it by construction: no mutation removes a
+    // used, generated or tombstoned ID, a pending one leaves only for the tombstones & the counter only grows; so the
+    // descent checks hold & only the IDs the clone added can fail the rest or change this allocator
+    const origin = candidate.origin
+    const added =
+      origin !== undefined &&
+      origin.parentSerial === this.serial &&
+      origin.parentVersion === this.version
+        ? origin
+        : undefined
+    if (!added)
     {
-      if (!candidate.used.has(id))
-        throw new Error('candidate UID allocator does not descend from base')
+      for (const id of this.used)
+      {
+        if (!candidate.used.has(id))
+          throw new Error('candidate UID allocator does not descend from base')
+      }
     }
     if (candidate.counter < this.counter)
       throw new Error('candidate UID allocator rewinds the allocation counter')
-    for (const id of this.generatedReservations)
+    if (!added)
     {
-      if (!candidate.generatedReservations.has(id))
-        throw new Error(
-          'candidate UID allocator forgets generated reservation history'
+      for (const id of this.generatedReservations)
+      {
+        if (!candidate.generatedReservations.has(id))
+          throw new Error(
+            'candidate UID allocator forgets generated reservation history'
+          )
+      }
+      for (const id of this.tombstones)
+      {
+        if (!candidate.tombstones.has(id))
+          throw new Error('candidate UID allocator forgets a tombstoned ID')
+      }
+      for (const id of this.pendingReservations)
+      {
+        if (
+          !candidate.pendingReservations.has(id) &&
+          !candidate.tombstones.has(id)
         )
+          throw new Error(
+            'candidate UID allocator forgets a pending reservation'
+          )
+      }
     }
-    for (const id of this.tombstones)
-    {
-      if (!candidate.tombstones.has(id))
-        throw new Error('candidate UID allocator forgets a tombstoned ID')
-    }
-    for (const id of this.pendingReservations)
-    {
-      if (
-        !candidate.pendingReservations.has(id) &&
-        !candidate.tombstones.has(id)
-      )
-        throw new Error('candidate UID allocator forgets a pending reservation')
-    }
-    for (const id of candidate.used)
+    const candidateUsed = added
+      ? added.used
+      : candidate.cloneOrder(candidate.used, origin?.used)
+    const candidateGenerated = added
+      ? added.generated
+      : candidate.cloneOrder(candidate.generatedReservations, origin?.generated)
+    const candidateTombstones = added ? added.tombstones : candidate.tombstones
+    for (const id of candidateUsed)
     {
       if (!this.used.has(id) && !candidate.generatedReservations.has(id))
         throw new Error(
@@ -207,7 +293,7 @@ export class Uids
           `candidate UID allocator reclassifies a preexisting ID: ${id}`
         )
     }
-    for (const id of candidate.generatedReservations)
+    for (const id of candidateGenerated)
     {
       if (
         !this.generatedReservations.has(id) &&
@@ -218,14 +304,29 @@ export class Uids
         )
     }
     const newlyAccepted = [...candidate.pendingReservations].sort(compareText)
+    this.version++
     this.counter = candidate.counter
-    for (const id of candidate.used) this.used.add(id)
-    for (const id of candidate.generatedReservations)
-      this.generatedReservations.add(id)
-    for (const id of candidate.tombstones) this.tombstones.add(id)
-    for (const id of candidate.pendingReservations) this.tombstones.add(id)
+    for (const id of candidateUsed) this.addUsed(id)
+    for (const id of candidateGenerated) this.addGenerated(id)
+    for (const id of candidateTombstones) this.addTombstone(id)
+    for (const id of candidate.pendingReservations) this.addTombstone(id)
     this.pendingReservations.clear()
     return newlyAccepted
+  }
+
+  // a set's members in the order the snapshot round trip clone left them: the members copied at the clone sorted, then
+  // those added since; an allocator that is no clone keeps its own order
+  private cloneOrder(
+    set: ReadonlySet<string>,
+    added: readonly string[] | undefined
+  ): Iterable<string>
+  {
+    if (added === undefined) return set
+    const since = new Set(added)
+    return [
+      ...[...set].filter((id) => !since.has(id)).sort(compareText),
+      ...added,
+    ]
   }
 
   restoreMonotonic(snapshot: UidSnapshot): void
@@ -238,15 +339,13 @@ export class Uids
           `UID snapshot reclassifies a preexisting ID as generated: ${id}`
         )
     }
+    this.version++
     this.counter = Math.max(this.counter, snapshot.counter)
-    for (const id of snapshot.usedIds) this.used.add(id)
-    for (const id of snapshot.generatedReservationIds)
-      this.generatedReservations.add(id)
-    for (const id of snapshot.tombstonedIds)
-      this.tombstones.add(id)
-    for (const id of snapshot.pendingReservationIds)
-      this.tombstones.add(id)
-    for (const id of this.pendingReservations) this.tombstones.add(id)
+    for (const id of snapshot.usedIds) this.addUsed(id)
+    for (const id of snapshot.generatedReservationIds) this.addGenerated(id)
+    for (const id of snapshot.tombstonedIds) this.addTombstone(id)
+    for (const id of snapshot.pendingReservationIds) this.addTombstone(id)
+    for (const id of this.pendingReservations) this.addTombstone(id)
     this.pendingReservations.clear()
   }
 
@@ -258,8 +357,9 @@ export class Uids
     {
       id = `${prefix}-${(this.counter++).toString(36)}`
     } while (this.used.has(id))
-    this.used.add(id)
-    this.generatedReservations.add(id)
+    this.version++
+    this.addUsed(id)
+    this.addGenerated(id)
     this.pendingReservations.add(id)
     return id
   }
