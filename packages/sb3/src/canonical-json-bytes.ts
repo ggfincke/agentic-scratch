@@ -136,6 +136,24 @@ function assertContainer(
   state.ancestors.add(value)
 }
 
+// whether an array's own names are only its indices & length; an ordinary array lists exactly those in order, so only
+// another listing builds the expected set
+function onlyIndexNames(value: unknown[], names: readonly string[]): boolean
+{
+  if (names.length === value.length + 1 && names[value.length] === 'length')
+  {
+    let ordered = true
+    for (let index = 0; ordered && index < value.length; index += 1)
+      ordered = names[index] === String(index)
+    if (ordered) return true
+  }
+  const expectedNames = new Set([
+    'length',
+    ...Array.from({ length: value.length }, (_, index) => String(index)),
+  ])
+  return names.every((name) => expectedNames.has(name))
+}
+
 function encodeArray(
   value: unknown[],
   path: string,
@@ -149,11 +167,7 @@ function encodeArray(
   }
   assertContainer(value, path, depth, state)
   const names = Object.getOwnPropertyNames(value)
-  const expectedNames = new Set([
-    'length',
-    ...Array.from({ length: value.length }, (_, index) => String(index)),
-  ])
-  if (names.some((name) => !expectedNames.has(name)))
+  if (!onlyIndexNames(value, names))
   {
     state.ancestors.delete(value)
     throw new CanonicalJsonError('non-json', path)
