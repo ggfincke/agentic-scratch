@@ -24,6 +24,9 @@ import {
 export class ProjectIR
 {
   readonly uids: Uids
+  private readonly assetIndex = new Map<string, number>()
+  private indexedAssets = 0
+  private lastIndexedAsset: Asset | undefined
 
   private constructor(
     readonly json: ProjectJson,
@@ -110,13 +113,39 @@ export class ProjectIR
 
   addAsset(asset: Asset): void
   {
-    const current = this.assets.find((entry) => entry.path === asset.path)
+    const current = this.assetAt(asset.path)
     if (current)
     {
       normalizeAssetsByPath([current, asset])
       return
     }
     this.assets.push(asset)
+  }
+
+  // the first asset at a path, through an index of first positions; callers also edit `assets` directly, so the index
+  // catches up on appended entries & rebuilds once the array shrank, its last indexed entry changed or the entry a hit
+  // names moved (an entry replaced in place mid-array is the one edit it misses)
+  private assetAt(path: string): Asset | undefined
+  {
+    const hit = this.assetIndex.get(path)
+    if (
+      this.assets.length < this.indexedAssets ||
+      this.assets[this.indexedAssets - 1] !== this.lastIndexedAsset ||
+      (hit !== undefined && this.assets[hit]?.path !== path)
+    )
+    {
+      this.assetIndex.clear()
+      this.indexedAssets = 0
+    }
+    for (; this.indexedAssets < this.assets.length; this.indexedAssets++)
+    {
+      const entry = this.assets[this.indexedAssets]!
+      if (!this.assetIndex.has(entry.path))
+        this.assetIndex.set(entry.path, this.indexedAssets)
+    }
+    this.lastIndexedAsset = this.assets[this.indexedAssets - 1]
+    const position = this.assetIndex.get(path)
+    return position === undefined ? undefined : this.assets[position]
   }
 
   // append a new sprite (minimal valid target) & return its editing view
