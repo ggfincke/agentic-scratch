@@ -23,6 +23,7 @@ import {
 } from '@scratch-agent/sb3'
 import { ProjectIR } from '../project/project-ir.js'
 import { computeProjectDelta } from '../project/project-delta.js'
+import { compactProjectJson } from '../project/compact-project-json.js'
 import {
   editEvidenceCanonicalSha256V1 as hashJson,
   targetEntityEvidenceSetV1,
@@ -1379,6 +1380,14 @@ export async function compileScratchWorkspaceV2(
   for (const clip of manifest.clips ?? [])
     if (!targetIndexes.has(clip.targetId))
       fail(clip.id, 'clip target ID is absent')
+  // the blocks this compile installed leave in the compact shape both vms run the same; every block the baseline
+  // carried keeps its bytes (new ids never reuse a baseline id)
+  compactProjectJson(
+    candidate.json,
+    new Set(
+      baseline.json.targets.flatMap((target) => Object.keys(target.blocks))
+    )
+  )
   const candidateJsonText = candidate.toProjectJsonText()
   const jsonBytes = new TextEncoder().encode(candidateJsonText).byteLength
   const assets = normalizeAssetsByPath(candidate.assets)
@@ -1456,6 +1465,8 @@ export async function compileScratchWorkspaceV2(
     hashJson({
       kind: 'scratch-workspace-compiler-v2',
       schemaVersion: 2,
+      // installed blocks serialize compact (project/compact-project-json.ts), so the same sources yield new bytes
+      projectJsonShape: 'compact-installed-blocks-v1',
       standardAuthoritySha256: getStandardAuthoritySha256V2(),
       ...profileEvidence,
     })
