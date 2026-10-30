@@ -1,5 +1,5 @@
 // packages/sb3/src/admission/validate.ts
-// validate a .sb3 buffer w/ scratch-parser@6 (CJS, no types)
+// validate a .sb3 w/ scratch-parser@6 (CJS, no types), relabelling flac sounds for turbowarp-only checks
 
 import { Buffer } from 'node:buffer'
 import { createRequire } from 'node:module'
@@ -24,7 +24,7 @@ type ParserCallback = (
   result?: [ValidatedProject, unknown]
 ) => void
 type ScratchParser = (
-  input: Buffer,
+  input: Buffer | string,
   isSprite: boolean,
   cb: ParserCallback
 ) => void
@@ -53,10 +53,9 @@ function errToString(err: unknown): string
   }
 }
 
-// run scratch-parser after a caller has already admitted these exact bytes
-export function validateAdmittedSb3(sb3: Uint8Array): Promise<ValidateResult>
+// run scratch-parser on an archive or a project.json string
+function parseProject(input: Buffer | string): Promise<ValidateResult>
 {
-  const input = Buffer.isBuffer(sb3) ? sb3 : Buffer.from(sb3)
   return new Promise((resolve) =>
   {
     parser(input, false, (err, result) =>
@@ -74,6 +73,50 @@ export function validateAdmittedSb3(sb3: Uint8Array): Promise<ValidateResult>
       })
     })
   })
+}
+
+// run scratch-parser after a caller has already admitted these exact bytes
+export function validateAdmittedSb3(sb3: Uint8Array): Promise<ValidateResult>
+{
+  return parseProject(Buffer.isBuffer(sb3) ? sb3 : Buffer.from(sb3))
+}
+
+// for turbowarp-only checks: validate the admitted project.json w/ each flac
+// sound relabelled mp3, as @turbowarp/sb3fix does before turbowarp.org loads
+// it, so every other field still meets the vanilla schema
+export function validateAdmittedTurboWarpSb3(
+  sb3: Uint8Array,
+  projectJsonText: string
+): Promise<ValidateResult>
+{
+  let project: unknown
+  try
+  {
+    project = JSON.parse(projectJsonText)
+  }
+  catch (error)
+  {
+    return Promise.resolve({
+      ok: false,
+      projectVersion: 0,
+      errors: [errToString(error)],
+    })
+  }
+  let relabelled = false
+  const targets = (project as { targets?: unknown } | null)?.targets
+  for (const target of Array.isArray(targets) ? targets : [])
+  {
+    for (const sound of Array.isArray(target?.sounds) ? target.sounds : [])
+    {
+      if (sound?.dataFormat !== 'flac') continue
+      sound.dataFormat = 'mp3'
+      relabelled = true
+    }
+  }
+  // w/o a flac sound the archive bytes validate exactly as validateAdmittedSb3
+  return relabelled
+    ? parseProject(JSON.stringify(project))
+    : validateAdmittedSb3(sb3)
 }
 
 // public validation authority: shared admission first, then Scratch 3 schema parsing

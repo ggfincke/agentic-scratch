@@ -9,6 +9,7 @@ import {
   scratchRecordEntries,
   scratchRecordValue,
   validateAdmittedSb3,
+  validateAdmittedTurboWarpSb3,
   type Sb3AdmissionMetrics,
   type Sb3Admission,
   type Sb3Limits,
@@ -256,10 +257,11 @@ function emptySelectedProjectInspection(
   }
 }
 
-// a build's resolved archive limits may raise the default caps up to the hard ceilings
+// a build's resolved archive limits may raise the default caps up to the hard
+// ceilings; turboWarpOnly marks a check whose runtime targets are all turbowarp
 export async function inspectSelectedProject(
   bytes: Uint8Array,
-  options: { archiveLimits?: Sb3LimitOptions } = {}
+  options: { archiveLimits?: Sb3LimitOptions; turboWarpOnly?: boolean } = {}
 ): Promise<SelectedProjectInspection>
 {
   const limits = resolveHardBoundedSb3Limits(options.archiveLimits)
@@ -290,12 +292,15 @@ export async function inspectSelectedProject(
     return result
   }
 
-  return inspectSelectedProjectFromAdmittedSb3(bytes, admission)
+  return inspectSelectedProjectFromAdmittedSb3(bytes, admission, {
+    turboWarpOnly: options.turboWarpOnly,
+  })
 }
 
 export async function inspectSelectedProjectFromAdmittedSb3(
   bytes: Uint8Array,
-  admission: Sb3Admission
+  admission: Sb3Admission,
+  options: { turboWarpOnly?: boolean } = {}
 ): Promise<SelectedProjectInspection>
 {
   if (
@@ -330,7 +335,10 @@ export async function inspectSelectedProjectFromAdmittedSb3(
     return result
   }
 
-  const schema = await validateAdmittedSb3(bytes)
+  // only a turbowarp-only check lets flac sounds past the schema
+  const schema = options.turboWarpOnly
+    ? await validateAdmittedTurboWarpSb3(bytes, admission.projectJsonText)
+    : await validateAdmittedSb3(bytes)
   result.schema = {
     projectVersion: schema.projectVersion,
     errors: schema.errors.map((message) => message.slice(0, 1000)),
