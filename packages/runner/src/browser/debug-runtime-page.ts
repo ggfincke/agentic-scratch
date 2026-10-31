@@ -6,6 +6,7 @@ import {
   validateSelectedStateProbeV1 as validateProbe,
 } from '../development/selected-state.js'
 import { installDebugDiagnosticsV1 } from './debug-diagnostics.js'
+import { fetchProjectParts } from './project-parts.js'
 import {
   DEVELOPMENT_INPUT_POLICY_V2,
   DEVELOPMENT_CHRONOLOGY_POLICY_V2,
@@ -619,10 +620,7 @@ export function installProjectDebugPageV1(host: ProjectDebugPageHostV1): void
   const api: ProjectDebugPageApiV1 = {
     async load(url)
     {
-      const response = await fetch(url)
-      if (!response.ok)
-        throw new Error(`project load failed: ${response.status}`)
-      await host.loadProject(await response.arrayBuffer())
+      await host.loadProject(await fetchProjectParts(url))
     },
     async prepare(options)
     {

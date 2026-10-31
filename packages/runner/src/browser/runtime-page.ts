@@ -5,6 +5,7 @@ import type { SpikeApi } from './browser-api.js'
 import { installDeterminism, type Determinism } from '../policy/determinism.js'
 import { InputController } from '../scenario/input.js'
 import { RUNNER_TICK_MS } from './browser-config.js'
+import { fetchProjectParts } from './project-parts.js'
 import {
   captureBoundedRuntimeObservation,
   readBoundedSnapshot,
@@ -153,10 +154,7 @@ export function installRuntimePage(host: BrowserRuntimePageHost): void
   const api: SpikeApi = {
     async load(url: string, lineageManifestUrl?: string | null): Promise<void>
     {
-      const response = await fetch(url)
-      if (!response.ok)
-        throw new Error(`project fetch failed with status ${response.status}`)
-      const bytes = await response.arrayBuffer()
+      const bytes = await fetchProjectParts(url)
       if (lineageManifestUrl)
       {
         const manifest = await fetchLineageManifest(lineageManifestUrl)

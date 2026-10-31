@@ -41,6 +41,7 @@ import {
   type RuntimeExecutionProfileV1,
 } from '../development/execution-profile.js'
 import { bindProfileRuntimeDescriptorV2 } from '../development/profile-identity.js'
+import { PROJECT_PART_BYTES } from './project-parts.js'
 
 const TURBOWARP_RUNTIME_ID = '@turbowarp/scaffolding (chromium)'
 const OFFICIAL_RUNTIME_ID = '@scratch/scratch-vm + scratch-render (chromium)'
@@ -442,13 +443,24 @@ async function installOfflineRoute(
   {
     const url = route.request().url()
     const parsed = new URL(url)
+    // the archive in parts (project-parts.ts), each fulfilled body one devtools message under chromium's cap
     if (parsed.origin === ORIGIN && parsed.pathname === PROJECT_PATH)
     {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/octet-stream',
-        body: projectBody,
-      })
+      const parts = Math.max(1, Math.ceil(projectBody.byteLength / PROJECT_PART_BYTES))
+      const part = Number(parsed.searchParams.get('part'))
+      if (parsed.search === '?parts')
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json; charset=utf-8',
+          body: JSON.stringify({ byteLength: projectBody.byteLength, parts }),
+        })
+      else if (parsed.searchParams.has('part') && Number.isInteger(part) && part >= 0 && part < parts)
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/octet-stream',
+          body: projectBody.subarray(part * PROJECT_PART_BYTES, (part + 1) * PROJECT_PART_BYTES),
+        })
+      else await route.fulfill({ status: 404, body: '' })
       return
     }
     if (

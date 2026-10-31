@@ -102,10 +102,8 @@ export function isEditSb3Admission(value: unknown): value is EditSb3Admission
   return brand?.enumerable === true && 'value' in brand && brand.value === true
 }
 
-export async function admitSb3ForEdit(
-  bytes: Uint8Array,
-  options: EditSb3AdmissionOptions = {}
-): Promise<EditSb3Admission>
+// the ordered stage runner: each stage reports start & completion, & a failure names the stage & those completed
+function stageRunner(options: Pick<EditSb3AdmissionOptions, 'onStage'>)
 {
   const completed: EditAdmissionStage[] = []
   let sequence = 0
@@ -134,14 +132,19 @@ export async function admitSb3ForEdit(
       throw new EditSb3AdmissionError(stage, completed, cause)
     }
   }
+  return { run, completed }
+}
 
-  const limits = resolveEditAdmissionLimits(options.editLimits)
-  const archiveLimits = resolveHardBoundedSb3Limits(options.limits)
-  const archive = await run('archive', () =>
-    admitSb3(bytes, { limits: archiveLimits })
-  )
+// the stages after the archive, over the project.json text & the assets read w/ it
+async function admitContents(
+  projectJsonText: string,
+  assets: readonly Asset[],
+  limits: EditAdmissionLimits,
+  run: ReturnType<typeof stageRunner>['run']
+)
+{
   const scanned = await run('raw-json', () =>
-    scanStrictJson(archive.projectJsonText, {
+    scanStrictJson(projectJsonText, {
       maxDepth: limits.maxJsonDepth,
       maxMembersPerContainer: limits.maxMembersPerContainer,
       maxNodes: limits.maxJsonNodes,
@@ -154,7 +157,7 @@ export async function admitSb3ForEdit(
   {
     const classified = await classifyProjectMedia(
       shaped.project,
-      archive.assets,
+      assets,
       limits
     )
     if (classified.missingReferencedAssetPaths.length > 0)
@@ -167,12 +170,70 @@ export async function admitSb3ForEdit(
     return classified
   })
   await run('complete', () => undefined)
+  return { scanned, shaped, media }
+}
+
+export async function admitSb3ForEdit(
+  bytes: Uint8Array,
+  options: EditSb3AdmissionOptions = {}
+): Promise<EditSb3Admission>
+{
+  const { run, completed } = stageRunner(options)
+  const limits = resolveEditAdmissionLimits(options.editLimits)
+  const archiveLimits = resolveHardBoundedSb3Limits(options.limits)
+  const archive = await run('archive', () =>
+    admitSb3(bytes, { limits: archiveLimits })
+  )
+  const { scanned, shaped, media } = await admitContents(
+    archive.projectJsonText,
+    archive.assets,
+    limits,
+    run
+  )
   return {
     [EDIT_SB3_ADMISSION_BRAND]: true,
     project: shaped.project,
     projectJsonText: archive.projectJsonText,
     assets: archive.assets,
     archive,
+    limits,
+    jsonMetrics: scanned.metrics,
+    projectCounts: shaped.counts,
+    media,
+    completedStages: [...completed],
+  }
+}
+
+export interface PackedProjectEditAdmission
+{
+  project: ProjectJson
+  limits: EditAdmissionLimits
+  jsonMetrics: StrictJsonMetrics
+  projectCounts: EditProjectCounts
+  media: ProjectMediaAdmission
+  completedStages: readonly EditAdmissionStage[]
+}
+
+// edit admission of a project packed (packSb3) from exactly this project.json text & these path-normalized assets:
+// the archive stage would only read back what the packer just wrote, so it passes as given & the later stages run on
+// the parts directly; the caller bounds the archive itself (entry count, sizes) as admitSb3 would
+export async function admitPackedProjectForEdit(
+  projectJsonText: string,
+  assets: readonly Asset[],
+  options: Pick<EditSb3AdmissionOptions, 'editLimits' | 'onStage'> = {}
+): Promise<PackedProjectEditAdmission>
+{
+  const { run, completed } = stageRunner(options)
+  const limits = resolveEditAdmissionLimits(options.editLimits)
+  await run('archive', () => undefined)
+  const { scanned, shaped, media } = await admitContents(
+    projectJsonText,
+    assets,
+    limits,
+    run
+  )
+  return {
+    project: shaped.project,
     limits,
     jsonMetrics: scanned.metrics,
     projectCounts: shaped.counts,

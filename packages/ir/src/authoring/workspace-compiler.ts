@@ -8,10 +8,12 @@ import {
   HARD_EDIT_ADMISSION_LIMITS,
   HARD_SB3_LIMITS,
   ASSET_PIPELINE_LIMITS_V2,
+  admitPackedProjectForEdit,
   admitSb3ForEdit,
   deriveAuthoringMediaIdentity,
   defineScratchRecordValue,
   normalizeAssetsByPath,
+  packSb3,
   TURBOWARP_EXTENSION_ALLOWLIST_V1,
   type Block,
   type BlockEntry,
@@ -21,6 +23,7 @@ import {
 } from '@scratch-agent/sb3'
 import { ProjectIR } from '../project/project-ir.js'
 import { computeProjectDelta } from '../project/project-delta.js'
+import { compactProjectJson } from '../project/compact-project-json.js'
 import {
   editEvidenceCanonicalSha256V1 as hashJson,
   targetEntityEvidenceSetV1,
@@ -1377,9 +1380,16 @@ export async function compileScratchWorkspaceV2(
   for (const clip of manifest.clips ?? [])
     if (!targetIndexes.has(clip.targetId))
       fail(clip.id, 'clip target ID is absent')
-  const jsonBytes = new TextEncoder().encode(
-    candidate.toProjectJsonText()
-  ).byteLength
+  // the blocks this compile installed leave in the compact shape both vms run the same; every block the baseline
+  // carried keeps its bytes (new ids never reuse a baseline id)
+  compactProjectJson(
+    candidate.json,
+    new Set(
+      baseline.json.targets.flatMap((target) => Object.keys(target.blocks))
+    )
+  )
+  const candidateJsonText = candidate.toProjectJsonText()
+  const jsonBytes = new TextEncoder().encode(candidateJsonText).byteLength
   const assets = normalizeAssetsByPath(candidate.assets)
   charge('project JSON bytes', jsonBytes, limits.maximumProjectJsonBytes)
   charge(
@@ -1402,16 +1412,25 @@ export async function compileScratchWorkspaceV2(
     preprocessing.peakDecodedBytes,
     ASSET_PIPELINE_LIMITS_V2.maxDecodedWorkingBytes
   )
-  const candidateBytes = await candidate.toSb3()
+  const candidateBytes = await packSb3(candidateJsonText, candidate.assets)
   charge(
     'candidate SB3 bytes',
     candidateBytes.byteLength,
     limits.maximumSb3Bytes
   )
-  const candidateAdmission = await admitSb3ForEdit(candidateBytes, {
-    editLimits,
-    limits: archiveLimits,
-  })
+  // the candidate's archive was just packed from this text & these assets; the charges above bound its entries,
+  // project.json & totals as archive admission would, so unless an asset passes the per-asset bound (which archive
+  // admission reports) its edit admission runs on them instead of reading the archive back
+  const candidateAdmission = assets.some(
+    (asset) => asset.bytes.byteLength > archiveLimits.maxAssetBytes
+  )
+    ? await admitSb3ForEdit(candidateBytes, {
+        editLimits,
+        limits: archiveLimits,
+      })
+    : await admitPackedProjectForEdit(candidateJsonText, assets, {
+        editLimits,
+      })
   const diff = computeProjectDelta(baseline, candidate)
   const sourceFiles = files
     .map((file) => ({
@@ -1446,6 +1465,8 @@ export async function compileScratchWorkspaceV2(
     hashJson({
       kind: 'scratch-workspace-compiler-v2',
       schemaVersion: 2,
+      // installed blocks serialize compact (project/compact-project-json.ts), so the same sources yield new bytes
+      projectJsonShape: 'compact-installed-blocks-v1',
       standardAuthoritySha256: getStandardAuthoritySha256V2(),
       ...profileEvidence,
     })

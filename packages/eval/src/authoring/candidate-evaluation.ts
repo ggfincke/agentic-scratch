@@ -1294,6 +1294,9 @@ async function evaluateCandidate(
     assertEvaluationActive(request.signal)
     result.inspection = await inspectSelectedProject(bytes, {
       archiveLimits: request.archiveLimits,
+      turboWarpOnly:
+        policy.targets.length > 0 &&
+        policy.targets.every((target) => target.runtime === 'turbowarp'),
     })
     assertEvaluationActive(request.signal)
     issues.push(...inspectionIssues(result.inspection))
