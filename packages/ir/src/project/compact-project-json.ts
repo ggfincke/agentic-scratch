@@ -27,10 +27,10 @@ const RECORD_KEYS = new Set([
   'topLevel',
 ])
 
-// * both vms (src/serialization/sb3.js deserializeBlocks) rebuild an inlined [12, name, id] / [13, name, id] as the
-// record it replaces (next null, the holder as parent, the slot's shadow flag), only under a fresh id, & swap every
-// block's inputs & fields for deserialized copies, so a missing empty one loads as {}; a missing topLevel loads
-// undefined, which every vm read tests by truthiness & toJSON writes back as false, as it does for each inlined reporter
+// * both vms (sb3.js deserializeBlocks) rebuild an inlined [12, name, id] / [13, name, id] as the record it replaces
+// under a fresh id, load a missing empty inputs or fields as {} & a missing topLevel as undefined, which every read
+// tests by truthiness & toJSON writes back as false
+
 // * blocks whose ids are in carried (the baseline's) keep their exact serialized form, so a build that installs nothing
 // reproduces its baseline's bytes & the delta shows no change the build didn't make
 export function compactProjectJson(
