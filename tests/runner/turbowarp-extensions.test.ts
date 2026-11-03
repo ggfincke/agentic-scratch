@@ -234,14 +234,14 @@ test('clipping splits rotated dry and wet stamps without leaking to the next sta
     { opcode: 'looks_switchcostumeto', inputs: { COSTUME: 'dry' } },
     {
       opcode: 'xeltallivclipblend_setClipbox',
-      inputs: { X1: -240, Y1: 0, X2: 240, Y2: 180 },
+      inputs: { X1: -240, Y1: 0.25, X2: 240, Y2: 180 },
     },
     { opcode: 'pen_stamp' },
     { opcode: 'xeltallivclipblend_clearClipbox' },
     { opcode: 'looks_switchcostumeto', inputs: { COSTUME: 'wet' } },
     {
       opcode: 'xeltallivclipblend_setClipbox',
-      inputs: { X1: -240, Y1: -180, X2: 240, Y2: 0 },
+      inputs: { X1: -240, Y1: -180, X2: 240, Y2: 0.25 },
     },
     { opcode: 'pen_stamp' },
     { opcode: 'xeltallivclipblend_clearClipbox' },

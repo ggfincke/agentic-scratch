@@ -120,7 +120,7 @@
       let w = x2 - x;
       let h = y2 - y;
       if (flipY) {
-        y = ((-clipbox.y_max / scratchUnitHeight + 0.5) * height) | 0;
+        y = height - y2;
       }
       gl.scissor(x, y, w, h);
     } else {

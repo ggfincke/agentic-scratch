@@ -1,7 +1,7 @@
 {
   "page": "https://extensions.turbowarp.org/",
   "retrieved": "2026-10-16",
-  "note": "TurboWarp gallery extensions vendored byte for byte; the rendered TurboWarp lane serves these copies offline after a sha check against TURBOWARP_EXTENSION_ALLOWLIST_V1",
+  "note": "Pinned offline copies. Clipping & Blending has a documented local scissor correction; bare SB3 gallery loading does not include that correction.",
   "files": [
     {
       "id": "Gamepad",
@@ -23,9 +23,13 @@
       "id": "xeltallivclipblend",
       "url": "https://extensions.turbowarp.org/Xeltalliv/clippingblending.js",
       "path": "clippingblending.js",
-      "bytes": 27956,
-      "sha256": "75ae6a27dbfc1476bcad6317ccb8d8ac1a0328361616acfd9f92494b692e5b06",
-      "licence": "License: MIT"
+      "bytes": 27910,
+      "sha256": "7a651dbd215141bc47c115ee00507bcdc94402bec04bd47deb0e0643fa653a90",
+      "licence": "License: MIT",
+      "upstreamSha256": "75ae6a27dbfc1476bcad6317ccb8d8ac1a0328361616acfd9f92494b692e5b06",
+      "upstreamPath": "clippingblending.upstream.js",
+      "localPatch": "clippingblending.patch",
+      "patchReason": "reuse the rounded endpoint when flipping pen scissor coordinates; prevent overlapping rows"
     }
   ]
 }

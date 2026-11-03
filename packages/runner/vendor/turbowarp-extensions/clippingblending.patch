@@ -1,0 +1,5 @@
+--- clippingblending.js
++++ clippingblending.js
+@@ -125,1 +125,1 @@
+-        y = ((-clipbox.y_max / scratchUnitHeight + 0.5) * height) | 0;
++        y = height - y2;

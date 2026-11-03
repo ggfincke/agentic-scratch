@@ -236,7 +236,7 @@ export const TURBOWARP_EXTENSION_PROFILE_V1 = deepFreeze({
 })
 
 export const PINNED_TURBOWARP_EXTENSION_PROFILE_SHA256_V1 =
-  '40565d3800a624f99453180113dc8068e4b2f8814bc861bd782293735492320c' as const
+  'b86b8062df8ee4d49bf46854a252e4cd3f18fc52eebd13873236c01faa365bd8' as const
 
 export function getTurboWarpDescriptorV1(
   opcode: string

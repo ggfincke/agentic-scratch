@@ -28,7 +28,7 @@ export const TURBOWARP_EXTENSION_ALLOWLIST_V1: readonly TurboWarpExtensionAllowl
         id: 'xeltallivclipblend',
         url: 'https://extensions.turbowarp.org/Xeltalliv/clippingblending.js',
         scriptSha256:
-          '75ae6a27dbfc1476bcad6317ccb8d8ac1a0328361616acfd9f92494b692e5b06',
+          '7a651dbd215141bc47c115ee00507bcdc94402bec04bd47deb0e0643fa653a90',
       },
     ].map((entry) => Object.freeze(entry))
   )
