@@ -80,7 +80,11 @@ function add(
   opcode: string,
   shape: VanillaBlockShape,
   inputs: readonly StandardInputDescriptorV2[] = [],
-  fields: readonly StandardFieldDescriptorV2[] = []
+  fields: readonly StandardFieldDescriptorV2[] = [],
+  ownerTargets: StandardAuthoringDescriptorV2['context']['ownerTargets'] = [
+    'stage',
+    'sprite',
+  ]
 ): void
 {
   const expression = shape === 'reporter' || shape === 'boolean'
@@ -100,7 +104,7 @@ function add(
                   shape === 'boolean' ? 'booleanInput' : 'reporterInput',
                 ]
               : ['topLevelStatement', 'statementSequence'],
-      ownerTargets: ['stage', 'sprite'],
+      ownerTargets,
       acceptsSuccessor: !expression && shape !== 'menuReporter',
       mustTerminateSequence: false,
     },
@@ -161,6 +165,23 @@ add(L, 'removeAll', 'stack')
 add(L, 'whenChanged', 'hat')
 add(L, 'setProjectId', 'stack', [argument('ID', 'string', 'project title')])
 
+// only the two sprite clipping commands are public; blending stays outside this profile
+const C = 'xeltallivclipblend'
+add(
+  C,
+  'setClipbox',
+  'stack',
+  [
+    argument('X1', 'number', '0'),
+    argument('Y1', 'number', '0'),
+    argument('X2', 'number', '100'),
+    argument('Y2', 'number', '100'),
+  ],
+  [],
+  ['sprite']
+)
+add(C, 'clearClipbox', 'stack', [], [], ['sprite'])
+
 const publicCount = rows.length
 const menuShadows = new Map<
   string,
@@ -215,7 +236,7 @@ export const TURBOWARP_EXTENSION_PROFILE_V1 = deepFreeze({
 })
 
 export const PINNED_TURBOWARP_EXTENSION_PROFILE_SHA256_V1 =
-  'e2eb9a84b1ffffb32102cad1dbdc722938c22ae2b62f04a6fa8d489950e03686' as const
+  '40565d3800a624f99453180113dc8068e4b2f8814bc861bd782293735492320c' as const
 
 export function getTurboWarpDescriptorV1(
   opcode: string
@@ -228,7 +249,7 @@ export function assertTurboWarpExtensionProfileV1(): void
 {
   const profile = TURBOWARP_EXTENSION_PROFILE_V1
   if (
-    profile.publicOpcodeCount !== 14 ||
+    profile.publicOpcodeCount !== 16 ||
     profile.builderOnlyDescriptorCount !== 4 ||
     byOpcode.size !== profile.descriptors.length ||
     profile.profileSha256 !== PINNED_TURBOWARP_EXTENSION_PROFILE_SHA256_V1
