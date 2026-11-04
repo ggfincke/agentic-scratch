@@ -93,7 +93,18 @@ function extensionInfo(bytes: Buffer): ExtensionInfo
     },
     ArgumentType: { NUMBER: 'number', STRING: 'string' },
     Cast: { toNumber: Number, toString: String },
+    TargetType: { STAGE: 'stage', SPRITE: 'sprite' },
     vm: {
+      on()
+      {},
+      renderer: {
+        exports: { Drawable: class
+        {} },
+        gl: {},
+        canvas: {},
+        _allSkins: {},
+        _penSkinId: null,
+      },
       // storage that drops writes keeps local-storage.js on its no-namespace defaults
       runtime: {
         extensionStorage: new Proxy({}, { set: () => true }),
@@ -165,6 +176,15 @@ test('the TurboWarp profile mirrors the vendored scripts and leaves the standard
     {
       if (typeof block === 'string' || block.blockType === 'label') continue
       const opcode = `${info.id}_${block.opcode}`
+      if (
+        info.id === 'xeltallivclipblend' &&
+        block.opcode !== 'setClipbox' &&
+        block.opcode !== 'clearClipbox'
+      )
+      {
+        assert.equal(getTurboWarpDescriptorV1(opcode), null)
+        continue
+      }
       publicOpcodes.push(opcode)
       const descriptor: StandardAuthoringDescriptorV2 | null =
         getTurboWarpDescriptorV1(opcode)
@@ -207,7 +227,7 @@ test('the TurboWarp profile mirrors the vendored scripts and leaves the standard
       }
     }
   }
-  assert.equal(publicOpcodes.length, 14)
+  assert.equal(publicOpcodes.length, 16)
   assert.deepEqual(
     TURBOWARP_EXTENSION_PROFILE_V1.descriptors.map((x) => x.opcode),
     [...publicOpcodes, ...menuOpcodes].sort()
@@ -461,4 +481,103 @@ test('the TurboWarp profile fails closed without the opt-in or with a Scratch ta
     }),
     /extension storage requires extensionProfile/
   )
+})
+
+// the clipping profile lowers only on opted-in sprites, never official Scratch targets
+test('clipping commands lower on opted-in sprites and refuse Scratch targets', async () =>
+{
+  const project = blankProject()
+  project
+    .addSprite('Clip sprite')
+    .addCostume(project.json.targets[0]!.costumes[0]!, project.assets[0]!.bytes)
+  const baselineBytes = await project.toSb3()
+  const fingerprint = targetEntityEvidenceSetV1(project.json)[1]!
+    .semanticFingerprintSha256
+  const files = [
+    { path: 'baseline.sb3', bytes: baselineBytes },
+    {
+      path: 'clip.json',
+      bytes: script({
+        rootKind: 'eventScript',
+        hat: block('event_whenflagclicked', {}),
+        body: {
+          blocks: [
+            block('xeltallivclipblend_setClipbox', {
+              X1: '-240',
+              Y1: '0',
+              X2: '240',
+              Y2: '180',
+            }),
+            block('xeltallivclipblend_clearClipbox', {}),
+          ],
+        },
+      }),
+    },
+  ]
+  const manifest: ScratchWorkspaceManifestV2 = {
+    schemaVersion: 2,
+    baseline: {
+      kind: 'selectedProject',
+      path: 'baseline.sb3',
+      expectedArtifactSha256: sha256(baselineBytes),
+    },
+    targets: [
+      {
+        id: 'stage',
+        kind: 'stage',
+        name: 'Stage',
+        existing: {
+          expectedSemanticFingerprintSha256: targetEntityEvidenceSetV1(
+            project.json
+          )[0]!.semanticFingerprintSha256,
+        },
+        logicMode: 'append',
+      },
+      {
+        id: 'clip',
+        kind: 'sprite',
+        name: 'Clip sprite',
+        existing: { expectedSemanticFingerprintSha256: fingerprint },
+        logicMode: 'replace',
+        scripts: [{ id: 'clip', path: 'clip.json' }],
+      },
+    ],
+    runtimeTargets: [TURBOWARP],
+    extensionProfile: 'turbowarp-v1',
+  }
+  const request = { manifest, files, baselineBytes, preparedAssets: [] }
+  const result = await compileScratchWorkspaceV2(request)
+  const output = await ProjectIR.fromSb3(result.candidateBytes)
+  assert.deepEqual(output.json.extensions, ['xeltallivclipblend'])
+  assert.deepEqual(output.json.extensionURLs, {
+    xeltallivclipblend:
+      'https://extensions.turbowarp.org/Xeltalliv/clippingblending.js',
+  })
+  const sprite = output.json.targets.find(
+    (target) => target.name === 'Clip sprite'
+  )!
+  const box = Object.values(sprite.blocks).find(
+    (entry) =>
+      !Array.isArray(entry) && entry.opcode === 'xeltallivclipblend_setClipbox'
+  )!
+  assert.ok(!Array.isArray(box))
+  assert.deepEqual(Object.keys(box.inputs ?? {}), ['X1', 'Y1', 'X2', 'Y2'])
+  assert.equal(getStandardDescriptorV2('xeltallivclipblend_setClipbox'), null)
+  const { extensionProfile: _profile, ...plain } = manifest
+  await assert.rejects(
+    compileScratchWorkspaceV2({ ...request, manifest: plain }),
+    /not public ordinary standard authoring/
+  )
+  await assert.rejects(
+    compileScratchWorkspaceV2({
+      ...request,
+      manifest: {
+        ...manifest,
+        runtimeTargets: [{ ...TURBOWARP, runtime: 'scratch-official' }],
+      },
+    }),
+    /requires every runtime target to be turbowarp/
+  )
+  assert.deepEqual(project.json.extensions, [])
+  assert.equal(project.json.extensionURLs, undefined)
 })

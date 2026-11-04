@@ -3,10 +3,11 @@
 
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { PNG } from 'pngjs'
 
 import {
   evaluateAuthoringCandidateV3,
@@ -190,4 +191,117 @@ test('candidate evaluation runs an extension candidate on its mandatory TurboWar
     validateAuthoringCandidateEvaluationV3(evaluation, request),
     []
   )
+})
+
+// real rotated stamps split at the surface, then a cleared clip leaves the next stamp whole
+test('clipping splits rotated dry and wet stamps without leaking to the next stamp', async () =>
+{
+  const project = blankProject()
+  const sprite = project.addSprite('Clipped sprite')
+  for (const [name, color] of [
+    ['dry', '#ff0000'],
+    ['wet', '#0000ff'],
+    ['next', '#00ff00'],
+  ])
+  {
+    const bytes = Buffer.from(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="${color}"/></svg>`
+    )
+    const assetId = createHash('md5').update(bytes).digest('hex')
+    sprite.addCostume(
+      {
+        name: name!,
+        assetId,
+        md5ext: `${assetId}.svg`,
+        dataFormat: 'svg',
+        bitmapResolution: 1,
+        rotationCenterX: 40,
+        rotationCenterY: 40,
+      },
+      bytes
+    )
+  }
+  sprite.addScript([
+    { opcode: 'event_whenflagclicked' },
+    { opcode: 'pen_clear' },
+    { opcode: 'motion_gotoxy', inputs: { X: -60, Y: 0 } },
+    { opcode: 'motion_pointindirection', inputs: { DIRECTION: 45 } },
+    {
+      opcode: 'looks_seteffectto',
+      fields: { EFFECT: ['GHOST'] },
+      inputs: { VALUE: 50 },
+    },
+    { opcode: 'looks_switchcostumeto', inputs: { COSTUME: 'dry' } },
+    {
+      opcode: 'xeltallivclipblend_setClipbox',
+      inputs: { X1: -240, Y1: 0.25, X2: 240, Y2: 180 },
+    },
+    { opcode: 'pen_stamp' },
+    { opcode: 'xeltallivclipblend_clearClipbox' },
+    { opcode: 'looks_switchcostumeto', inputs: { COSTUME: 'wet' } },
+    {
+      opcode: 'xeltallivclipblend_setClipbox',
+      inputs: { X1: -240, Y1: -180, X2: 240, Y2: 0.25 },
+    },
+    { opcode: 'pen_stamp' },
+    { opcode: 'xeltallivclipblend_clearClipbox' },
+    {
+      opcode: 'looks_seteffectto',
+      fields: { EFFECT: ['GHOST'] },
+      inputs: { VALUE: 0 },
+    },
+    { opcode: 'motion_gotoxy', inputs: { X: 80, Y: 0 } },
+    { opcode: 'looks_switchcostumeto', inputs: { COSTUME: 'next' } },
+    { opcode: 'pen_stamp' },
+    { opcode: 'looks_hide' },
+  ])
+  const extension = TURBOWARP_EXTENSION_ALLOWLIST_V1.find(
+    (entry) => entry.id === 'xeltallivclipblend'
+  )!
+  project.json.extensions = ['pen', extension.id]
+  project.json.extensionURLs = { [extension.id]: extension.url }
+  const trace = await runBrowserScenario(
+    await project.toSb3(),
+    {
+      steps: [
+        { do: 'greenFlag' },
+        { do: 'wait', ticks: 2 },
+        { do: 'snapshot', label: 'split' },
+      ],
+    },
+    { screenshotDir: mkdtempSync(join(tmpdir(), 'clipping-stamps-')) }
+  )
+  assert.ok(trace.ok, trace.errors.join('; '))
+  const image = PNG.sync.read(
+    readFileSync(trace.screenshots.find((shot) => shot.label === 'split')!.path)
+  )
+  assert.equal(image.width, 480)
+  assert.equal(image.height, 360)
+  const rgb = (x: number, y: number) =>
+    Array.from(
+      image.data.subarray(
+        (y * image.width + x) * 4,
+        (y * image.width + x) * 4 + 3
+      )
+    )
+  for (let y = 168; y < 180; y++)
+  {
+    const color = rgb(180, y)
+    assert.equal(color[0], 255, `dry row ${y}`)
+    assert.ok(
+      Math.abs(color[1]! - 128) <= 1 && Math.abs(color[2]! - 128) <= 1,
+      `dry opacity row ${y}: ${color}`
+    )
+  }
+  for (let y = 180; y < 192; y++)
+  {
+    const color = rgb(180, y)
+    assert.equal(color[2], 255, `wet row ${y}`)
+    assert.ok(
+      Math.abs(color[0]! - 128) <= 1 && Math.abs(color[1]! - 128) <= 1,
+      `wet opacity row ${y}: ${color}`
+    )
+  }
+  for (const y of [168, 180, 191])
+    assert.deepEqual(rgb(320, y), [0, 255, 0], `cleared row ${y}`)
 })
