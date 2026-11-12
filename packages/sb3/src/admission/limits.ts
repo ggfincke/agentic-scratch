@@ -20,10 +20,11 @@ export const DEFAULT_SB3_LIMITS: Readonly<Sb3Limits> = Object.freeze({
   maxTotalAssetBytes: 100 * 1024 * 1024,
 })
 
-// the most an edit admission or a workspace build may raise each limit to
+// the most an edit admission or a workspace build may raise each limit to; the entries fit a project of many zones
+// (msis3's four zones hold 85k), which packs w/ a zip64 end record past 65,534 (io/pack.ts)
 export const HARD_SB3_LIMITS: Readonly<Sb3Limits> = Object.freeze({
   maxCompressedBytes: 512 * 1024 * 1024,
-  maxEntries: 64_000,
+  maxEntries: 400_000,
   maxProjectJsonBytes: 128 * 1024 * 1024,
   maxAssetBytes: 25 * 1024 * 1024,
   maxTotalAssetBytes: 1024 * 1024 * 1024,

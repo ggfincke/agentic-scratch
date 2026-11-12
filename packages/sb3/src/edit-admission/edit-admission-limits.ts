@@ -97,7 +97,8 @@ export const HARD_EDIT_ADMISSION_LIMITS: Readonly<EditAdmissionLimits> =
     maxRuntimeScalarSlots: 4_000_000,
     maxCommentRecords: 8_192,
     maxMonitorRecords: 8_192,
-    maxCostumeRecords: 64_000,
+    // msis3's four zones hold 92.9k costume records
+    maxCostumeRecords: 400_000,
     maxCostumesPerTarget: 32_768,
     maxSoundRecords: 4_096,
     maxSoundsPerTarget: 1_024,

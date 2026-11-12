@@ -110,6 +110,10 @@ interface AdmissionFailureOptions
 }
 
 const EOCD_SIGNATURE = 0x06054b50
+const ZIP64_EOCD_SIGNATURE = 0x06064b50
+const ZIP64_LOCATOR_SIGNATURE = 0x07064b50
+const ZIP64_EOCD_BYTES = 56
+const ZIP64_LOCATOR_BYTES = 20
 const CENTRAL_SIGNATURE = 0x02014b50
 const LOCAL_SIGNATURE = 0x04034b50
 const EOCD_BYTES = 22
@@ -300,15 +304,66 @@ function preflightArchive(
   const eocd = findEocd(view, limits)
   const disk = view.getUint16(eocd + 4, true)
   const centralDisk = view.getUint16(eocd + 6, true)
-  const diskEntries = view.getUint16(eocd + 8, true)
-  const entryCount = view.getUint16(eocd + 10, true)
+  let diskEntries = view.getUint16(eocd + 8, true)
+  let entryCount = view.getUint16(eocd + 10, true)
   const centralBytes = view.getUint32(eocd + 12, true)
   const centralOffset = view.getUint32(eocd + 16, true)
+  // where the central directory ends: the end record, or the zip64 end record before its locator
+  let centralEnd = eocd
+  // * the one zip64 form admitted is an entry count past 16 bits (io/pack.ts withZip64End): both count fields 0xffff,
+  // the zip64 end record & its locator right before the end record, holding the counts & the same 32-bit central
+  // directory size & offset; zip64 sizes & offsets stay unsupported
+  if (
+    entryCount === ZIP64_U16 &&
+    diskEntries === ZIP64_U16 &&
+    centralBytes !== ZIP64_U32 &&
+    centralOffset !== ZIP64_U32
+  )
+  {
+    const locator = eocd - ZIP64_LOCATOR_BYTES
+    const record = locator - ZIP64_EOCD_BYTES
+    if (
+      record < 0 ||
+      view.getUint32(locator, true) !== ZIP64_LOCATOR_SIGNATURE ||
+      view.getUint32(locator + 4, true) !== 0 ||
+      view.getBigUint64(locator + 8, true) !== BigInt(record) ||
+      view.getUint32(locator + 16, true) !== 1 ||
+      view.getUint32(record, true) !== ZIP64_EOCD_SIGNATURE ||
+      view.getBigUint64(record + 4, true) !== BigInt(ZIP64_EOCD_BYTES - 12) ||
+      view.getUint32(record + 16, true) !== 0 ||
+      view.getUint32(record + 20, true) !== 0 ||
+      view.getBigUint64(record + 40, true) !== BigInt(centralBytes) ||
+      view.getBigUint64(record + 48, true) !== BigInt(centralOffset)
+    )
+    {
+      return fail(
+        SB3_ADMISSION_CODES.zip64Unsupported,
+        'unsupported ZIP64 .sb3 end record',
+        limits
+      )
+    }
+    const recordDiskEntries = view.getBigUint64(record + 24, true)
+    const recordEntries = view.getBigUint64(record + 32, true)
+    if (
+      recordEntries !== recordDiskEntries ||
+      recordEntries < BigInt(ZIP64_U16) ||
+      recordEntries > BigInt(Number.MAX_SAFE_INTEGER)
+    )
+    {
+      return fail(
+        SB3_ADMISSION_CODES.zip64Unsupported,
+        'unsupported ZIP64 .sb3 entry count',
+        limits
+      )
+    }
+    entryCount = diskEntries = Number(recordEntries)
+    centralEnd = record
+  }
   const entryMetrics = { ...baseMetrics, entryCount }
 
   if (
-    entryCount === ZIP64_U16 ||
-    diskEntries === ZIP64_U16 ||
+    (centralEnd === eocd &&
+      (entryCount === ZIP64_U16 || diskEntries === ZIP64_U16)) ||
     centralBytes === ZIP64_U32 ||
     centralOffset === ZIP64_U32
   )
@@ -343,9 +398,9 @@ function preflightArchive(
     )
   }
   if (
-    centralOffset > eocd ||
-    centralBytes > eocd - centralOffset ||
-    centralOffset + centralBytes !== eocd
+    centralOffset > centralEnd ||
+    centralBytes > centralEnd - centralOffset ||
+    centralOffset + centralBytes !== centralEnd
   )
   {
     return fail(
@@ -368,7 +423,7 @@ function preflightArchive(
   for (let index = 0; index < entryCount; index++)
   {
     if (
-      offset + 46 > eocd ||
+      offset + 46 > centralEnd ||
       view.getUint32(offset, true) !== CENTRAL_SIGNATURE
     )
     {
@@ -392,7 +447,7 @@ function preflightArchive(
     const externalAttributes = view.getUint32(offset + 38, true)
     const localHeaderOffset = view.getUint32(offset + 42, true)
     const next = offset + 46 + nameBytes + extraBytes + commentBytes
-    if (next > eocd)
+    if (next > centralEnd)
     {
       return fail(
         SB3_ADMISSION_CODES.archiveInvalid,
@@ -646,7 +701,7 @@ function preflightArchive(
     offset = next
   }
 
-  if (offset !== eocd)
+  if (offset !== centralEnd)
   {
     return fail(
       SB3_ADMISSION_CODES.archiveInvalid,

@@ -56,7 +56,7 @@ async function zipWithEntryCount(entryCount: number): Promise<Uint8Array>
 test('selected project inspection keeps the default entry cap & admits up to raised archive limits', async () =>
 {
   assert.equal(DEFAULT_SB3_LIMITS.maxEntries, 4096)
-  assert.equal(HARD_SB3_LIMITS.maxEntries, 64_000)
+  assert.equal(HARD_SB3_LIMITS.maxEntries, 400_000)
   const bytes = await zipWithEntryCount(DEFAULT_SB3_LIMITS.maxEntries + 1)
 
   const defaulted = await inspectSelectedProject(bytes)
