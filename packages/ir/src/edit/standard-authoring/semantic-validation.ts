@@ -190,14 +190,10 @@ function tree(
     issue(state, 'tree-shape', path, 'node must be a semantic block tree')
     return
   }
-  if (depth > 64 || state.count >= 4096)
+  // depth bounds the recursion; a tree's block count has no ceiling
+  if (depth > 64)
   {
-    issue(
-      state,
-      'tree-budget',
-      path,
-      'semantic tree exceeds depth or block budget'
-    )
+    issue(state, 'tree-budget', path, 'semantic tree exceeds depth budget')
     return
   }
   if (state.active.has(node))

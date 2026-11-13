@@ -223,6 +223,9 @@ args[]}` conditions & effects), Zod-validated and lowered to a runtime FSM. No
 
 ### Changed
 
+- Standard authoring validation no longer caps a semantic tree at 4,096
+  blocks: a large procedure body validates whole. The depth budget (64)
+  and the 256-block sequence budget are unchanged.
 - Unit tests moved from colocated `packages/**/*.test.ts` to root
   `tests/<package>/`; `npm test` discovers `tests/**/*.test.ts`.
 - The browser lane replaced its wall-clock settle (fixed per-tick sleeps) with
